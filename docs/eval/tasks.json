@@ -1,0 +1,109 @@
+{
+  "version": "m5",
+  "executed": false,
+  "metrics": [
+    "completed",
+    "score",
+    "wall_time_ms",
+    "model_calls",
+    "tool_calls",
+    "repeated_tool_calls",
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "recovery_without_replay"
+  ],
+  "tasks": [
+    {
+      "id": "dev-fix-failing-test",
+      "area": "software-development",
+      "goal": "A tiny Go package has one failing test. Change the implementation so the test passes and do not edit the test.",
+      "success": "go test of that package passes and the test file is unchanged.",
+      "tools": ["read_file", "write_file", "go_test"]
+    },
+    {
+      "id": "dev-explain-call-site",
+      "area": "software-development",
+      "goal": "Name the function that handles POST /v1/runs/{id}/cancel and the status it writes.",
+      "success": "The answer cites the function and the CANCELLED status.",
+      "tools": ["read_file", "grep"]
+    },
+    {
+      "id": "file-summarize-log",
+      "area": "file-analysis",
+      "goal": "Read a local log and list the distinct error codes with counts.",
+      "success": "Counts match a deterministic scan of the file.",
+      "tools": ["read_file"]
+    },
+    {
+      "id": "file-safe-edit",
+      "area": "file-analysis",
+      "goal": "Update a config value inside an allowed directory and refuse the same edit outside that directory.",
+      "success": "The in-scope file changes once. The out-of-scope path is denied and unchanged.",
+      "tools": ["read_file", "write_file"]
+    },
+    {
+      "id": "incident-service-down",
+      "area": "incident-investigation",
+      "goal": "A service is reported down. Check status, read the last error, and say whether it is still failing.",
+      "success": "The answer quotes the status and the error line and does not restart the service.",
+      "tools": ["http_fetch", "read_file"]
+    },
+    {
+      "id": "incident-wait-for-ready",
+      "area": "incident-investigation",
+      "goal": "Poll a status endpoint until it reports ready or the attempt cap is hit.",
+      "success": "The run stops on the ready condition or on the declared cap, and ordinary repeat detection does not fire.",
+      "tools": ["poll_tool"]
+    },
+    {
+      "id": "retrieve-chinese-term",
+      "area": "retrieval",
+      "goal": "Find the note that discusses 检索 given a session history that also contains unrelated Chinese text.",
+      "success": "The matching note id is returned and a query for 云计算 does not hit that note.",
+      "tools": ["retrieve_history"]
+    },
+    {
+      "id": "retrieve-path-and-id",
+      "area": "retrieval",
+      "goal": "Find a history row by exact path server.go and by event id evt_9f3a2c.",
+      "success": "Both lookups return the intended row. server.go does not match a row that only contains the words server and go.",
+      "tools": ["retrieve_history"]
+    },
+    {
+      "id": "batch-three-reads",
+      "area": "multi-tool",
+      "goal": "Read three named files in one model response and summarize each.",
+      "success": "The three tool results are paired with the three call ids and the first file is not read twice.",
+      "tools": ["read_file"]
+    },
+    {
+      "id": "batch-approval-skip",
+      "area": "multi-tool",
+      "goal": "A three-call batch needs approval on the second call. The approval is denied.",
+      "success": "The first result is kept, the second is DENIED, the third is SKIPPED, and the model receives all three results.",
+      "tools": ["read_file", "write_file"]
+    },
+    {
+      "id": "recover-mid-batch",
+      "area": "multi-tool",
+      "goal": "Crash after the first tool succeeds and before the second returns.",
+      "success": "Recovery does not execute the first tool again. The second call is UNKNOWN until reconciled.",
+      "tools": ["read_file", "write_file"]
+    },
+    {
+      "id": "planner-compare",
+      "area": "context",
+      "goal": "Compare a lightweight planner, a fixed context window, and on-demand retrieve on the same fact.",
+      "success": "Planner and retrieve answer the fact. Fixed context misses it. Cost and latency are reported for each arm.",
+      "tools": ["retrieve_history"]
+    },
+    {
+      "id": "cache-baseline",
+      "area": "context",
+      "goal": "Measure prompt-cache hit rate for a stable prefix against a baseline that reports no cached tokens.",
+      "success": "The stable arm's hit rate is above zero and the baseline hit rate is zero.",
+      "tools": ["read_file"]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+/cloud-harness
+/bin/
+.cloud-harness/
+/agent-tools/
+/uploads/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.out
+/tmp/

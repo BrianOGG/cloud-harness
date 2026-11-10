@@ -1,0 +1,366 @@
+package sqlite
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/storage"
+)
+
+func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse) error {
+	usage, err := json.Marshal(rec.Usage)
+	if err != nil {
+		return err
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if rec.StepID == "" {
+		rec.StepID = domain.NewID("stp_")
+	}
+	var idx int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(step_index), -1) + 1 FROM steps WHERE run_id = ?`, rec.RunID).Scan(&idx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO steps(id, run_id, step_index, model_response_id, action, created_at) VALUES(?, ?, ?, ?, ?, ?)`,
+		rec.StepID, rec.RunID, idx, rec.ID, rec.Action, formatTime(rec.CreatedAt)); err != nil {
+		return err
+	}
+	complete := 0
+	if rec.Complete {
+		complete = 1
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_responses(id, run_id, step_id, provider, provider_response_id, complete, usage_json, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.RunID, rec.StepID, rec.Provider, rec.ProviderResponseID, complete, string(usage), formatTime(rec.CreatedAt)); err != nil {
+		return err
+	}
+	for _, item := range rec.Items {
+		body, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO model_response_items(id, response_id, ordinal, kind, content_json, provider_call_id)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+			domain.NewID("itm_"), rec.ID, item.Ordinal, item.Kind, string(body), item.ProviderCallID); err != nil {
+			return err
+		}
+	}
+	if len(rec.Opaque) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO provider_continuations(response_id, provider, opaque_payload, retention, access_scope)
+			VALUES(?, ?, ?, 'run', 'provider_replay')`, rec.ID, rec.Provider, rec.Opaque); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) ListVisibleResponses(ctx context.Context, runID string) ([]storage.StoredResponse, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT id, run_id, step_id, provider, provider_response_id, complete, usage_json, created_at
+		FROM model_responses WHERE run_id = ? ORDER BY created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []storage.StoredResponse
+	for rows.Next() {
+		var rec storage.StoredResponse
+		var usage, created string
+		var complete int
+		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.StepID, &rec.Provider, &rec.ProviderResponseID, &complete, &usage, &created); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rec.Complete = complete == 1
+		_ = json.Unmarshal([]byte(usage), &rec.Usage)
+		rec.CreatedAt, _ = parseTime(created)
+		out = append(out, rec)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	// The pool has one connection. Load items only after the cursor is released.
+	for i := range out {
+		items, err := db.listItems(ctx, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Items = items
+	}
+	return out, nil
+}
+
+func (db *DB) listItems(ctx context.Context, responseID string) ([]domain.VisibleItem, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT content_json FROM model_response_items WHERE response_id = ? ORDER BY ordinal ASC`, responseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.VisibleItem
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var item domain.VisibleItem
+		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// LoadContinuation reads the restricted opaque blob. Trace and search must not call it.
+func (db *DB) LoadContinuation(ctx context.Context, responseID string) ([]byte, error) {
+	var blob []byte
+	err := db.sql.QueryRowContext(ctx, `SELECT opaque_payload FROM provider_continuations WHERE response_id = ?`, responseID).Scan(&blob)
+	if err != nil {
+		return nil, mapErr(err, responseID)
+	}
+	return blob, nil
+}
+
+func (db *DB) SaveBatch(ctx context.Context, batch storage.StoredBatch) error {
+	proto, err := marshalError(batch.ProtocolError)
+	if err != nil {
+		return err
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tool_batches(batch_id, model_response_id, run_id, status, action, next_ordinal, protocol_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		batch.ID, batch.ModelResponseID, batch.RunID, batch.Status, batch.Action, batch.NextOrdinal, proto); err != nil {
+		return err
+	}
+	for _, inv := range batch.Invocations {
+		args := inv.Arguments
+		if len(args) == 0 {
+			args = json.RawMessage(`{}`)
+		}
+		result := ""
+		if inv.Result != nil {
+			b, err := json.Marshal(inv.Result)
+			if err != nil {
+				return err
+			}
+			result = string(b)
+		}
+		dispatched := 0
+		if inv.Dispatched {
+			dispatched = 1
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tool_invocations(id, batch_id, ordinal, provider_call_id, run_id, tool_name, args_json, class, status, result_json, version, dispatched)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+			inv.ID, batch.ID, inv.Ordinal, inv.ProviderCallID, batch.RunID, inv.Name, string(args), inv.Class, inv.Status, result, dispatched); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) UpdateBatch(ctx context.Context, batch storage.StoredBatch) error {
+	proto, err := marshalError(batch.ProtocolError)
+	if err != nil {
+		return err
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE tool_batches SET status = ?, action = ?, next_ordinal = ?, protocol_json = ? WHERE batch_id = ?`,
+		batch.Status, batch.Action, batch.NextOrdinal, proto, batch.ID); err != nil {
+		return err
+	}
+	for _, inv := range batch.Invocations {
+		result := ""
+		if inv.Result != nil {
+			raw, err := json.Marshal(inv.Result)
+			if err != nil {
+				return err
+			}
+			result = string(raw)
+		}
+		dispatched := 0
+		if inv.Dispatched {
+			dispatched = 1
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tool_invocations
+			SET status = ?, result_json = ?, dispatched = ?, version = version + 1
+			WHERE id = ? AND batch_id = ?`,
+			inv.Status, result, dispatched, inv.ID, batch.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) SaveTurnSummary(ctx context.Context, turnID, summary, sourceRefs string) error {
+	if sourceRefs == "" {
+		sourceRefs = "[]"
+	}
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO turn_summaries(turn_id, version, summary, source_refs) VALUES(?, 1, ?, ?)
+		ON CONFLICT(turn_id) DO UPDATE SET version = version + 1, summary = excluded.summary, source_refs = excluded.source_refs`,
+		turnID, summary, sourceRefs)
+	return err
+}
+
+func (db *DB) GetTurnSummary(ctx context.Context, turnID string) (string, error) {
+	var summary string
+	err := db.sql.QueryRowContext(ctx, `SELECT summary FROM turn_summaries WHERE turn_id = ?`, turnID).Scan(&summary)
+	if err != nil {
+		return "", mapErr(err, turnID)
+	}
+	return summary, nil
+}
+
+func (db *DB) SaveMemory(ctx context.Context, sessionID, stateJSON, sourceRefs string) error {
+	if sourceRefs == "" {
+		sourceRefs = "[]"
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var version int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) + 1 FROM session_memories WHERE session_id = ?`, sessionID).Scan(&version); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO session_memories(session_id, version, state_json, source_refs) VALUES(?, ?, ?, ?)`,
+		sessionID, version, stateJSON, sourceRefs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (db *DB) LoadBatches(ctx context.Context, runID string) ([]storage.StoredBatch, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT batch_id, model_response_id, run_id, status, action, next_ordinal, protocol_json
+		FROM tool_batches WHERE run_id = ?`, runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []storage.StoredBatch
+	for rows.Next() {
+		var b storage.StoredBatch
+		var proto string
+		var status, action string
+		if err := rows.Scan(&b.ID, &b.ModelResponseID, &b.RunID, &status, &action, &b.NextOrdinal, &proto); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		b.Status = domain.BatchStatus(status)
+		b.Action = domain.Action(action)
+		if proto != "" {
+			var de domain.Error
+			if err := json.Unmarshal([]byte(proto), &de); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			b.ProtocolError = &de
+		}
+		out = append(out, b)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		inv, err := db.loadInvocations(ctx, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Invocations = inv
+	}
+	return out, nil
+}
+
+func (db *DB) loadInvocations(ctx context.Context, batchID string) ([]domain.Invocation, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT id, ordinal, provider_call_id, tool_name, args_json, class, status, result_json, dispatched, version
+		FROM tool_invocations WHERE batch_id = ? ORDER BY ordinal ASC`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Invocation
+	for rows.Next() {
+		var inv domain.Invocation
+		var args, class, status, result string
+		var dispatched int
+		if err := rows.Scan(&inv.ID, &inv.Ordinal, &inv.ProviderCallID, &inv.Name, &args, &class, &status, &result, &dispatched, &inv.Version); err != nil {
+			return nil, err
+		}
+		inv.Arguments = json.RawMessage(args)
+		inv.Class = domain.Action(class)
+		inv.Status = domain.InvStatus(status)
+		inv.Dispatched = dispatched == 1
+		if result != "" && result != "null" {
+			var cr domain.CallResult
+			if err := json.Unmarshal([]byte(result), &cr); err != nil {
+				return nil, err
+			}
+			inv.Result = &cr
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) SaveGrant(ctx context.Context, g domain.Grant, now time.Time) error {
+	until := ""
+	if !g.ValidUntil.IsZero() {
+		until = formatTime(g.ValidUntil)
+	}
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO scoped_grants(id, subject, run_id, session_id, tool, op, resource_scope, valid_until, state, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Subject, g.RunID, g.SessionID, g.Tool, g.Op, g.ResourceScope, until, g.State, formatTime(now))
+	return err
+}
+
+func (db *DB) ListGrants(ctx context.Context, runID, sessionID string, now time.Time) ([]domain.Grant, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT id, subject, run_id, session_id, tool, op, resource_scope, valid_until, state
+		FROM scoped_grants
+		WHERE state = 'active' AND (run_id = ? OR (run_id = '' AND session_id = ?))`, runID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Grant
+	for rows.Next() {
+		var g domain.Grant
+		var until string
+		if err := rows.Scan(&g.ID, &g.Subject, &g.RunID, &g.SessionID, &g.Tool, &g.Op, &g.ResourceScope, &until, &g.State); err != nil {
+			return nil, err
+		}
+		if until != "" {
+			g.ValidUntil, _ = parseTime(until)
+			if !g.ValidUntil.After(now) {
+				continue
+			}
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
