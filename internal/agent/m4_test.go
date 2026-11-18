@@ -436,3 +436,326 @@ func TestChildWaitingReturnsStructuredErrorWithoutOrphaning(t *testing.T) {
 		t.Fatalf("child run was orphaned or marked completed: %+v", child)
 	}
 }
+
+type stepProvider struct {
+	step func(ctx context.Context, call int, req provider.Request) (domain.ModelResponse, error)
+	call int
+}
+
+func (s *stepProvider) Name() string { return "step" }
+
+func (s *stepProvider) Complete(ctx context.Context, req provider.Request) (domain.ModelResponse, error) {
+	s.call++
+	return s.step(ctx, s.call, req)
+}
+
+func TestChildRunReadsWorkspaceWithoutApproval(t *testing.T) {
+	ctx := context.Background()
+	wantContent := "live-notes-content-m7-5"
+	prov := &stepProvider{
+		step: func(_ context.Context, call int, req provider.Request) (domain.ModelResponse, error) {
+			switch call {
+			case 1:
+				return toolResp(domain.ToolCall{
+					ProviderCallID: "d1",
+					Name:           domain.ToolDelegateTask,
+					Arguments:      json.RawMessage(`{"goal":"read notes.txt and return its content"}`),
+				}), nil
+			case 2:
+				return toolResp(
+					domain.ToolCall{
+						ProviderCallID: "cr1",
+						Name:           "read_file",
+						Arguments:      json.RawMessage(`{"path":"notes.txt"}`),
+					},
+					domain.ToolCall{
+						ProviderCallID: "cl1",
+						Name:           "list_files",
+						Arguments:      json.RawMessage(`{"pattern":"*.txt"}`),
+					},
+					domain.ToolCall{
+						ProviderCallID: "cg1",
+						Name:           "grep",
+						Arguments:      json.RawMessage(`{"pattern":"live-notes","literal":true}`),
+					},
+				), nil
+			case 3:
+				blob := messageText(req.Messages)
+				if !strings.Contains(blob, wantContent) {
+					t.Fatalf("child did not receive notes.txt content in tool result: %s", blob)
+				}
+				return textOnly(wantContent), nil
+			case 4:
+				blob := messageText(req.Messages)
+				if !strings.Contains(blob, wantContent) {
+					t.Fatalf("parent did not receive child file content from delegate_task: %s", blob)
+				}
+				return textOnly("parent-got:" + wantContent), nil
+			default:
+				t.Fatalf("unexpected model call %d", call)
+				return domain.ModelResponse{}, nil
+			}
+		},
+	}
+	m, db, root := testManager(t, &provider.Mock{})
+	m.Provider = prov
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte(wantContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "delegate reading notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.FinalAnswer != "parent-got:"+wantContent {
+		t.Fatalf("parent run %+v", run)
+	}
+	runs, err := db.ListRuns(ctx, ses.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs %+v %v", runs, err)
+	}
+	var child storage.Run
+	for _, r := range runs {
+		if r.ParentRunID == run.ID {
+			child = r
+		}
+	}
+	if child.ID == "" || child.Status != domain.RunCompleted || child.FinalAnswer != wantContent {
+		t.Fatalf("child run %+v", child)
+	}
+	approvals, err := db.ListApprovals(ctx, child.ID)
+	if err != nil || len(approvals) != 0 {
+		t.Fatalf("expected no child approvals, got %+v %v", approvals, err)
+	}
+	childGrants, err := db.ListGrants(ctx, child.ID, ses.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantedTools := map[string]string{}
+	for _, g := range childGrants {
+		if g.RunID == child.ID && g.State == "active" {
+			grantedTools[g.Tool] = g.ResourceScope
+		}
+	}
+	for _, toolName := range []string{"read_file", "list_files", "grep", "git_status", "git_diff", "git_log"} {
+		if grantedTools[toolName] != root {
+			t.Fatalf("child missing workspace grant for %s: %+v", toolName, grantedTools)
+		}
+	}
+	childBatches, err := db.LoadBatches(ctx, child.ID)
+	if err != nil || len(childBatches) != 1 || len(childBatches[0].Invocations) != 3 {
+		t.Fatalf("child batches %+v %v", childBatches, err)
+	}
+	for _, inv := range childBatches[0].Invocations {
+		if inv.Status == domain.InvDenied || inv.Status == domain.InvWaitingApproval || inv.Status != domain.InvSucceeded {
+			t.Fatalf("unexpected child invocation status: %+v", inv)
+		}
+	}
+	parentBatches, err := db.LoadBatches(ctx, run.ID)
+	if err != nil || len(parentBatches) != 1 || len(parentBatches[0].Invocations) != 1 {
+		t.Fatalf("parent batches %+v %v", parentBatches, err)
+	}
+	var delOut struct {
+		ChildRunID string `json:"child_run_id"`
+		Status     string `json:"status"`
+		Summary    string `json:"summary"`
+		Success    bool   `json:"success"`
+	}
+	if err := json.Unmarshal(parentBatches[0].Invocations[0].Result.Data, &delOut); err != nil {
+		t.Fatal(err)
+	}
+	if delOut.ChildRunID != child.ID || delOut.Status != string(domain.RunCompleted) || delOut.Summary != wantContent || !delOut.Success {
+		t.Fatalf("unexpected delegate_task output: %+v", delOut)
+	}
+}
+
+func TestChildGrantsRespectAllowedTools(t *testing.T) {
+	ctx := context.Background()
+	var childOfferedTools map[string]bool
+	prov := &stepProvider{
+		step: func(_ context.Context, call int, req provider.Request) (domain.ModelResponse, error) {
+			switch call {
+			case 1:
+				return toolResp(domain.ToolCall{
+					ProviderCallID: "d1",
+					Name:           domain.ToolDelegateTask,
+					Arguments:      json.RawMessage(`{"goal":"search or read notes.txt","allowed_tools":["read_file"]}`),
+				}), nil
+			case 2:
+				childOfferedTools = map[string]bool{}
+				for _, td := range req.Tools {
+					childOfferedTools[td.Name] = true
+				}
+				return toolResp(
+					domain.ToolCall{
+						ProviderCallID: "cr_allowed",
+						Name:           "read_file",
+						Arguments:      json.RawMessage(`{"path":"notes.txt"}`),
+					},
+					domain.ToolCall{
+						ProviderCallID: "cg_denied",
+						Name:           "grep",
+						Arguments:      json.RawMessage(`{"pattern":"secret","literal":true}`),
+					},
+				), nil
+			case 3:
+				return textOnly("child-finished"), nil
+			case 4:
+				return textOnly("parent-finished"), nil
+			default:
+				t.Fatalf("unexpected model call %d", call)
+				return domain.ModelResponse{}, nil
+			}
+		},
+	}
+	m, db, root := testManager(t, &provider.Mock{})
+	m.Provider = prov
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("secret-value"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "delegate restricted child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.FinalAnswer != "parent-finished" {
+		t.Fatalf("parent run %+v", run)
+	}
+	if !childOfferedTools["read_file"] {
+		t.Fatalf("expected read_file to be offered to child, got %+v", childOfferedTools)
+	}
+	if childOfferedTools["grep"] {
+		t.Fatalf("expected grep not to be offered when allowed_tools=[read_file], got %+v", childOfferedTools)
+	}
+	runs, err := db.ListRuns(ctx, ses.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs %+v %v", runs, err)
+	}
+	var child storage.Run
+	for _, r := range runs {
+		if r.ParentRunID == run.ID {
+			child = r
+		}
+	}
+	if child.ID == "" || child.Status != domain.RunCompleted {
+		t.Fatalf("child run %+v", child)
+	}
+	childGrants, err := db.ListGrants(ctx, child.ID, ses.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range childGrants {
+		if g.RunID == child.ID && g.Tool != "read_file" {
+			t.Fatalf("unexpected child grant outside allowed_tools: %+v", g)
+		}
+	}
+	childBatches, err := db.LoadBatches(ctx, child.ID)
+	if err != nil || len(childBatches) != 1 || len(childBatches[0].Invocations) != 2 {
+		t.Fatalf("child batches %+v %v", childBatches, err)
+	}
+	readInv := childBatches[0].Invocations[0]
+	grepInv := childBatches[0].Invocations[1]
+	if readInv.Name != "read_file" || readInv.Status != domain.InvSucceeded || !readInv.Dispatched {
+		t.Fatalf("expected read_file invocation to SUCCEED, got %+v", readInv)
+	}
+	if grepInv.Name != "grep" || grepInv.Status != domain.InvDenied || grepInv.Dispatched {
+		t.Fatalf("expected grep invocation to be DENIED without dispatch, got %+v", grepInv)
+	}
+}
+
+func TestLongChildWaitDoesNotExpireParentLease(t *testing.T) {
+	ctx := context.Background()
+	leaseTTL := 200 * time.Millisecond
+	prov := &stepProvider{
+		step: func(callCtx context.Context, call int, _ provider.Request) (domain.ModelResponse, error) {
+			switch call {
+			case 1:
+				return toolResp(domain.ToolCall{
+					ProviderCallID: "d1",
+					Name:           domain.ToolDelegateTask,
+					Arguments:      json.RawMessage(`{"goal":"run slow child"}`),
+				}), nil
+			case 2:
+				select {
+				case <-callCtx.Done():
+					return domain.ModelResponse{}, callCtx.Err()
+				case <-time.After(3*leaseTTL + 50*time.Millisecond):
+				}
+				return textOnly("slow-child-complete"), nil
+			case 3:
+				return textOnly("parent-complete-after-slow-child"), nil
+			default:
+				t.Fatalf("unexpected model call %d", call)
+				return domain.ModelResponse{}, nil
+			}
+		},
+	}
+	m, db, _ := testManager(t, &provider.Mock{})
+	m.Provider = prov
+	m.LeaseFor = leaseTTL
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "wait for slow child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.Error != nil || run.FinalAnswer != "parent-complete-after-slow-child" {
+		t.Fatalf("expected parent run COMPLETED without lease_conflict, got %+v", run)
+	}
+	runs, err := db.ListRuns(ctx, ses.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs %+v %v", runs, err)
+	}
+	for _, r := range runs {
+		if r.Status != domain.RunCompleted || r.Error != nil {
+			t.Fatalf("expected run %s COMPLETED, got %+v", r.ID, r)
+		}
+	}
+}
+
+func TestLongModelCallDoesNotExpireLease(t *testing.T) {
+	ctx := context.Background()
+	leaseTTL := 200 * time.Millisecond
+	var m *Manager
+	prov := &stepProvider{
+		step: func(callCtx context.Context, call int, _ provider.Request) (domain.ModelResponse, error) {
+			if call != 1 {
+				t.Fatalf("unexpected model call %d", call)
+			}
+			select {
+			case <-callCtx.Done():
+				return domain.ModelResponse{}, callCtx.Err()
+			case <-time.After(3*leaseTTL + 50*time.Millisecond):
+			}
+			expired, err := m.RecoverExpired(callCtx)
+			if err != nil || len(expired) != 0 {
+				t.Fatalf("expected in-flight run lease to stay alive during model call, expired=%+v err=%v", expired, err)
+			}
+			return textOnly("slow-single-model-complete"), nil
+		},
+	}
+	var db interface{ Close() error }
+	m, db, _ = testManager(t, &provider.Mock{})
+	_ = db
+	m.Provider = prov
+	m.LeaseFor = leaseTTL
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "slow model call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.Error != nil || run.FinalAnswer != "slow-single-model-complete" {
+		t.Fatalf("expected COMPLETED run after long model call, got %+v", run)
+	}
+}

@@ -183,6 +183,8 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	if st == nil {
 		st = &loopState{}
 	}
+	stopHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
+	defer stopHeartbeat()
 	corrections := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -232,6 +234,9 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			usage.LatencyMS = time.Since(started).Milliseconds()
 		}
 		if err != nil {
+			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		}
+		if err := m.Store.HeartbeatLease(ctx, run.ID, m.owner(), leaseVersion, m.now(), m.now().Add(m.leaseFor())); err != nil {
 			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
 		}
 		visible, blob, err := domain.SplitForStorage(resp)
@@ -538,31 +543,59 @@ func fingerprintInTail(obs []runtime.Observation, fp string) bool {
 	return fp == w[0].Fingerprint || fp == w[1].Fingerprint
 }
 
-func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
-	grants := append([]domain.Grant{}, m.Grants...)
-	allowed := map[string]bool{}
-	for _, name := range m.AllowedTools {
-		allowed[name] = true
+func (m *Manager) startLeaseHeartbeat(ctx context.Context, runID string, leaseVersion int64) func() {
+	store := m.Store
+	ttl := m.leaseFor()
+	if store == nil || runID == "" || ttl <= 0 {
+		return func() {}
 	}
-	add := func(name, scope string) {
-		if m.Depth > 0 && !allowed[name] {
-			return
+	interval := ttl / 3
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	owner := m.owner()
+	nowFn := m.Now
+	now := func() time.Time {
+		if nowFn != nil {
+			return nowFn()
 		}
-		grants = append(grants, domain.Grant{
-			ID: domain.NewID("grd_"), Subject: "harness", RunID: run.ID, Tool: name, Op: "call", ResourceScope: scope, State: "active",
-		})
+		return time.Now().UTC()
 	}
-	if m.Depth > 0 {
-		canWrite := m.parentHasWorkspaceWriteGrant(ctx, run)
-		canEdit := m.parentHasWorkspaceToolGrant(ctx, run, "edit_file") || canWrite
-		for _, name := range m.AllowedTools {
-			scope := ""
-			if m.Workspace != "" && (name == "read_file" || name == "list_files" || name == "grep" || name == "git_status" || name == "git_diff" || name == "git_log" || name == "run_command" || (name == "write_file" && canWrite) || (name == "edit_file" && canEdit)) {
-				scope = m.Workspace
+	hbCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				t := now()
+				if err := store.HeartbeatLease(hbCtx, runID, owner, leaseVersion, t, t.Add(ttl)); err != nil {
+					return
+				}
 			}
-			add(name, scope)
 		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
+	var grants []domain.Grant
+	if m.Depth > 0 {
+		grants = m.childGrants(ctx, run)
 	} else {
+		grants = append(grants, m.Grants...)
+		add := func(name, scope string) {
+			grants = append(grants, domain.Grant{
+				ID: domain.NewID("grd_"), Subject: "harness", RunID: run.ID, Tool: name, Op: "call", ResourceScope: scope, State: "active",
+			})
+		}
 		if m.Workspace != "" {
 			add("read_file", m.Workspace)
 			add("list_files", m.Workspace)
@@ -599,6 +632,23 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 	return nil
 }
 
+func (m *Manager) parentAllowsWorkspaceReadTool(ctx context.Context, run storage.Run, tool string) bool {
+	if m.Workspace == "" {
+		return false
+	}
+	if m.parentHasWorkspaceToolGrant(ctx, run, tool) {
+		return true
+	}
+	if m.Store == nil || run.ParentRunID == "" {
+		return true
+	}
+	parentGrants, err := m.Store.ListGrants(ctx, run.ParentRunID, run.SessionID, m.now())
+	if err != nil {
+		return false
+	}
+	return len(parentGrants) == 0
+}
+
 func (m *Manager) parentHasWorkspaceWriteGrant(ctx context.Context, run storage.Run) bool {
 	return m.parentHasWorkspaceToolGrant(ctx, run, "write_file")
 }
@@ -632,9 +682,17 @@ func (m *Manager) toolDefs() []provider.ToolDefinition {
 		return nil
 	}
 	m.ensureTools()
+	hasAllowed := m.Depth > 0 && len(m.AllowedTools) > 0
+	allowed := map[string]bool{}
+	for _, name := range m.AllowedTools {
+		allowed[name] = true
+	}
 	var out []provider.ToolDefinition
 	for _, spec := range m.Broker.List() {
 		if m.Depth > 0 && (spec.Name == domain.ToolAskUser || spec.Name == domain.ToolDelegateTask) {
+			continue
+		}
+		if hasAllowed && spec.Name != domain.ToolFinishTurn && !allowed[spec.Name] {
 			continue
 		}
 		params := tools.CleanSchema(spec.Parameters)
