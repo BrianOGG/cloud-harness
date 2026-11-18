@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,11 +13,13 @@ import (
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
+	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
+	"github.com/cloud-harness/cloud-harness/internal/trace"
 )
 
 func newServer(t *testing.T) (*agent.Manager, http.Handler) {
@@ -394,5 +397,230 @@ func TestHTTPGetRunState(t *testing.T) {
 	wantRes := filepath.Join(ws, "db.conf")
 	if len(apprState.PendingInvocation.Resources) == 0 || apprState.PendingInvocation.Resources[0] != wantRes {
 		t.Fatalf("expected resources [%s], got %+v", wantRes, apprState.PendingInvocation.Resources)
+	}
+}
+
+func TestHTTPTokenAuthRequired(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	token := "super-secret-token-12345"
+	m := &agent.Manager{Store: db, Provider: &provider.Mock{}, OwnerID: "api"}
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := (&Server{Manager: m, Token: token}).Handler()
+
+	// 1. No Authorization header -> 401 on /v1/ endpoints.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with no header, got %d %s", rec.Code, rec.Body)
+	}
+
+	// 2. Wrong token -> 401.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
+	req.Header.Set("Authorization", "Bearer wrong-token-value-00000")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d %s", rec.Code, rec.Body)
+	}
+
+	// 3. Correct token -> 200 on GET /v1/runs/{id}.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with correct token, got %d %s", rec.Code, rec.Body)
+	}
+
+	// 4. /healthz stays open without token.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /healthz without token, got %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestServeRefusesNonLoopbackWithoutToken(t *testing.T) {
+	token := "0123456789abcdef"
+
+	// Non-loopback + no token + no allow flag -> error.
+	if err := config.ValidateBind("0.0.0.0:19421", "", false); err == nil {
+		t.Fatal("expected error for non-loopback without token or allow flag")
+	}
+
+	// Non-loopback + no token + allow flag -> ok.
+	if err := config.ValidateBind("0.0.0.0:19421", "", true); err != nil {
+		t.Fatalf("expected allow flag to permit non-loopback bind, got %v", err)
+	}
+
+	// Non-loopback + valid token + no allow flag -> ok.
+	if err := config.ValidateBind("0.0.0.0:19421", token, false); err != nil {
+		t.Fatalf("expected valid token to permit non-loopback bind, got %v", err)
+	}
+
+	// Loopback + no token + no allow flag -> ok.
+	if err := config.ValidateBind("127.0.0.1:19421", "", false); err != nil {
+		t.Fatalf("expected loopback without token to succeed, got %v", err)
+	}
+}
+
+func TestSSELastEventIDReplay(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Now().UTC()
+	if err := db.CreateSession(ctx, storage.Session{ID: "ses_sse", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, storage.Run{
+		ID: "run_sse", SessionID: "ses_sse", Status: domain.RunRunning,
+		Budget: domain.DefaultBudget(), Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []string{"step.one", "step.two", "step.three"} {
+		ev, err := trace.Persistent("run_sse", step, map[string]string{"name": step}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.AppendEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := &agent.Manager{Store: db, Provider: &provider.Mock{}, OwnerID: "api"}
+	srv := &Server{
+		Manager:           m,
+		HeartbeatInterval: 20 * time.Millisecond,
+		PollInterval:      10 * time.Millisecond,
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, ts.URL+"/v1/runs/run_sse/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Last-Event-ID", "1")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	var lines []string
+	readUntil := func(match func(joined string) bool) string {
+		for {
+			line, rerr := reader.ReadString('\n')
+			if line != "" {
+				lines = append(lines, line)
+				joined := strings.Join(lines, "")
+				if match(joined) {
+					return joined
+				}
+			}
+			if rerr != nil {
+				t.Fatalf("stream read error: %v (collected:\n%s)", rerr, strings.Join(lines, ""))
+			}
+		}
+	}
+
+	// Wait until replayed events 2 and 3 plus at least one ": ping" heartbeat arrive.
+	got := readUntil(func(joined string) bool {
+		return strings.Contains(joined, "id: 2\n") &&
+			strings.Contains(joined, "event: step.two\n") &&
+			strings.Contains(joined, "id: 3\n") &&
+			strings.Contains(joined, "event: step.three\n") &&
+			strings.Contains(joined, ": ping\n")
+	})
+	if strings.Contains(got, "id: 1\n") || strings.Contains(got, "event: step.one\n") {
+		t.Fatalf("event 1 should not be replayed after Last-Event-ID=1:\n%s", got)
+	}
+
+	// Publish a live event (id: 4) and verify it streams after the replayed ones.
+	liveEv, err := trace.Persistent("run_sse", "step.four", map[string]string{"name": "step.four"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AppendEvent(ctx, liveEv); err != nil {
+		t.Fatal(err)
+	}
+	srv.Notify("run_sse")
+
+	got = readUntil(func(joined string) bool {
+		return strings.Contains(joined, "id: 4\n") && strings.Contains(joined, "event: step.four\n")
+	})
+	idx2 := strings.Index(got, "id: 2\n")
+	idx3 := strings.Index(got, "id: 3\n")
+	idx4 := strings.Index(got, "id: 4\n")
+	if !(idx2 >= 0 && idx2 < idx3 && idx3 < idx4) {
+		t.Fatalf("expected events 2, 3, 4 in order:\n%s", got)
+	}
+
+	// Disconnect client and verify subscription cleanup.
+	cancel()
+	_ = resp.Body.Close()
+	deadline := time.Now().Add(time.Second)
+	for srv.SubscriberCount("run_sse") != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := srv.SubscriberCount("run_sse"); n != 0 {
+		t.Fatalf("expected 0 active subscribers after disconnect, got %d", n)
+	}
+}
+
+func TestHTTPBodyTooLarge(t *testing.T) {
+	_, h := newServer(t)
+
+	// Create a valid session with an ordinary small request first.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session %d %s", rec.Code, rec.Body)
+	}
+	var ses struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ses); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send a POST body larger than 1 MiB -> 413 Request Entity Too Large.
+	largeMsg := strings.Repeat("a", (1<<20)+1024)
+	body := `{"message":"` + largeMsg + `"}`
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs", strings.NewReader(body))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Request Entity Too Large, got %d %s", rec.Code, rec.Body)
 	}
 }

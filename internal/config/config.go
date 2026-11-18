@@ -18,6 +18,7 @@ const (
 	DefaultModel           = "gpt-4.1-mini"
 	DefaultOpenAI          = "https://api.openai.com/v1"
 	DefaultReasoningReplay = "message"
+	MinHTTPTokenLen        = 16
 )
 
 // Config is the process configuration.
@@ -33,6 +34,8 @@ type Config struct {
 	OpenAIHeaderTimeoutMS    int    `json:"openai_header_timeout_ms"`
 	OpenAIIdleTimeoutMS      int    `json:"openai_idle_timeout_ms"`
 	OpenAIRetryBaseMS        int    `json:"openai_retry_base_ms"`
+	HTTPToken                string `json:"http_token"`
+	HTTPAllowInsecure        bool   `json:"http_allow_insecure"`
 	AllowExternal            bool   `json:"-"`
 	OwnerID                  string `json:"-"`
 	// RetentionDays prunes the history index. Zero keeps every history row.
@@ -116,6 +119,12 @@ func Load(path string, env func(string) string) (Config, error) {
 		cfg.OpenAIRetryBaseMS = n
 	}
 	cfg.OpenAIAPIKey = env("OPENAI_API_KEY")
+	if v := env("CLOUD_HARNESS_HTTP_TOKEN"); v != "" {
+		cfg.HTTPToken = v
+	}
+	if v := env("CLOUD_HARNESS_HTTP_ALLOW_INSECURE"); v != "" {
+		cfg.HTTPAllowInsecure = v == "1" || strings.EqualFold(v, "true")
+	}
 	cfg.AllowExternal = env("CLOUD_HARNESS_ALLOW_EXTERNAL") == "1"
 	if v := env("CLOUD_HARNESS_RETENTION_DAYS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -148,34 +157,67 @@ func Load(path string, env func(string) string) (Config, error) {
 	if cfg.OpenAIReasoningReplay != "message" && cfg.OpenAIReasoningReplay != "omit" {
 		return Config{}, domain.E(domain.CodeInvalidArgument, "openai_reasoning_replay must be message or omit")
 	}
+	if err := ValidateHTTPToken(cfg.HTTPToken); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
-// ValidateListen refuses a non-loopback bind unless allow is set.
-// M0 has no authentication, so an external bind stays opt-in and warned.
-func ValidateListen(addr string, allow bool) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return domain.E(domain.CodeInvalidArgument, "listen address: "+err.Error())
+// ValidateHTTPToken checks that a non-empty bearer token meets the minimum length.
+func ValidateHTTPToken(token string) error {
+	if token != "" && len(token) < MinHTTPTokenLen {
+		return domain.E(domain.CodeInvalidArgument, "http_token must be at least 16 characters")
 	}
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	if allow {
-		return nil
-	}
-	return domain.E(domain.CodeExternalBind, "refusing to listen on "+addr+"; M0 has no authentication. Use 127.0.0.1 or set CLOUD_HARNESS_ALLOW_EXTERNAL=1 only on a trusted network")
+	return nil
 }
 
-// Redacted returns a copy safe to log. The API key is never included.
+// IsLoopback reports whether a host:port listen address is on the loopback interface.
+func IsLoopback(addr string) (bool, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false, domain.E(domain.CodeInvalidArgument, "listen address: "+err.Error())
+	}
+	if host == "localhost" {
+		return true, nil
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback(), nil
+}
+
+// ValidateBind refuses a non-loopback bind when http_token is empty unless allowInsecure is true.
+func ValidateBind(addr, token string, allowInsecure bool) error {
+	if err := ValidateHTTPToken(token); err != nil {
+		return err
+	}
+	loopback, err := IsLoopback(addr)
+	if err != nil {
+		return err
+	}
+	if loopback || token != "" || allowInsecure {
+		return nil
+	}
+	return domain.E(domain.CodeExternalBind, "refusing to listen on "+addr+" without http_token; use 127.0.0.1, set http_token (min 16 chars), or set http_allow_insecure=true")
+}
+
+// ValidateBind checks the config's listen address, token, and insecure allow flag.
+func (c Config) ValidateBind() error {
+	return ValidateBind(c.ListenAddr, c.HTTPToken, c.HTTPAllowInsecure || c.AllowExternal)
+}
+
+// ValidateListen refuses a non-loopback bind unless allow is set.
+func ValidateListen(addr string, allow bool) error {
+	return ValidateBind(addr, "", allow)
+}
+
+// Redacted returns a copy safe to log. The API key and HTTP token are never included.
 func (c Config) Redacted() map[string]any {
 	key := "unset"
 	if c.OpenAIAPIKey != "" {
 		key = "set"
+	}
+	token := "unset"
+	if c.HTTPToken != "" {
+		token = "set"
 	}
 	return map[string]any{
 		"listen":                  c.ListenAddr,
@@ -185,6 +227,8 @@ func (c Config) Redacted() map[string]any {
 		"openai_model":            c.OpenAIModel,
 		"openai_reasoning_replay": c.OpenAIReasoningReplay,
 		"openai_api_key":          key,
+		"http_token":              token,
+		"http_allow_insecure":     c.HTTPAllowInsecure,
 		"allow_external":          c.AllowExternal,
 		"owner":                   c.OwnerID,
 	}

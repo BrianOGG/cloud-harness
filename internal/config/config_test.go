@@ -117,3 +117,54 @@ func TestCommandEnvAllowConfig(t *testing.T) {
 		t.Fatalf("command_env_allow = %v, want [FOO BAR]", cfg.CommandEnvAllow)
 	}
 }
+
+func TestServeRefusesNonLoopbackWithoutToken(t *testing.T) {
+	validToken := "0123456789abcdef"
+
+	// Non-loopback + no token + no allow flag -> error.
+	if err := ValidateBind("0.0.0.0:19421", "", false); err == nil {
+		t.Fatal("expected error for non-loopback bind without token or allow flag")
+	}
+	cfg := Config{ListenAddr: "0.0.0.0:19421"}
+	if err := cfg.ValidateBind(); err == nil {
+		t.Fatal("expected Config.ValidateBind error for non-loopback without token or allow flag")
+	}
+
+	// Non-loopback + no token + allow flag -> ok.
+	if err := ValidateBind("0.0.0.0:19421", "", true); err != nil {
+		t.Fatalf("expected non-loopback with allowInsecure=true to succeed, got %v", err)
+	}
+	cfgAllow := Config{ListenAddr: "0.0.0.0:19421", HTTPAllowInsecure: true}
+	if err := cfgAllow.ValidateBind(); err != nil {
+		t.Fatalf("expected Config.ValidateBind with HTTPAllowInsecure=true to succeed, got %v", err)
+	}
+
+	// Non-loopback + valid token + no allow flag -> ok.
+	if err := ValidateBind("0.0.0.0:19421", validToken, false); err != nil {
+		t.Fatalf("expected non-loopback with valid token to succeed, got %v", err)
+	}
+	cfgToken := Config{ListenAddr: "0.0.0.0:19421", HTTPToken: validToken}
+	if err := cfgToken.ValidateBind(); err != nil {
+		t.Fatalf("expected Config.ValidateBind with token to succeed, got %v", err)
+	}
+
+	// Loopback + no token + no allow flag -> ok.
+	for _, addr := range []string{"127.0.0.1:19421", "localhost:19421", "[::1]:19421"} {
+		if err := ValidateBind(addr, "", false); err != nil {
+			t.Fatalf("expected loopback %s without token to succeed, got %v", addr, err)
+		}
+	}
+
+	// Token shorter than minimum length -> error.
+	if err := ValidateBind("127.0.0.1:19421", "short-token", false); err == nil {
+		t.Fatal("expected short http_token to be rejected")
+	}
+	if _, err := Load("", func(k string) string {
+		if k == "CLOUD_HARNESS_HTTP_TOKEN" {
+			return "too-short"
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("expected Load to reject short CLOUD_HARNESS_HTTP_TOKEN")
+	}
+}

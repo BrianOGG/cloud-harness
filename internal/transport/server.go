@@ -4,11 +4,14 @@ package transport
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
@@ -17,13 +20,72 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/trace"
 )
 
+const (
+	// DefaultMaxBodyBytes caps POST and PUT request bodies at 1 MiB.
+	DefaultMaxBodyBytes int64 = 1 << 20
+	// DefaultHeartbeatInterval is the SSE ": ping" heartbeat interval.
+	DefaultHeartbeatInterval = 15 * time.Second
+	// DefaultPollInterval is the store poll cadence for active SSE subscriptions.
+	DefaultPollInterval = 25 * time.Millisecond
+	// DefaultReadHeaderTimeout is the HTTP server ReadHeaderTimeout.
+	DefaultReadHeaderTimeout = 10 * time.Second
+	// DefaultIdleTimeout is the HTTP server IdleTimeout.
+	DefaultIdleTimeout = 120 * time.Second
+)
+
 // Server serves the HTTP API. The default bind is loopback.
 type Server struct {
-	Manager *agent.Manager
-	Now     func() time.Time
+	Manager           *agent.Manager
+	Now               func() time.Time
+	Token             string
+	HTTPToken         string
+	MaxBodyBytes      int64
+	HeartbeatInterval time.Duration
+	PollInterval      time.Duration
+
+	subMu sync.Mutex
+	subs  map[string]map[chan struct{}]struct{}
 }
 
-// Handler returns the HTTP routes.
+// NewHTTPServer builds an *http.Server with the default security timeouts.
+func (s *Server) NewHTTPServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
+	}
+}
+
+func (s *Server) token() string {
+	if s.Token != "" {
+		return s.Token
+	}
+	return s.HTTPToken
+}
+
+func (s *Server) maxBodyBytes() int64 {
+	if s.MaxBodyBytes > 0 {
+		return s.MaxBodyBytes
+	}
+	return DefaultMaxBodyBytes
+}
+
+func (s *Server) heartbeatInterval() time.Duration {
+	if s.HeartbeatInterval > 0 {
+		return s.HeartbeatInterval
+	}
+	return DefaultHeartbeatInterval
+}
+
+func (s *Server) pollInterval() time.Duration {
+	if s.PollInterval > 0 {
+		return s.PollInterval
+	}
+	return DefaultPollInterval
+}
+
+// Handler returns the HTTP routes wrapped with bearer authentication and body size limits.
 func (s *Server) Handler() http.Handler {
 	if s.Manager != nil {
 		if s.Now != nil && s.Manager.Now == nil {
@@ -44,7 +106,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/answer", s.answer)
 	mux.HandleFunc("POST /v1/runs/{id}/budget", s.budget)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
-	return mux
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" {
+			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)
+				writeJSON(w, http.StatusUnauthorized, map[string]*domain.Error{
+					"error": domain.E(domain.CodeAuthDenied, "missing or invalid bearer token"),
+				})
+				return
+			}
+		}
+		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes())
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func checkBearerToken(header, expected string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	got := strings.TrimPrefix(header, prefix)
+	if got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +145,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	if err := drainEmptyBody(r); err != nil {
+		writeErr(w, err)
+		return
+	}
 	ses, err := s.Manager.CreateSession(r.Context())
 	if err != nil {
 		writeErr(w, err)
@@ -81,6 +174,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.Notify(run.ID)
 	writeJSON(w, http.StatusCreated, s.runView(r.Context(), run))
 }
 
@@ -95,19 +189,19 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.Manager.Store.GetRun(r.Context(), id); err != nil {
+	run, err := s.Manager.Store.GetRun(r.Context(), id)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	after := int64(0)
-	if h := r.Header.Get("Last-Event-ID"); h != "" {
-		n, err := strconv.ParseInt(h, 10, 64)
-		if err != nil {
-			writeErr(w, domain.E(domain.CodeInvalidArgument, "Last-Event-ID must be an integer"))
-			return
-		}
-		after = n
+	after, err := s.parseLastEventID(r.Context(), id, r.Header.Get("Last-Event-ID"))
+	if err != nil {
+		writeErr(w, err)
+		return
 	}
+	subCh, unsubscribe := s.subscribe(id)
+	defer unsubscribe()
+
 	events, err := s.Manager.Store.ListEvents(r.Context(), id, after)
 	if err != nil {
 		writeErr(w, err)
@@ -119,11 +213,169 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if err := trace.WriteSSE(w, ev); err != nil {
 			return
 		}
+		if ev.Seq > after {
+			after = ev.Seq
+		}
 	}
 	// A stream delta is not stored. This one is only emitted when the caller
 	// asks, so tests can see that it has no id and never lands in the log.
 	if r.URL.Query().Get("preview") == "1" {
 		_ = trace.WriteSSE(w, storage.Event{Type: "stream.delta", Payload: []byte(`{"text":"preview"}`), Persistent: false})
+	}
+	flushSSE(w)
+
+	if cur, gerr := s.Manager.Store.GetRun(r.Context(), id); gerr == nil {
+		run = cur
+	}
+	if domain.TerminalRun(run.Status) {
+		if tail, lerr := s.Manager.Store.ListEvents(r.Context(), id, after); lerr == nil && len(tail) > 0 {
+			for _, ev := range tail {
+				if err := trace.WriteSSE(w, ev); err != nil {
+					return
+				}
+				if ev.Seq > after {
+					after = ev.Seq
+				}
+			}
+			flushSSE(w)
+		}
+		return
+	}
+	if r.Context().Done() == nil {
+		return
+	}
+
+	hbTicker := time.NewTicker(s.heartbeatInterval())
+	defer hbTicker.Stop()
+	pollTicker := time.NewTicker(s.pollInterval())
+	defer pollTicker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-hbTicker.C:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flushSSE(w)
+		case <-subCh:
+			if s.drainLiveEvents(r.Context(), w, id, &after) {
+				return
+			}
+		case <-pollTicker.C:
+			if s.drainLiveEvents(r.Context(), w, id, &after) {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) parseLastEventID(ctx context.Context, runID, header string) (int64, error) {
+	h := stringsTrim(header)
+	if h == "" {
+		return 0, nil
+	}
+	if n, err := strconv.ParseInt(h, 10, 64); err == nil && n >= 0 {
+		return n, nil
+	}
+	if all, err := s.Manager.Store.ListEvents(ctx, runID, 0); err == nil {
+		for _, ev := range all {
+			if ev.ID == h {
+				return ev.Seq, nil
+			}
+		}
+	}
+	return 0, domain.E(domain.CodeInvalidArgument, "Last-Event-ID must be an integer")
+}
+
+func (s *Server) drainLiveEvents(ctx context.Context, w http.ResponseWriter, runID string, after *int64) bool {
+	evs, err := s.Manager.Store.ListEvents(ctx, runID, *after)
+	if err != nil {
+		return true
+	}
+	if len(evs) > 0 {
+		for _, ev := range evs {
+			if err := trace.WriteSSE(w, ev); err != nil {
+				return true
+			}
+			if ev.Seq > *after {
+				*after = ev.Seq
+			}
+		}
+		flushSSE(w)
+	}
+	run, err := s.Manager.Store.GetRun(ctx, runID)
+	if err != nil {
+		return true
+	}
+	if domain.TerminalRun(run.Status) {
+		if tail, lerr := s.Manager.Store.ListEvents(ctx, runID, *after); lerr == nil && len(tail) > 0 {
+			for _, ev := range tail {
+				if err := trace.WriteSSE(w, ev); err != nil {
+					return true
+				}
+				if ev.Seq > *after {
+					*after = ev.Seq
+				}
+			}
+			flushSSE(w)
+		}
+		return true
+	}
+	return false
+}
+
+func (s *Server) subscribe(runID string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.subMu.Lock()
+	if s.subs == nil {
+		s.subs = make(map[string]map[chan struct{}]struct{})
+	}
+	if s.subs[runID] == nil {
+		s.subs[runID] = make(map[chan struct{}]struct{})
+	}
+	s.subs[runID][ch] = struct{}{}
+	s.subMu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.subMu.Lock()
+			if m, ok := s.subs[runID]; ok {
+				delete(m, ch)
+				if len(m) == 0 {
+					delete(s.subs, runID)
+				}
+			}
+			s.subMu.Unlock()
+		})
+	}
+	return ch, unsubscribe
+}
+
+// Notify wakes active SSE subscribers for runID so they check the event store.
+func (s *Server) Notify(runID string) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for ch := range s.subs[runID] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// SubscriberCount reports the number of active SSE subscribers for runID.
+func (s *Server) SubscriberCount(runID string) int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return len(s.subs[runID])
+}
+
+func flushSSE(w http.ResponseWriter) {
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
@@ -182,13 +434,15 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	run, err := s.Manager.Resume(r.Context(), r.PathValue("id"), agent.ResumeInput{
+	id := r.PathValue("id")
+	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{
 		Decision: body.Decision, Answer: body.Answer, ExtraModelCalls: body.ExtraModelCalls,
 	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	s.Notify(id)
 	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
@@ -220,6 +474,7 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.Notify(id)
 	writeJSON(w, http.StatusOK, s.runView(r.Context(), resumed))
 }
 
@@ -231,20 +486,28 @@ func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	run, err := s.Manager.Resume(r.Context(), r.PathValue("id"), agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
+	id := r.PathValue("id")
+	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	s.Notify(id)
 	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
-	run, err := s.Manager.Cancel(r.Context(), r.PathValue("id"))
+	if err := drainEmptyBody(r); err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	run, err := s.Manager.Cancel(r.Context(), id)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	s.Notify(id)
 	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
@@ -277,11 +540,29 @@ func (s *Server) runView(ctx context.Context, run storage.Run) view {
 	return v
 }
 
+func drainEmptyBody(r *http.Request) error {
+	if r == nil || r.Body == nil {
+		return nil
+	}
+	_, err := io.Copy(io.Discard, r.Body)
+	return err
+}
+
 func decode(r *http.Request, dest any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dest); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return err
+		}
 		return domain.E(domain.CodeInvalidArgument, "request body: "+err.Error())
+	}
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return err
+		}
 	}
 	return nil
 }
@@ -295,6 +576,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]*domain.Error{
+			"error": domain.E(domain.CodeResourceLimit, "request body too large"),
+		})
+		return
+	}
 	status := http.StatusInternalServerError
 	var de *domain.Error
 	if errors.As(err, &de) {

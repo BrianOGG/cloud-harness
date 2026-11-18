@@ -55,6 +55,12 @@ func TestExternalBindRefused(t *testing.T) {
 	if code == 0 || !strings.Contains(err.String(), "refusing") {
 		t.Fatalf("serve %d %s %s", code, out.String(), err.String())
 	}
+	out.Reset()
+	err.Reset()
+	code = Main([]string{"serve", "--addr", "127.0.0.1:19421", "--http-token", "short", "--db", t.TempDir() + "/h.db"}, &out, &err)
+	if code == 0 || !strings.Contains(err.String(), "16") {
+		t.Fatalf("expected short token to fail: %d %s %s", code, out.String(), err.String())
+	}
 }
 
 func TestRunsRecoverCLI(t *testing.T) {

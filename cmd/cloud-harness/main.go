@@ -103,10 +103,12 @@ The API key is read only from OPENAI_API_KEY. Default provider is mock.
 Default listen address is 127.0.0.1:19421.`
 
 type commonFlags struct {
-	db        string
-	provider  string
-	addr      string
-	workspace string
+	db                string
+	provider          string
+	addr              string
+	workspace         string
+	httpToken         string
+	httpAllowInsecure bool
 }
 
 func addCommon(fs *flag.FlagSet) *commonFlags {
@@ -115,6 +117,8 @@ func addCommon(fs *flag.FlagSet) *commonFlags {
 	fs.StringVar(&c.provider, "provider", "", "mock or openai")
 	fs.StringVar(&c.addr, "addr", "", "listen address")
 	fs.StringVar(&c.workspace, "workspace", "", "workspace root for file and command tools")
+	fs.StringVar(&c.httpToken, "http-token", "", "bearer token for HTTP API")
+	fs.BoolVar(&c.httpAllowInsecure, "http-allow-insecure", false, "allow non-loopback HTTP bind without http_token")
 	return c
 }
 
@@ -133,6 +137,15 @@ func load(c *commonFlags) (config.Config, error) {
 		if c.addr != "" {
 			cfg.ListenAddr = c.addr
 		}
+		if c.httpToken != "" {
+			cfg.HTTPToken = c.httpToken
+		}
+		if c.httpAllowInsecure {
+			cfg.HTTPAllowInsecure = true
+		}
+	}
+	if err := config.ValidateHTTPToken(cfg.HTTPToken); err != nil {
+		return config.Config{}, err
 	}
 	return cfg, nil
 }
@@ -222,9 +235,12 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if err := config.ValidateListen(cfg.ListenAddr, cfg.AllowExternal); err != nil {
+	if err := cfg.ValidateBind(); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if loopback, _ := config.IsLoopback(cfg.ListenAddr); !loopback && cfg.HTTPToken == "" {
+		fmt.Fprintf(stderr, "WARNING: listening on non-loopback address %s without http_token (http_allow_insecure=true); /v1/ endpoints are unauthenticated\n", cfg.ListenAddr)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -240,8 +256,9 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           (&transport.Server{Manager: mgr}).Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
+		Handler:           (&transport.Server{Manager: mgr, Token: cfg.HTTPToken}).Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
