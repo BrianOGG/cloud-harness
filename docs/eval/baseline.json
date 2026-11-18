@@ -1,0 +1,72 @@
+{
+  "tasks": 13,
+  "passed": 13,
+  "completion_rate": 1,
+  "correctness": 1,
+  "wall_ms": 902,
+  "repeated_tool_calls": 0,
+  "recovery_pass": true,
+  "input_tokens": 451,
+  "output_tokens": 34,
+  "cached_input_tokens": 111,
+  "cache_hit_rate": 0.38144329896907214,
+  "baseline_hit_rate": 0,
+  "planner": {
+    "arms": [
+      {
+        "answer": "harbor-42",
+        "cached_input_tokens": 0,
+        "cost_tokens": 65,
+        "hit_rate": 0,
+        "input_tokens": 50,
+        "latency_ms": 60,
+        "model_calls": 2,
+        "name": "planner_on",
+        "quality": 1,
+        "tool_calls": 0,
+        "wall_ms": 11
+      },
+      {
+        "answer": "unknown",
+        "cached_input_tokens": 0,
+        "cost_tokens": 24,
+        "hit_rate": 0,
+        "input_tokens": 20,
+        "latency_ms": 15,
+        "model_calls": 1,
+        "name": "planner_off_fixed",
+        "quality": 0,
+        "tool_calls": 0,
+        "wall_ms": 8
+      },
+      {
+        "answer": "harbor-42",
+        "cached_input_tokens": 0,
+        "cost_tokens": 103,
+        "hit_rate": 0,
+        "input_tokens": 90,
+        "latency_ms": 75,
+        "model_calls": 2,
+        "name": "planner_off_retrieve",
+        "quality": 1,
+        "tool_calls": 1,
+        "wall_ms": 13
+      }
+    ]
+  },
+  "task_pass": {
+    "batch-approval-skip": true,
+    "batch-three-reads": true,
+    "cache-baseline": true,
+    "dev-explain-call-site": true,
+    "dev-fix-failing-test": true,
+    "file-safe-edit": true,
+    "file-summarize-log": true,
+    "incident-service-down": true,
+    "incident-wait-for-ready": true,
+    "planner-compare": true,
+    "recover-mid-batch": true,
+    "retrieve-chinese-term": true,
+    "retrieve-path-and-id": true
+  }
+}

@@ -120,6 +120,46 @@ func shouldUseScripted(opt Options) bool {
 	return opt.Config.Provider == "" || opt.Config.Provider == "mock"
 }
 
+var liveDefaultLocalTools = []string{
+	"read_file",
+	"write_file",
+	"edit_file",
+	"list_files",
+	"grep",
+	"git_status",
+	"git_diff",
+	"git_log",
+	"run_command",
+}
+
+func isRestrictedEvalTask(task string) bool {
+	switch task {
+	case "batch-approval-skip", "file-safe-edit", "recover-mid-batch":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendLiveDefaultGrants(grants []domain.Grant, abs string) []domain.Grant {
+	has := func(tool string) bool {
+		for _, g := range grants {
+			if g.Tool == tool && g.Op == "call" && g.ResourceScope == abs && g.State == "active" {
+				return true
+			}
+		}
+		return false
+	}
+	for _, tool := range liveDefaultLocalTools {
+		if !has(tool) {
+			grants = append(grants, domain.Grant{
+				Tool: tool, Op: "call", ResourceScope: abs, State: "active", Subject: "eval",
+			})
+		}
+	}
+	return grants
+}
+
 // Run prepares the task fixture, runs the loop, and scores the trace.
 func Run(ctx context.Context, opt Options) (Result, error) {
 	out := Result{Task: opt.Task}
@@ -203,6 +243,9 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 			Tool: "http_fetch", Op: "call", ResourceScope: "", State: "active", Subject: "eval",
 		})
 	}
+	if !useScripted && !isRestrictedEvalTask(opt.Task) {
+		mgr.Grants = appendLiveDefaultGrants(mgr.Grants, abs)
+	}
 	if useScripted {
 		if scripted, ok := scriptedProvider(opt.Task, incidentURL); ok {
 			mgr.Provider = scripted
@@ -236,6 +279,15 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 			run, err = mgr.Recover(ctx, run.ID)
 			if err != nil {
 				return out, err
+			}
+		}
+	default:
+		if !useScripted {
+			for run.Status == domain.RunWaiting && run.WaitReason == domain.WaitApproval {
+				run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Decision: "approve"})
+				if err != nil {
+					return out, err
+				}
 			}
 		}
 	}

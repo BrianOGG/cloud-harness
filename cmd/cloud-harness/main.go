@@ -87,7 +87,7 @@ const usage = `Cloud Harness M5
   cloud-harness run --message TEXT [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
-  cloud-harness eval suite [--db path] [--workspace dir]
+  cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
   cloud-harness runs list [--session ID] [--db path]
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
@@ -184,6 +184,8 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval suite", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
+	outPath := fs.String("out", "", "write suite report JSON to file")
+	comparePath := fs.String("compare", "", "compare suite report against baseline JSON file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -198,9 +200,43 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	if c.db == "" {
 		cfg.DBPath = filepath.Join(os.TempDir(), "cloud-harness-eval-suite.db")
 	}
+	var baseline eval.SuiteReport
+	hasCompare := strings.TrimSpace(*comparePath) != ""
+	if hasCompare {
+		baseline, err = eval.LoadSuiteReport(*comparePath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	report, err := eval.Suite(context.Background(), cfg, c.workspace)
+	if err != nil {
+		_ = writeJSON(stdout, report)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	var cmp eval.SuiteComparison
+	if hasCompare {
+		cmp = eval.CompareSuiteReports(baseline, report)
+	}
+	if strings.TrimSpace(*outPath) != "" {
+		if werr := eval.WriteSuiteReport(*outPath, report); werr != nil {
+			fmt.Fprintln(stderr, werr)
+			return 1
+		}
+	}
+	if hasCompare {
+		report.Comparison = &cmp
+		fmt.Fprintln(stderr, cmp.Summary)
+	}
 	_ = writeJSON(stdout, report)
-	if err != nil || report.Passed != report.Tasks {
+	if hasCompare {
+		if cmp.HasRegression {
+			return 1
+		}
+		return 0
+	}
+	if report.Passed != report.Tasks {
 		return 1
 	}
 	return 0

@@ -422,3 +422,206 @@ func TestEvalSuiteRerunnable(t *testing.T) {
 		}
 	}
 }
+
+func TestEvalLiveModeRunCommandNotParked(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	stub := &fakeOpenAIProvider{
+		step: func(n int32, _ provider.Request) (domain.ModelResponse, error) {
+			switch n {
+			case 1:
+				return toolCalls(
+					call("f1", "read_file", `{"path":"calc.go"}`),
+					call("f2", "read_file", `{"path":"calc_test.go"}`),
+				), nil
+			case 2:
+				return toolCalls(
+					call("f3", "edit_file", `{"path":"calc.go","old_string":"return a - b","new_string":"return a + b"}`),
+				), nil
+			case 3:
+				return toolCalls(
+					call("f4", "run_command", `{"command":"go test ./..."}`),
+				), nil
+			default:
+				return textResp("Fixed Add in calc.go and verified go test passes."), nil
+			}
+		},
+	}
+
+	res, err := Run(ctx, Options{
+		Task:      "dev-fix-failing-test",
+		Config:    config.Config{DBPath: filepath.Join(root, "eval.db"), Provider: "openai"},
+		Workspace: root,
+		Provider:  stub,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if res.Status != string(domain.RunCompleted) {
+		t.Fatalf("expected COMPLETED status, got %q (wait_reason=%q, failures=%#v)", res.Status, res.WaitReason, res.Failures)
+	}
+	if !res.Pass || len(res.Failures) != 0 {
+		t.Fatalf("expected Pass=true, got Pass=%v Failures=%#v ToolCalls=%#v", res.Pass, res.Failures, res.ToolCalls)
+	}
+	sawRunCommand := false
+	for _, c := range res.ToolCalls {
+		if c.Name == "run_command" {
+			sawRunCommand = true
+			if c.Status != string(domain.InvSucceeded) || !c.OK {
+				t.Fatalf("expected run_command to succeed, got %+v", c)
+			}
+		}
+	}
+	if !sawRunCommand {
+		t.Fatalf("expected run_command in tool calls, got %#v", res.ToolCalls)
+	}
+}
+
+func TestEvalScriptedGrantsUnchanged(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. In live mode (Provider="openai", non-scripted), file-safe-edit must still
+	// deny writes to forbidden/config.conf with auth_denied and keep its restricted grants.
+	liveRoot := t.TempDir()
+	liveStub := &fakeOpenAIProvider{
+		step: func(n int32, _ provider.Request) (domain.ModelResponse, error) {
+			if n == 1 {
+				return toolCalls(
+					call("s1", "edit_file", `{"path":"allowed/config.conf","old_string":"mode=readonly","new_string":"mode=active"}`),
+					call("s2", "write_file", `{"path":"forbidden/config.conf","content":"secret_mode=unlocked\n"}`),
+				), nil
+			}
+			return textResp("Updated allowed/config.conf; forbidden/config.conf was denied with auth_denied."), nil
+		},
+	}
+	liveRes, err := Run(ctx, Options{
+		Task:      "file-safe-edit",
+		Config:    config.Config{DBPath: filepath.Join(liveRoot, "eval.db"), Provider: "openai"},
+		Workspace: liveRoot,
+		Provider:  liveStub,
+	})
+	if err != nil {
+		t.Fatalf("file-safe-edit live mode returned error: %v", err)
+	}
+	if liveRes.Status != string(domain.RunCompleted) || !liveRes.Pass {
+		t.Fatalf("expected file-safe-edit to complete and pass in live mode, got status=%s pass=%v failures=%#v calls=%#v",
+			liveRes.Status, liveRes.Pass, liveRes.Failures, liveRes.ToolCalls)
+	}
+	sawForbiddenAuthDenied := false
+	for _, c := range liveRes.ToolCalls {
+		if c.ProviderCallID == "s2" {
+			if c.Status == string(domain.InvDenied) && !c.OK && c.ErrorCode == domain.CodeAuthDenied {
+				sawForbiddenAuthDenied = true
+			} else {
+				t.Fatalf("expected forbidden write call s2 to be DENIED with auth_denied, got %+v", c)
+			}
+		}
+	}
+	if !sawForbiddenAuthDenied {
+		t.Fatalf("did not observe denied forbidden write call in %#v", liveRes.ToolCalls)
+	}
+	forbiddenBytes, err := os.ReadFile(filepath.Join(liveRoot, "forbidden", "config.conf"))
+	if err != nil || string(forbiddenBytes) != safeEditForbiddenInit {
+		t.Fatalf("forbidden/config.conf was modified or unreadable: %q %v", forbiddenBytes, err)
+	}
+
+	// 2. In live mode, batch-approval-skip must also preserve its ungranted write_file denial & skip semantics.
+	skipRoot := t.TempDir()
+	skipStub := &fakeOpenAIProvider{
+		step: func(n int32, _ provider.Request) (domain.ModelResponse, error) {
+			if n == 1 {
+				return toolCalls(
+					call("c1", "read_file", `{"path":"alpha.txt"}`),
+					call("c2", "write_file", `{"path":"out.txt","content":"nope"}`),
+					call("c3", "read_file", `{"path":"beta.txt"}`),
+				), nil
+			}
+			return textResp("paired"), nil
+		},
+	}
+	skipRes, err := Run(ctx, Options{
+		Task:      "batch-approval-skip",
+		Config:    config.Config{DBPath: filepath.Join(skipRoot, "eval.db"), Provider: "openai"},
+		Workspace: skipRoot,
+		Provider:  skipStub,
+	})
+	if err != nil {
+		t.Fatalf("batch-approval-skip live mode returned error: %v", err)
+	}
+	if !skipRes.Pass || skipRes.Status != string(domain.RunCompleted) {
+		t.Fatalf("expected batch-approval-skip to pass in live mode, got %+v", skipRes)
+	}
+
+	// 3. Scripted mode grants and behavior remain 13/13 unchanged.
+	scriptedRoot := t.TempDir()
+	scriptedRes, err := Run(ctx, Options{
+		Task:      "file-safe-edit",
+		Config:    config.Config{DBPath: filepath.Join(scriptedRoot, "eval.db"), Provider: "mock"},
+		Workspace: scriptedRoot,
+	})
+	if err != nil || !scriptedRes.Pass {
+		t.Fatalf("scripted file-safe-edit failed: %+v %v", scriptedRes, err)
+	}
+}
+
+func TestEvalSuiteOutAndCompare(t *testing.T) {
+	ctx := context.Background()
+	ws := t.TempDir()
+	report, err := Suite(ctx, config.Config{DBPath: filepath.Join(ws, "suite.db"), Provider: "mock"}, ws)
+	if err != nil {
+		t.Fatalf("Suite returned error: %v", err)
+	}
+	outPath := filepath.Join(t.TempDir(), "baseline.json")
+	if err := WriteSuiteReport(outPath, report); err != nil {
+		t.Fatalf("WriteSuiteReport failed: %v", err)
+	}
+	loaded, err := LoadSuiteReport(outPath)
+	if err != nil {
+		t.Fatalf("LoadSuiteReport failed: %v", err)
+	}
+	if loaded.Tasks != report.Tasks || loaded.Passed != report.Passed || loaded.CompletionRate != report.CompletionRate || len(loaded.TaskPass) != len(report.TaskPass) {
+		t.Fatalf("loaded report mismatch: got %+v, want %+v", loaded, report)
+	}
+	for k, v := range report.TaskPass {
+		if loaded.TaskPass[k] != v {
+			t.Fatalf("task_pass[%q] = %v, want %v", k, loaded.TaskPass[k], v)
+		}
+	}
+
+	// No regression (identical) -> HasRegression == false.
+	noReg := CompareSuiteReports(loaded, report)
+	if noReg.HasRegression || len(noReg.Regressed) != 0 || noReg.CompletionRateDelta != 0 {
+		t.Fatalf("expected no regression, got %+v", noReg)
+	}
+
+	// Fix only -> HasRegression == false, Fixed contains task.
+	baseWithFail := loaded
+	baseWithFail.TaskPass = map[string]bool{}
+	for k, v := range loaded.TaskPass {
+		baseWithFail.TaskPass[k] = v
+	}
+	baseWithFail.TaskPass["dev-fix-failing-test"] = false
+	baseWithFail.Passed = 12
+	baseWithFail.CompletionRate = 12.0 / 13.0
+	fixCmp := CompareSuiteReports(baseWithFail, report)
+	if fixCmp.HasRegression || len(fixCmp.Fixed) != 1 || fixCmp.Fixed[0] != "dev-fix-failing-test" {
+		t.Fatalf("expected only fixed dev-fix-failing-test, got %+v", fixCmp)
+	}
+
+	// Regression -> HasRegression == true and summary names regressed task.
+	curWithReg := report
+	curWithReg.TaskPass = map[string]bool{}
+	for k, v := range report.TaskPass {
+		curWithReg.TaskPass[k] = v
+	}
+	curWithReg.TaskPass["dev-fix-failing-test"] = false
+	curWithReg.Passed = 12
+	curWithReg.CompletionRate = 12.0 / 13.0
+	regCmp := CompareSuiteReports(loaded, curWithReg)
+	if !regCmp.HasRegression || len(regCmp.Regressed) != 1 || regCmp.Regressed[0] != "dev-fix-failing-test" {
+		t.Fatalf("expected regression on dev-fix-failing-test, got %+v", regCmp)
+	}
+	if !strings.Contains(regCmp.Summary, "dev-fix-failing-test") {
+		t.Fatalf("expected summary to name regressed task dev-fix-failing-test, got %q", regCmp.Summary)
+	}
+}

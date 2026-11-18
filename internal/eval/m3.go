@@ -224,6 +224,14 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB, use
 		}
 		start := time.Now()
 		run, err := mgr.RunMessage(ctx, ses.ID, "What was the deployment token from the earlier turn?")
+		if err == nil && !useScripted {
+			for run.Status == domain.RunWaiting && run.WaitReason == domain.WaitApproval {
+				run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Decision: "approve"})
+				if err != nil {
+					break
+				}
+			}
+		}
 		wall := time.Since(start).Milliseconds()
 		if err != nil {
 			return out, err
@@ -344,12 +352,23 @@ func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv pro
 		OwnerID: "eval", Broker: broker, Workspace: workspace, SkipPlanner: true,
 		System: "You are Cloud Harness. Read the file the user names.",
 	}
+	if !useScripted {
+		mgr.Grants = appendLiveDefaultGrants(mgr.Grants, workspace)
+	}
 	ses, err := mgr.CreateSession(ctx)
 	if err != nil {
 		return armReport{}, err
 	}
 	start := time.Now()
 	run, err := mgr.RunMessage(ctx, ses.ID, "Read alpha.txt")
+	if err == nil && !useScripted {
+		for run.Status == domain.RunWaiting && run.WaitReason == domain.WaitApproval {
+			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Decision: "approve"})
+			if err != nil {
+				break
+			}
+		}
+	}
 	wall := time.Since(start).Milliseconds()
 	if err != nil {
 		return armReport{}, err

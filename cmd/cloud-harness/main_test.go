@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/eval"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
@@ -313,4 +317,156 @@ func TestChatApprovalPromptApproveAndDeny(t *testing.T) {
 			t.Fatalf("expected DENIED invocation without dispatch, got %+v", inv)
 		}
 	})
+}
+
+func TestEvalSuiteOutAndCompare(t *testing.T) {
+	tmp := t.TempDir()
+	baselinePath := filepath.Join(tmp, "baseline.json")
+	ws1 := filepath.Join(tmp, "ws1")
+	db1 := filepath.Join(tmp, "suite1.db")
+
+	// 1. --out writes indented SuiteReport JSON with task_pass and reads back identically.
+	var out, errBuf bytes.Buffer
+	code := Main([]string{"eval", "suite", "--db", db1, "--workspace", ws1, "--out", baselinePath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("eval suite --out exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+	rawFile, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read baseline file: %v", err)
+	}
+	if !strings.Contains(string(rawFile), "\n  \"task_pass\": {") {
+		t.Fatalf("expected indented JSON with task_pass in %s, got:\n%s", baselinePath, string(rawFile))
+	}
+	var stdoutReport, fileReport eval.SuiteReport
+	if err := json.Unmarshal(out.Bytes(), &stdoutReport); err != nil {
+		t.Fatalf("unmarshal stdout report: %v", err)
+	}
+	if err := json.Unmarshal(rawFile, &fileReport); err != nil {
+		t.Fatalf("unmarshal file report: %v", err)
+	}
+	if fileReport.Tasks != 13 || fileReport.Passed != 13 || fileReport.CompletionRate != 1.0 || len(fileReport.TaskPass) != 13 {
+		t.Fatalf("unexpected file report: %+v", fileReport)
+	}
+	if stdoutReport.Tasks != fileReport.Tasks || stdoutReport.Passed != fileReport.Passed || stdoutReport.CompletionRate != fileReport.CompletionRate {
+		t.Fatalf("stdout vs file mismatch: stdout=%+v file=%+v", stdoutReport, fileReport)
+	}
+	for k, v := range stdoutReport.TaskPass {
+		if fileReport.TaskPass[k] != v || !v {
+			t.Fatalf("task_pass[%q]: file=%v stdout=%v", k, fileReport.TaskPass[k], v)
+		}
+	}
+
+	// 2. --compare with no regressions exits 0.
+	out.Reset()
+	errBuf.Reset()
+	ws2 := filepath.Join(tmp, "ws2")
+	db2 := filepath.Join(tmp, "suite2.db")
+	code = Main([]string{"eval", "suite", "--db", db2, "--workspace", ws2, "--compare", baselinePath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("eval suite --compare (no regression) exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+	var cmpReport eval.SuiteReport
+	if err := json.Unmarshal(out.Bytes(), &cmpReport); err != nil {
+		t.Fatalf("unmarshal compare report: %v", err)
+	}
+	if cmpReport.Comparison == nil || cmpReport.Comparison.HasRegression || len(cmpReport.Comparison.Regressed) != 0 {
+		t.Fatalf("expected non-nil comparison with 0 regressions, got %+v", cmpReport.Comparison)
+	}
+
+	// 3. --compare with only fixes (plus added/removed) and combined --out exits 0 and writes new baseline.
+	fixBase := fileReport
+	fixBase.TaskPass = map[string]bool{}
+	for k, v := range fileReport.TaskPass {
+		fixBase.TaskPass[k] = v
+	}
+	fixBase.TaskPass["dev-fix-failing-test"] = false
+	delete(fixBase.TaskPass, "cache-baseline")
+	fixBase.TaskPass["legacy-removed-task"] = false
+	fixBase.Passed = 11
+	fixBase.Tasks = 13
+	fixBase.CompletionRate = 11.0 / 13.0
+	fixBasePath := filepath.Join(tmp, "fix-base.json")
+	if err := eval.WriteSuiteReport(fixBasePath, fixBase); err != nil {
+		t.Fatal(err)
+	}
+	newBasePath := filepath.Join(tmp, "new-base.json")
+	out.Reset()
+	errBuf.Reset()
+	ws3 := filepath.Join(tmp, "ws3")
+	db3 := filepath.Join(tmp, "suite3.db")
+	code = Main([]string{"eval", "suite", "--db", db3, "--workspace", ws3, "--compare", fixBasePath, "--out", newBasePath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("eval suite --compare (fix only) --out exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+	var fixOutReport eval.SuiteReport
+	if err := json.Unmarshal(out.Bytes(), &fixOutReport); err != nil {
+		t.Fatal(err)
+	}
+	if fixOutReport.Comparison == nil || fixOutReport.Comparison.HasRegression {
+		t.Fatalf("expected no regression on fix-only compare, got %+v", fixOutReport.Comparison)
+	}
+	if len(fixOutReport.Comparison.Fixed) != 1 || fixOutReport.Comparison.Fixed[0] != "dev-fix-failing-test" {
+		t.Fatalf("expected fixed=[dev-fix-failing-test], got %+v", fixOutReport.Comparison.Fixed)
+	}
+	if len(fixOutReport.Comparison.Added) != 1 || fixOutReport.Comparison.Added[0] != "cache-baseline" {
+		t.Fatalf("expected added=[cache-baseline], got %+v", fixOutReport.Comparison.Added)
+	}
+	if len(fixOutReport.Comparison.Removed) != 1 || fixOutReport.Comparison.Removed[0] != "legacy-removed-task" {
+		t.Fatalf("expected removed=[legacy-removed-task], got %+v", fixOutReport.Comparison.Removed)
+	}
+	reloadedNewBase, err := eval.LoadSuiteReport(newBasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloadedNewBase.Passed != 13 || !reloadedNewBase.TaskPass["dev-fix-failing-test"] {
+		t.Fatalf("expected new baseline to record 13/13 pass, got %+v", reloadedNewBase)
+	}
+
+	// 4. --compare with regression (baseline pass -> current fail) exits non-zero and names the regressed task.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"cmpl_reg","choices":[{"index":0,"message":{"role":"assistant","content":"noop"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`)
+	}))
+	defer srv.Close()
+	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_API_KEY", "sk-test-regression")
+
+	regBase := eval.SuiteReport{
+		Tasks:          13,
+		Passed:         1,
+		CompletionRate: 1.0 / 13.0,
+		Correctness:    1.0 / 13.0,
+		TaskPass:       map[string]bool{},
+	}
+	for _, task := range eval.SuiteTasks {
+		regBase.TaskPass[task] = false
+	}
+	regBase.TaskPass["dev-fix-failing-test"] = true
+	regBasePath := filepath.Join(tmp, "reg-base.json")
+	if err := eval.WriteSuiteReport(regBasePath, regBase); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	ws4 := filepath.Join(tmp, "ws4")
+	db4 := filepath.Join(tmp, "suite4.db")
+	code = Main([]string{"eval", "suite", "--provider", "openai", "--db", db4, "--workspace", ws4, "--compare", regBasePath}, &out, &errBuf)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit code on regression, got 0 (out=%s err=%s)", out.String(), errBuf.String())
+	}
+	var regOutReport eval.SuiteReport
+	if err := json.Unmarshal(out.Bytes(), &regOutReport); err != nil {
+		t.Fatalf("unmarshal regression stdout: %v (raw=%s)", err, out.String())
+	}
+	if regOutReport.Comparison == nil || !regOutReport.Comparison.HasRegression {
+		t.Fatalf("expected HasRegression=true, got %+v", regOutReport.Comparison)
+	}
+	if len(regOutReport.Comparison.Regressed) != 1 || regOutReport.Comparison.Regressed[0] != "dev-fix-failing-test" {
+		t.Fatalf("expected regressed=[dev-fix-failing-test], got %+v", regOutReport.Comparison.Regressed)
+	}
+	if !strings.Contains(errBuf.String(), "dev-fix-failing-test") || !strings.Contains(out.String(), "dev-fix-failing-test") {
+		t.Fatalf("expected diff summary to name regressed task dev-fix-failing-test, stdout=%s stderr=%s", out.String(), errBuf.String())
+	}
 }

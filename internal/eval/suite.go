@@ -3,7 +3,11 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/config"
@@ -28,21 +32,172 @@ var SuiteTasks = []string{
 
 // SuiteReport is the effect-evaluation summary for one scripted pass.
 type SuiteReport struct {
-	Tasks             int             `json:"tasks"`
-	Passed            int             `json:"passed"`
-	CompletionRate    float64         `json:"completion_rate"`
-	Correctness       float64         `json:"correctness"`
-	WallMS            int64           `json:"wall_ms"`
-	RepeatedToolCalls int             `json:"repeated_tool_calls"`
-	RecoveryPass      bool            `json:"recovery_pass"`
-	InputTokens       int             `json:"input_tokens"`
-	OutputTokens      int             `json:"output_tokens"`
-	CachedTokens      int             `json:"cached_input_tokens"`
-	CacheHitRate      float64         `json:"cache_hit_rate"`
-	BaselineHitRate   float64         `json:"baseline_hit_rate"`
-	Planner           any             `json:"planner,omitempty"`
-	Failures          []string        `json:"failures,omitempty"`
-	TaskPass          map[string]bool `json:"task_pass"`
+	Tasks             int              `json:"tasks"`
+	Passed            int              `json:"passed"`
+	CompletionRate    float64          `json:"completion_rate"`
+	Correctness       float64          `json:"correctness"`
+	WallMS            int64            `json:"wall_ms"`
+	RepeatedToolCalls int              `json:"repeated_tool_calls"`
+	RecoveryPass      bool             `json:"recovery_pass"`
+	InputTokens       int              `json:"input_tokens"`
+	OutputTokens      int              `json:"output_tokens"`
+	CachedTokens      int              `json:"cached_input_tokens"`
+	CacheHitRate      float64          `json:"cache_hit_rate"`
+	BaselineHitRate   float64          `json:"baseline_hit_rate"`
+	Planner           any              `json:"planner,omitempty"`
+	Failures          []string         `json:"failures,omitempty"`
+	TaskPass          map[string]bool  `json:"task_pass"`
+	Comparison        *SuiteComparison `json:"comparison,omitempty"`
+}
+
+// TaskChange describes the pass/fail transition of one task between baseline and current.
+type TaskChange struct {
+	Task     string `json:"task"`
+	Status   string `json:"status"`
+	Baseline *bool  `json:"baseline,omitempty"`
+	Current  *bool  `json:"current,omitempty"`
+}
+
+// SuiteComparison summarizes differences between a baseline SuiteReport and a current run.
+type SuiteComparison struct {
+	BaselineTasks          int          `json:"baseline_tasks"`
+	BaselinePassed         int          `json:"baseline_passed"`
+	CurrentTasks           int          `json:"current_tasks"`
+	CurrentPassed          int          `json:"current_passed"`
+	BaselineCompletionRate float64      `json:"baseline_completion_rate"`
+	CurrentCompletionRate  float64      `json:"current_completion_rate"`
+	CompletionRateDelta    float64      `json:"completion_rate_delta"`
+	Regressed              []string     `json:"regressed"`
+	Fixed                  []string     `json:"fixed"`
+	Added                  []string     `json:"added"`
+	Removed                []string     `json:"removed"`
+	TaskChanges            []TaskChange `json:"task_changes,omitempty"`
+	HasRegression          bool         `json:"has_regression"`
+	Summary                string       `json:"summary"`
+}
+
+// WriteSuiteReport writes a SuiteReport to path as indented JSON including task_pass.
+func WriteSuiteReport(path string, report SuiteReport) error {
+	report.Comparison = nil
+	if report.TaskPass == nil {
+		report.TaskPass = map[string]bool{}
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// LoadSuiteReport reads and unmarshals a persisted SuiteReport JSON file.
+func LoadSuiteReport(path string) (SuiteReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SuiteReport{}, err
+	}
+	var report SuiteReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return SuiteReport{}, err
+	}
+	if report.TaskPass == nil {
+		report.TaskPass = map[string]bool{}
+	}
+	return report, nil
+}
+
+// CompareSuiteReports compares a current SuiteReport against a baseline SuiteReport.
+func CompareSuiteReports(baseline, current SuiteReport) SuiteComparison {
+	cmp := SuiteComparison{
+		BaselineTasks:          baseline.Tasks,
+		BaselinePassed:         baseline.Passed,
+		CurrentTasks:           current.Tasks,
+		CurrentPassed:          current.Passed,
+		BaselineCompletionRate: baseline.CompletionRate,
+		CurrentCompletionRate:  current.CompletionRate,
+		Regressed:              []string{},
+		Fixed:                  []string{},
+		Added:                  []string{},
+		Removed:                []string{},
+	}
+	if cmp.BaselineCompletionRate == 0 && baseline.Passed > 0 && baseline.Tasks > 0 {
+		cmp.BaselineCompletionRate = float64(baseline.Passed) / float64(baseline.Tasks)
+	}
+	if cmp.CurrentCompletionRate == 0 && current.Passed > 0 && current.Tasks > 0 {
+		cmp.CurrentCompletionRate = float64(current.Passed) / float64(current.Tasks)
+	}
+	cmp.CompletionRateDelta = cmp.CurrentCompletionRate - cmp.BaselineCompletionRate
+
+	seen := map[string]bool{}
+	var ordered []string
+	for _, t := range SuiteTasks {
+		_, inBase := baseline.TaskPass[t]
+		_, inCur := current.TaskPass[t]
+		if inBase || inCur {
+			seen[t] = true
+			ordered = append(ordered, t)
+		}
+	}
+	var extras []string
+	for t := range baseline.TaskPass {
+		if !seen[t] {
+			seen[t] = true
+			extras = append(extras, t)
+		}
+	}
+	for t := range current.TaskPass {
+		if !seen[t] {
+			seen[t] = true
+			extras = append(extras, t)
+		}
+	}
+	sort.Strings(extras)
+	ordered = append(ordered, extras...)
+
+	for _, t := range ordered {
+		bVal, inBase := baseline.TaskPass[t]
+		cVal, inCur := current.TaskPass[t]
+		switch {
+		case inBase && inCur:
+			bCopy, cCopy := bVal, cVal
+			switch {
+			case bVal && !cVal:
+				cmp.Regressed = append(cmp.Regressed, t)
+				cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "regressed", Baseline: &bCopy, Current: &cCopy})
+			case !bVal && cVal:
+				cmp.Fixed = append(cmp.Fixed, t)
+				cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "fixed", Baseline: &bCopy, Current: &cCopy})
+			case bVal && cVal:
+				cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "unchanged_pass", Baseline: &bCopy, Current: &cCopy})
+			default:
+				cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "unchanged_fail", Baseline: &bCopy, Current: &cCopy})
+			}
+		case !inBase && inCur:
+			cCopy := cVal
+			cmp.Added = append(cmp.Added, t)
+			cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "added", Current: &cCopy})
+		case inBase && !inCur:
+			bCopy := bVal
+			cmp.Removed = append(cmp.Removed, t)
+			cmp.TaskChanges = append(cmp.TaskChanges, TaskChange{Task: t, Status: "removed", Baseline: &bCopy})
+		}
+	}
+	cmp.HasRegression = len(cmp.Regressed) > 0
+	cmp.Summary = fmt.Sprintf(
+		"suite comparison: completion_rate %.4f -> %.4f (delta %+.4f, passed %d/%d -> %d/%d); regressed(%d)=[%s] fixed(%d)=[%s] added(%d)=[%s] removed(%d)=[%s]",
+		cmp.BaselineCompletionRate, cmp.CurrentCompletionRate, cmp.CompletionRateDelta,
+		cmp.BaselinePassed, cmp.BaselineTasks, cmp.CurrentPassed, cmp.CurrentTasks,
+		len(cmp.Regressed), strings.Join(cmp.Regressed, ","),
+		len(cmp.Fixed), strings.Join(cmp.Fixed, ","),
+		len(cmp.Added), strings.Join(cmp.Added, ","),
+		len(cmp.Removed), strings.Join(cmp.Removed, ","),
+	)
+	return cmp
 }
 
 // Suite runs the scripted tasks and returns only metrics the runs produced.
