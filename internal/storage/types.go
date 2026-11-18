@@ -138,6 +138,13 @@ type HistoryCatalogEntry struct {
 	Summary   string    `json:"summary"`
 }
 
+// PruneRunsResult details the rows removed by a run pruning operation.
+type PruneRunsResult struct {
+	RunsDeleted   int            `json:"runs_deleted"`
+	Tables        map[string]int `json:"tables"`
+	WALCheckpoint string         `json:"wal_checkpoint,omitempty"`
+}
+
 // Store is the single persisted source of truth used by the run manager.
 type Store interface {
 	Close() error
@@ -181,6 +188,7 @@ type Store interface {
 	SearchHistory(ctx context.Context, sessionID, query string, limit int) ([]Hit, error)
 	RebuildHistory(ctx context.Context, sessionID string) error
 	PruneHistory(ctx context.Context, before time.Time) (int, error)
+	PruneRuns(ctx context.Context, before time.Time) (PruneRunsResult, error)
 	GetHistory(ctx context.Context, sourceID string) (HistoryDoc, error)
 	RecentTurnSummaries(ctx context.Context, sessionID string, limit int) ([]TurnSummary, error)
 	ListHistoryCatalog(ctx context.Context, sessionID string, limit int) ([]HistoryCatalogEntry, error)

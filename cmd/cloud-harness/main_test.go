@@ -470,3 +470,212 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 		t.Fatalf("expected diff summary to name regressed task dev-fix-failing-test, stdout=%s stderr=%s", out.String(), errBuf.String())
 	}
 }
+
+func TestRetainPruneRunsDays(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "retain_test.db")
+
+	populateDB := func() {
+		db, err := sqlite.Open(ctx, dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		now := time.Now().UTC()
+		tOld := now.AddDate(0, 0, -30)
+		tNew := now.AddDate(0, 0, -1)
+
+		if err := db.CreateSession(ctx, storage.Session{
+			ID: "ses_retain", CreatedAt: tOld, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		type runSpec struct {
+			id         string
+			status     domain.RunStatus
+			waitReason domain.WaitReason
+			t          time.Time
+			respID     string
+		}
+
+		specs := []runSpec{
+			{id: "run_overdue_done", status: domain.RunCompleted, waitReason: domain.WaitNone, t: tOld, respID: "rsp_overdue_done"},
+			{id: "run_recent_done", status: domain.RunCompleted, waitReason: domain.WaitNone, t: tNew, respID: "rsp_recent_done"},
+			{id: "run_overdue_waiting", status: domain.RunWaiting, waitReason: domain.WaitUser, t: tOld, respID: "rsp_overdue_waiting"},
+			{id: "run_active", status: domain.RunRunning, waitReason: domain.WaitNone, t: now, respID: "rsp_active"},
+		}
+
+		for _, s := range specs {
+			if err := db.CreateRun(ctx, storage.Run{
+				ID: s.id, SessionID: "ses_retain", Status: s.status, WaitReason: s.waitReason,
+				Budget: domain.DefaultBudget(), Version: 1, CreatedAt: s.t, UpdatedAt: s.t,
+			}); err != nil {
+				t.Fatalf("CreateRun %s: %v", s.id, err)
+			}
+			if err := db.SaveCheckpoint(ctx, s.id, 1, []byte(`{"snapshot":"ok"}`), s.t); err != nil {
+				t.Fatalf("SaveCheckpoint %s: %v", s.id, err)
+			}
+			if _, err := db.AppendEvent(ctx, storage.Event{
+				ID: "ev_" + s.id, RunID: s.id, Seq: 1, Type: "step",
+				Payload: json.RawMessage(`{}`), CreatedAt: s.t, Persistent: true,
+			}); err != nil {
+				t.Fatalf("AppendEvent %s: %v", s.id, err)
+			}
+			if err := db.SaveModelResponse(ctx, storage.StoredResponse{
+				ID: s.respID, RunID: s.id, Provider: "mock", Complete: true,
+				Opaque: []byte("continuation_payload_" + s.id), CreatedAt: s.t,
+				Items: []domain.VisibleItem{{Ordinal: 0, Kind: "text", Text: "hello"}},
+			}); err != nil {
+				t.Fatalf("SaveModelResponse %s: %v", s.id, err)
+			}
+		}
+	}
+
+	populateDB()
+
+	// 1. Assert retain without --prune-runs-days preserves existing behavior (no runs deleted).
+	var out, errBuf bytes.Buffer
+	code := Main([]string{"retain", "--db", dbPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("retain without prune-runs-days exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+	var noPruneRes map[string]any
+	if err := json.Unmarshal(out.Bytes(), &noPruneRes); err != nil {
+		t.Fatalf("unmarshal retain output: %v", err)
+	}
+	if pruned, ok := noPruneRes["pruned"].(float64); !ok || pruned != 0 {
+		t.Fatalf("expected pruned=0, got %+v", noPruneRes)
+	}
+
+	// Verify all 4 runs are still intact
+	checkDB, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"run_overdue_done", "run_recent_done", "run_overdue_waiting", "run_active"} {
+		if _, err := checkDB.GetRun(ctx, id); err != nil {
+			t.Fatalf("run %s should still exist before prune, got %v", id, err)
+		}
+	}
+	_ = checkDB.Close()
+
+	// 2. Run with --prune-runs-days 7
+	out.Reset()
+	errBuf.Reset()
+	code = Main([]string{"retain", "--prune-runs-days", "7", "--db", dbPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("retain --prune-runs-days 7 exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+
+	var pruneRes struct {
+		PrunedRuns     int            `json:"pruned_runs"`
+		DeletedRuns    int            `json:"deleted_runs"`
+		PruneRunsDays  int            `json:"prune_runs_days"`
+		DeletedDetails map[string]int `json:"deleted_details"`
+		WALCheckpoint  string         `json:"wal_checkpoint"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &pruneRes); err != nil {
+		t.Fatalf("unmarshal prune result: %v (raw: %s)", err, out.String())
+	}
+	if pruneRes.PrunedRuns != 1 || pruneRes.DeletedRuns != 1 {
+		t.Fatalf("expected 1 pruned run, got pruned_runs=%d deleted_runs=%d", pruneRes.PrunedRuns, pruneRes.DeletedRuns)
+	}
+	if pruneRes.DeletedDetails["checkpoints"] < 1 {
+		t.Fatalf("expected deleted checkpoints >= 1, got %v", pruneRes.DeletedDetails)
+	}
+	if pruneRes.DeletedDetails["events"] < 1 {
+		t.Fatalf("expected deleted events >= 1, got %v", pruneRes.DeletedDetails)
+	}
+	if pruneRes.DeletedDetails["provider_continuations"] < 1 {
+		t.Fatalf("expected deleted provider_continuations >= 1, got %v", pruneRes.DeletedDetails)
+	}
+
+	// 3. Inspect database state post-prune
+	postDB, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer postDB.Close()
+
+	// Overdue terminal run and all associated rows must be deleted
+	if _, err := postDB.GetRun(ctx, "run_overdue_done"); err == nil {
+		t.Fatal("expected run_overdue_done to be deleted")
+	}
+	if _, err := postDB.LatestCheckpoint(ctx, "run_overdue_done"); err == nil {
+		t.Fatal("expected checkpoints for run_overdue_done to be deleted")
+	}
+	if evs, err := postDB.ListEvents(ctx, "run_overdue_done", 0); err != nil || len(evs) != 0 {
+		t.Fatalf("expected events for run_overdue_done to be deleted, got %d events, err=%v", len(evs), err)
+	}
+	if _, err := postDB.LoadContinuation(ctx, "rsp_overdue_done"); err == nil {
+		t.Fatal("expected continuation for run_overdue_done to be deleted")
+	}
+
+	// The other three runs and their associated details must remain intact
+	survivors := []struct {
+		id         string
+		wantStatus domain.RunStatus
+		respID     string
+	}{
+		{id: "run_recent_done", wantStatus: domain.RunCompleted, respID: "rsp_recent_done"},
+		{id: "run_overdue_waiting", wantStatus: domain.RunWaiting, respID: "rsp_overdue_waiting"},
+		{id: "run_active", wantStatus: domain.RunRunning, respID: "rsp_active"},
+	}
+
+	for _, s := range survivors {
+		r, err := postDB.GetRun(ctx, s.id)
+		if err != nil {
+			t.Fatalf("expected %s to survive, got error: %v", s.id, err)
+		}
+		if r.Status != s.wantStatus {
+			t.Fatalf("expected %s status %s, got %s", s.id, s.wantStatus, r.Status)
+		}
+		if _, err := postDB.LatestCheckpoint(ctx, s.id); err != nil {
+			t.Fatalf("expected checkpoint for %s to survive, got %v", s.id, err)
+		}
+		evs, err := postDB.ListEvents(ctx, s.id, 0)
+		if err != nil || len(evs) != 1 {
+			t.Fatalf("expected 1 event for %s to survive, got %d, err=%v", s.id, len(evs), err)
+		}
+		if cont, err := postDB.LoadContinuation(ctx, s.respID); err != nil || len(cont) == 0 {
+			t.Fatalf("expected continuation %s for %s to survive, got err=%v", s.respID, s.id, err)
+		}
+	}
+
+	// 4. Assert PRAGMA foreign_key_check reports zero errors
+	violations, err := postDB.ForeignKeyCheck(ctx)
+	if err != nil {
+		t.Fatalf("foreign_key_check error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected 0 foreign key violations, got: %v", violations)
+	}
+	_ = postDB.Close()
+
+	// 5. Assert retain without --prune-runs-days behaves as before and deletes no runs
+	out.Reset()
+	errBuf.Reset()
+	code = Main([]string{"retain", "--db", dbPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("subsequent retain without prune-runs-days exited %d: out=%s err=%s", code, out.String(), errBuf.String())
+	}
+	var afterRetain map[string]any
+	if err := json.Unmarshal(out.Bytes(), &afterRetain); err != nil {
+		t.Fatalf("unmarshal retain output: %v", err)
+	}
+	if pruned, ok := afterRetain["pruned"].(float64); !ok || pruned != 0 {
+		t.Fatalf("expected pruned=0, got %+v", afterRetain)
+	}
+	finalDB, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finalDB.Close()
+	for _, s := range survivors {
+		if _, err := finalDB.GetRun(ctx, s.id); err != nil {
+			t.Fatalf("run %s must remain after retain without prune-runs-days: %v", s.id, err)
+		}
+	}
+}

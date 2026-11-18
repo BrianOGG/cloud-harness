@@ -94,7 +94,7 @@ const usage = `Cloud Harness M5
   cloud-harness runs recover [RUN_ID | --all-expired] [--db path] [--workspace dir]
   cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] RUN_ID
   cloud-harness trace RUN_ID
-  cloud-harness retain --days N [--db path]
+  cloud-harness retain [--days N] [--prune-runs-days N] [--db path]
   cloud-harness isolation
   cloud-harness program check
 
@@ -534,6 +534,7 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
 	days := fs.Int("days", -1, "delete history index rows older than this many days")
+	pruneRunsDays := fs.Int("prune-runs-days", 0, "delete terminal runs and child rows older than this many days")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -553,16 +554,51 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	if n <= 0 {
+
+	if n <= 0 && *pruneRunsDays <= 0 {
 		return writeJSON(stdout, map[string]any{"pruned": 0, "retention_days": n})
 	}
-	cut := time.Now().UTC().AddDate(0, 0, -n)
-	pruned, err := db.PruneHistory(ctx, cut)
+
+	var prunedHistory int
+	var cutHistory time.Time
+	if n > 0 {
+		cutHistory = time.Now().UTC().AddDate(0, 0, -n)
+		pruned, err := db.PruneHistory(ctx, cutHistory)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		prunedHistory = pruned
+	}
+
+	if *pruneRunsDays <= 0 {
+		return writeJSON(stdout, map[string]any{"pruned": prunedHistory, "retention_days": n, "before": cutHistory.Format(time.RFC3339)})
+	}
+
+	cutRuns := time.Now().UTC().AddDate(0, 0, -*pruneRunsDays)
+	pruneRes, err := db.PruneRuns(ctx, cutRuns)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return writeJSON(stdout, map[string]any{"pruned": pruned, "retention_days": n, "before": cut.Format(time.RFC3339)})
+
+	out := map[string]any{
+		"pruned":            prunedHistory,
+		"retention_days":    n,
+		"prune_runs_days":   *pruneRunsDays,
+		"prune_runs_before": cutRuns.Format(time.RFC3339),
+		"pruned_runs":       pruneRes.RunsDeleted,
+		"deleted_runs":      pruneRes.RunsDeleted,
+		"deleted_details":   pruneRes.Tables,
+		"tables":            pruneRes.Tables,
+	}
+	if n > 0 {
+		out["before"] = cutHistory.Format(time.RFC3339)
+	}
+	if pruneRes.WALCheckpoint != "" {
+		out["wal_checkpoint"] = pruneRes.WALCheckpoint
+	}
+	return writeJSON(stdout, out)
 }
 
 func cmdIsolation(stdout, stderr io.Writer) int {

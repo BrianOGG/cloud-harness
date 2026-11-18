@@ -129,6 +129,26 @@ func (db *DB) ForeignKeys(ctx context.Context) (bool, error) {
 	return v == 1, err
 }
 
+// ForeignKeyCheck runs PRAGMA foreign_key_check and returns any violations found.
+func (db *DB) ForeignKeyCheck(ctx context.Context) ([]string, error) {
+	rows, err := db.sql.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var violations []string
+	for rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return nil, err
+		}
+		violations = append(violations, fmt.Sprintf("table=%s rowid=%v parent=%s fkid=%d", table, rowid, parent, fkid))
+	}
+	return violations, rows.Err()
+}
+
 func splitSQL(script string) []string {
 	var stmts []string
 	var b strings.Builder

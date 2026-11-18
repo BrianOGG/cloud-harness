@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
@@ -547,4 +549,197 @@ func marshalError(e *domain.Error) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// PruneRuns removes terminal runs (COMPLETED, FAILED, CANCELLED) updated before
+// the cutoff and all associated child rows across all run-related tables.
+// A zero time prunes nothing. All deletions run atomically in a single transaction,
+// verified with PRAGMA foreign_key_check. If foreign key check fails, the transaction
+// is rolled back and an error is returned. On commit, PRAGMA wal_checkpoint(TRUNCATE)
+// is executed best-effort.
+func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRunsResult, error) {
+	tables := map[string]int{
+		"checkpoints":            0,
+		"events":                 0,
+		"provider_continuations": 0,
+		"model_response_items":   0,
+		"model_responses":        0,
+		"tool_invocations":       0,
+		"tool_batches":           0,
+		"steps":                  0,
+		"run_leases":             0,
+		"approvals":              0,
+		"scoped_grants":          0,
+		"idempotency_keys":       0,
+		"summary_jobs":           0,
+		"runs":                   0,
+	}
+	result := storage.PruneRunsResult{
+		Tables: tables,
+	}
+	if before.IsZero() {
+		return result, nil
+	}
+
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS _prune_run_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return result, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM _prune_run_ids`); err != nil {
+		return result, err
+	}
+	defer func() {
+		_, _ = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_run_ids`)
+	}()
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO _prune_run_ids (id)
+		SELECT id FROM runs
+		WHERE status IN (?, ?, ?) AND updated_at < ?`,
+		domain.RunCompleted, domain.RunFailed, domain.RunCancelled, formatTime(before))
+	if err != nil {
+		return result, err
+	}
+	nCandidates, err := res.RowsAffected()
+	if err != nil {
+		return result, err
+	}
+	if nCandidates == 0 {
+		_ = tx.Rollback()
+		return result, nil
+	}
+
+	del := func(table string, query string) error {
+		r, e := tx.ExecContext(ctx, query)
+		if e != nil {
+			return fmt.Errorf("delete from %s: %w", table, e)
+		}
+		cnt, e := r.RowsAffected()
+		if e != nil {
+			return fmt.Errorf("rows affected %s: %w", table, e)
+		}
+		tables[table] = int(cnt)
+		return nil
+	}
+
+	// 1. Delete child rows of model_responses (provider_continuations, model_response_items)
+	if err = del("provider_continuations", `
+		DELETE FROM provider_continuations
+		WHERE response_id IN (
+			SELECT mr.id FROM model_responses mr JOIN _prune_run_ids p ON mr.run_id = p.id
+		)`); err != nil {
+		return result, err
+	}
+	if err = del("model_response_items", `
+		DELETE FROM model_response_items
+		WHERE response_id IN (
+			SELECT mr.id FROM model_responses mr JOIN _prune_run_ids p ON mr.run_id = p.id
+		)`); err != nil {
+		return result, err
+	}
+
+	// 2. Delete model_responses
+	if err = del("model_responses", `DELETE FROM model_responses WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+
+	// 3. Delete tool_invocations then tool_batches
+	if err = del("tool_invocations", `DELETE FROM tool_invocations WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("tool_batches", `DELETE FROM tool_batches WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+
+	// 4. Delete steps, events, checkpoints, run_leases
+	if err = del("steps", `DELETE FROM steps WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("events", `DELETE FROM events WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("checkpoints", `DELETE FROM checkpoints WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("run_leases", `DELETE FROM run_leases WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+
+	// 5. Delete tables with run_id but no foreign key constraints
+	if err = del("approvals", `DELETE FROM approvals WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("scoped_grants", `DELETE FROM scoped_grants WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("idempotency_keys", `DELETE FROM idempotency_keys WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("summary_jobs", `DELETE FROM summary_jobs WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+
+	// 6. Delete runs
+	if err = del("runs", `DELETE FROM runs WHERE id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	result.RunsDeleted = tables["runs"]
+
+	// Drop temp table before checking FK
+	if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_run_ids`); err != nil {
+		return result, err
+	}
+
+	// 7. PRAGMA foreign_key_check inside the transaction
+	fkRows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return result, fmt.Errorf("pragma foreign_key_check: %w", err)
+	}
+	var violations []string
+	for fkRows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		if err = fkRows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			_ = fkRows.Close()
+			return result, fmt.Errorf("scan foreign_key_check: %w", err)
+		}
+		violations = append(violations, fmt.Sprintf("table=%s, rowid=%v, parent=%s, fkid=%d", table, rowid, parent, fkid))
+	}
+	if err = fkRows.Err(); err != nil {
+		_ = fkRows.Close()
+		return result, fmt.Errorf("foreign_key_check rows: %w", err)
+	}
+	_ = fkRows.Close()
+
+	if len(violations) > 0 {
+		err = fmt.Errorf("foreign key check failed: %s", strings.Join(violations, "; "))
+		return result, err
+	}
+
+	// 8. Commit transaction
+	if err = tx.Commit(); err != nil {
+		return result, err
+	}
+
+	// 9. Best-effort PRAGMA wal_checkpoint(TRUNCATE) after commit
+	var busy, logPages, checkpointedPages int
+	if cpErr := db.sql.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &checkpointedPages); cpErr != nil {
+		result.WALCheckpoint = fmt.Sprintf("failed: %v", cpErr)
+	} else if busy != 0 {
+		result.WALCheckpoint = "busy"
+	} else {
+		result.WALCheckpoint = "ok"
+	}
+
+	return result, nil
 }
