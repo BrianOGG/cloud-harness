@@ -192,6 +192,9 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if c.provider == "" {
+		cfg.Provider = "mock"
+	}
 	if c.db == "" {
 		cfg.DBPath = filepath.Join(os.TempDir(), "cloud-harness-eval-suite.db")
 	}

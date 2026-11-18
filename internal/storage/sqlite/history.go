@@ -29,7 +29,20 @@ func (db *DB) indexHistory(ctx context.Context, doc storage.HistoryDoc, commit b
 	if len(doc.Metadata) > 0 {
 		meta = string(doc.Metadata)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO history_docs(source_id, session_id, raw_text, metadata_json, created_at) VALUES(?, ?, ?, ?, ?)`,
+	if _, err = tx.ExecContext(ctx, `DELETE FROM history_exact WHERE source_id = ?`, doc.SourceID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM history_fts WHERE source_id = ?`, doc.SourceID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO history_docs(source_id, session_id, raw_text, metadata_json, created_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(source_id) DO UPDATE SET
+			session_id = excluded.session_id,
+			raw_text = excluded.raw_text,
+			metadata_json = excluded.metadata_json,
+			created_at = excluded.created_at`,
 		doc.SourceID, doc.SessionID, doc.RawText, meta, formatTime(doc.CreatedAt)); err != nil {
 		return err
 	}
@@ -226,6 +239,30 @@ func (db *DB) PruneHistory(ctx context.Context, before time.Time) (int, error) {
 		return 0, err
 	}
 	return len(ids), nil
+}
+
+// DeleteHistory removes the given source_ids from history_docs, history_exact, and history_fts.
+func (db *DB) DeleteHistory(ctx context.Context, sourceIDs ...string) error {
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range sourceIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM history_exact WHERE source_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM history_fts WHERE source_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM history_docs WHERE source_id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func snippet(s string) string {

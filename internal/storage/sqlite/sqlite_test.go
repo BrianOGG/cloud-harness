@@ -330,6 +330,41 @@ func TestPruneHistoryKeepsNewerRows(t *testing.T) {
 	}
 }
 
+func TestHistoryIdempotentUpsertAndDelete(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	t1 := time.Date(2026, 11, 18, 1, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 18, 2, 0, 0, 0, time.UTC)
+	if err := db.IndexHistory(ctx, storage.HistoryDoc{
+		SourceID: "note_search", SessionID: "ses_1", RawText: "会议记录讨论了检索的索引策略，标识 note_search。", CreatedAt: t1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.IndexHistory(ctx, storage.HistoryDoc{
+		SourceID: "note_search", SessionID: "ses_2", RawText: "会议记录讨论了检索的索引策略，标识 note_search。", CreatedAt: t2,
+	}); err != nil {
+		t.Fatalf("second IndexHistory on same source_id failed: %v", err)
+	}
+	doc, err := db.GetHistory(ctx, "note_search")
+	if err != nil || doc.SessionID != "ses_2" {
+		t.Fatalf("expected session ses_2 after upsert, got %+v %v", doc, err)
+	}
+	oldHits, err := db.SearchHistory(ctx, "ses_1", "检索", 10)
+	if err != nil || len(oldHits) != 0 {
+		t.Fatalf("expected 0 hits in old session ses_1, got %#v %v", oldHits, err)
+	}
+	newHits, err := db.SearchHistory(ctx, "ses_2", "检索", 10)
+	if err != nil || len(newHits) != 1 || newHits[0].SourceID != "note_search" {
+		t.Fatalf("expected 1 hit in new session ses_2, got %#v %v", newHits, err)
+	}
+	if err := db.DeleteHistory(ctx, "note_search"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetHistory(ctx, "note_search"); err == nil {
+		t.Fatal("expected note_search to be deleted")
+	}
+}
+
 func TestLoadBatchesDeterministicOrder(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)

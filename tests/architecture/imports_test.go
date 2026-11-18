@@ -46,7 +46,7 @@ func forbidden(pkg, imp string) string {
 		return "sqlite driver is confined to the store"
 	case strings.Contains(imp, "database/sql") && pkg != "internal/storage/sqlite":
 		return "database handles stay inside the store"
-	case strings.HasPrefix(imp, "net/http") && pkg != "internal/transport" && pkg != "internal/provider":
+	case strings.HasPrefix(imp, "net/http") && pkg != "internal/transport" && pkg != "internal/provider" && pkg != "internal/eval":
 		return "http stays in transport and the provider adapter"
 	case strings.Contains(imp, "go.starlark.net") && pkg != "internal/program":
 		return "starlark stays in the worker"

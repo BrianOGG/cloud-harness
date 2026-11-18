@@ -3,20 +3,27 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/config"
 )
 
-// SuiteTasks are the scripted tasks that do not need an API key.
+// SuiteTasks are the 13 evaluation tasks in docs/eval/tasks.json.
 var SuiteTasks = []string{
-	"batch-approval-skip",
-	"recover-mid-batch",
+	"dev-fix-failing-test",
+	"dev-explain-call-site",
+	"file-summarize-log",
+	"file-safe-edit",
+	"incident-service-down",
+	"incident-wait-for-ready",
 	"retrieve-chinese-term",
 	"retrieve-path-and-id",
+	"batch-three-reads",
+	"batch-approval-skip",
+	"recover-mid-batch",
 	"planner-compare",
 	"cache-baseline",
-	"incident-wait-for-ready",
 }
 
 // SuiteReport is the effect-evaluation summary for one scripted pass.
@@ -44,7 +51,11 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 	var planner any
 	for _, task := range SuiteTasks {
 		start := time.Now()
-		result, err := Run(ctx, Options{Task: task, Config: cfg, Workspace: workspace})
+		taskWS := ""
+		if workspace != "" {
+			taskWS = filepath.Join(workspace, task)
+		}
+		result, err := Run(ctx, Options{Task: task, Config: cfg, Workspace: taskWS})
 		wall := time.Since(start).Milliseconds()
 		report.Tasks++
 		report.WallMS += wall

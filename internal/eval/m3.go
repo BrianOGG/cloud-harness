@@ -31,6 +31,13 @@ func seedHistory(ctx context.Context, db *sqlite.DB, sessionID, task string) err
 	default:
 		return nil
 	}
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		ids[i] = doc.SourceID
+	}
+	if err := db.DeleteHistory(ctx, ids...); err != nil {
+		return err
+	}
 	for _, doc := range docs {
 		doc.SessionID = sessionID
 		doc.CreatedAt = now
@@ -154,7 +161,7 @@ type armReport struct {
 	Answer       string  `json:"answer"`
 }
 
-func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB) (Result, error) {
+func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB, useScripted bool) (Result, error) {
 	out := Result{Task: "planner-compare", Status: "COMPLETED"}
 	type spec struct {
 		name    string
@@ -204,12 +211,17 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB) (Re
 		}); err != nil {
 			return out, err
 		}
-		answers := append([]domain.ModelResponse(nil), arm.answers...)
-		if arm.force {
-			answers[0] = textUsage(`{"resources":[{"id":"`+noteID+`","precision":"verbatim"}]}`, 20, 10, 40)
+		var mock *provider.Mock
+		if useScripted {
+			answers := append([]domain.ModelResponse(nil), arm.answers...)
+			if arm.force {
+				answers[0] = textUsage(`{"resources":[{"id":"`+noteID+`","precision":"verbatim"}]}`, 20, 10, 40)
+			}
+			mock = &provider.Mock{Responses: answers}
+			mgr.Provider = mock
+		} else {
+			mgr.Provider = base.Provider
 		}
-		mock := &provider.Mock{Responses: answers}
-		mgr.Provider = mock
 		start := time.Now()
 		run, err := mgr.RunMessage(ctx, ses.ID, "What was the deployment token from the earlier turn?")
 		wall := time.Since(start).Milliseconds()
@@ -248,14 +260,16 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB) (Re
 		if usage.InputTokens <= 0 || usage.LatencyMS <= 0 {
 			failures = append(failures, arm.name+" missing cost or latency")
 		}
-		if arm.name == "planner_on" {
-			if len(mock.Requests) < 2 || !strings.Contains(messageBlob(mock.Requests[1].Messages), "deployment token is harbor-42") {
-				failures = append(failures, "planner did not inject the history note")
+		if mock != nil {
+			if arm.name == "planner_on" {
+				if len(mock.Requests) < 2 || !strings.Contains(messageBlob(mock.Requests[1].Messages), "deployment token is harbor-42") {
+					failures = append(failures, "planner did not inject the history note")
+				}
 			}
-		}
-		if arm.name == "planner_off_fixed" {
-			if strings.Contains(messageBlob(mock.Requests[0].Messages), "deployment token is harbor-42") {
-				failures = append(failures, "fixed context included the old fact")
+			if arm.name == "planner_off_fixed" {
+				if strings.Contains(messageBlob(mock.Requests[0].Messages), "deployment token is harbor-42") {
+					failures = append(failures, "fixed context included the old fact")
+				}
 			}
 		}
 	}
@@ -275,13 +289,13 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB) (Re
 	return out, nil
 }
 
-func compareCache(ctx context.Context, db *sqlite.DB, workspace string) (Result, error) {
+func compareCache(ctx context.Context, db *sqlite.DB, workspace string, liveProv provider.Provider, useScripted bool) (Result, error) {
 	out := Result{Task: "cache-baseline", Status: "COMPLETED"}
-	stable, err := cacheArm(ctx, db, workspace, true)
+	stable, err := cacheArm(ctx, db, workspace, liveProv, useScripted, true)
 	if err != nil {
 		return out, err
 	}
-	base, err := cacheArm(ctx, db, workspace, false)
+	base, err := cacheArm(ctx, db, workspace, liveProv, useScripted, false)
 	if err != nil {
 		return out, err
 	}
@@ -309,11 +323,14 @@ func compareCache(ctx context.Context, db *sqlite.DB, workspace string) (Result,
 	return out, nil
 }
 
-func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, hits bool) (armReport, error) {
-	mock := &provider.Mock{Responses: []domain.ModelResponse{
-		toolCalls(call("c1", "read_file", `{"path":"alpha.txt"}`)),
-		textResp("alpha-one"),
-	}}
+func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv provider.Provider, useScripted, hits bool) (armReport, error) {
+	var inner provider.Provider = liveProv
+	if useScripted || inner == nil {
+		inner = &provider.Mock{Responses: []domain.ModelResponse{
+			toolCalls(call("c1", "read_file", `{"path":"alpha.txt"}`)),
+			textResp("alpha-one"),
+		}}
+	}
 	name := "baseline"
 	if hits {
 		name = "stable_prefix"
@@ -323,7 +340,7 @@ func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, hits bool) (
 		return armReport{}, err
 	}
 	mgr := &agent.Manager{
-		Store: db, Provider: &provider.PrefixCache{Inner: mock, ReportHits: hits},
+		Store: db, Provider: &provider.PrefixCache{Inner: inner, ReportHits: hits},
 		OwnerID: "eval", Broker: broker, Workspace: workspace, SkipPlanner: true,
 		System: "You are Cloud Harness. Read the file the user names.",
 	}
