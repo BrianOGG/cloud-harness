@@ -309,10 +309,19 @@ func childUserMessage(goal, relevantContext, successCriteria, outputContract str
 var (
 	wordLimitRe  = regexp.MustCompile(`(?i)\b(?:under|below|fewer than|less than|at most|max|maximum(?:\s+of)?)\s+(\d+)\s+words\b`)
 	fileTokenRe  = regexp.MustCompile(`[A-Za-z0-9_./-]*\.(?:go|txt|md|json|yaml|yml|toml|sql|sh|py|js|ts|tsx|jsx|html|css|xml|csv|log|env|cfg|ini|mod|sum|proto|star)\b`)
-	idTokenRe    = regexp.MustCompile(`\b[A-Za-z]{2,8}_[A-Za-z0-9_]*\d[A-Za-z0-9_]*\b`)
+	idTokenRe    = regexp.MustCompile(`\b[A-Za-z]{2,8}[_-][A-Za-z0-9_-]*\d[A-Za-z0-9_-]*\b`)
 	numTokenRe   = regexp.MustCompile(`\b\d+\b`)
 	asciiWordRe  = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_-]{2,}`)
+	hanRunRe     = regexp.MustCompile(`\p{Han}+`)
 	schemaKeysRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:`)
+
+	isoDateRe   = regexp.MustCompile(`\b(19\d\d|20\d\d)[/-](0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])\b`)
+	mdyDateRe   = regexp.MustCompile(`\b(0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])[/-](19\d\d|20\d\d)\b`)
+	zhDateRe    = regexp.MustCompile(`(?:(19\d\d|20\d\d)\s*年\s*)?(0?[1-9]|1[0-2])\s*月\s*(0?[1-9]|[12]\d|3[01])\s*[日号]`)
+	enMDDateRe  = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:(?:\s*,\s*|\s+)(19\d\d|20\d\d))?\b`)
+	enDMDateRe  = regexp.MustCompile(`(?i)\b(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?:(?:\s*,\s*|\s+)(19\d\d|20\d\d))?\b`)
+	numMDDateRe = regexp.MustCompile(`\b(0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])\b`)
+	yearTokenRe = regexp.MustCompile(`\b(19\d\d|20\d\d)\b`)
 )
 
 func judgeChildOutcome(finished storage.Run, runErr error, successCriteria, outputContract string) (bool, string) {
@@ -566,7 +575,7 @@ func reviewSummaryAgainstCriteria(summary, criteria string, obj map[string]any) 
 
 	clauses := splitCriteriaClauses(cleaned)
 	for _, clause := range clauses {
-		clause = strings.TrimSpace(strings.Trim(clause, "., "))
+		clause = strings.TrimSpace(strings.Trim(clause, "., 。；"))
 		if clause == "" {
 			continue
 		}
@@ -574,13 +583,17 @@ func reviewSummaryAgainstCriteria(summary, criteria string, obj map[string]any) 
 		if isNegatedClause(cl) {
 			continue
 		}
-		for _, ref := range requiredExactRefs(clause) {
-			if !strings.Contains(sumLower, strings.ToLower(ref)) {
+		refs := requiredExactRefs(clause)
+		for _, ref := range refs {
+			if !refSatisfied(ref, summary, sumLower) {
 				return false, "summary missing required reference: " + ref
 			}
 		}
 		if clauseRequiresPass(cl) && !summaryHasPassOutcome(sumLower, obj) {
 			return false, "unmet criterion: " + clause
+		}
+		if len(refs) > 0 {
+			continue
 		}
 		words := extractCriteriaKeywords(cl)
 		if len(words) == 0 {
@@ -629,6 +642,7 @@ func summaryReportsFailure(sumLower string) bool {
 
 func splitCriteriaClauses(s string) []string {
 	normalized := strings.ReplaceAll(s, "\n", ";")
+	normalized = strings.ReplaceAll(normalized, "；", ";")
 	normalized = strings.ReplaceAll(normalized, ", and ", ";")
 	normalized = strings.ReplaceAll(normalized, " and ", ";")
 	return strings.Split(normalized, ";")
@@ -644,12 +658,219 @@ func isNegatedClause(cl string) bool {
 	return false
 }
 
+func maskSpan(s string, start, end int) string {
+	if start < 0 || end <= start || end > len(s) {
+		return s
+	}
+	return s[:start] + strings.Repeat(" ", end-start) + s[end:]
+}
+
 func requiredExactRefs(clause string) []string {
 	var refs []string
-	refs = append(refs, fileTokenRe.FindAllString(clause, -1)...)
-	refs = append(refs, idTokenRe.FindAllString(clause, -1)...)
-	refs = append(refs, numTokenRe.FindAllString(clause, -1)...)
+	rem := clause
+	for _, loc := range fileTokenRe.FindAllStringIndex(rem, -1) {
+		refs = append(refs, clause[loc[0]:loc[1]])
+		rem = maskSpan(rem, loc[0], loc[1])
+	}
+	for _, d := range extractDates(rem) {
+		refs = append(refs, clause[d.start:d.end])
+		rem = maskSpan(rem, d.start, d.end)
+	}
+	for _, loc := range idTokenRe.FindAllStringIndex(rem, -1) {
+		refs = append(refs, clause[loc[0]:loc[1]])
+		rem = maskSpan(rem, loc[0], loc[1])
+	}
+	for _, loc := range numTokenRe.FindAllStringIndex(rem, -1) {
+		refs = append(refs, clause[loc[0]:loc[1]])
+	}
 	return refs
+}
+
+func refSatisfied(ref, summary, sumLower string) bool {
+	if d, ok := parseSingleDate(ref); ok {
+		return summaryMatchesDate(d, summary)
+	}
+	return strings.Contains(sumLower, strings.ToLower(ref))
+}
+
+type parsedDate struct {
+	raw   string
+	year  int
+	month int
+	day   int
+	start int
+	end   int
+}
+
+var englishMonths = map[string]int{
+	"jan": 1, "january": 1,
+	"feb": 2, "february": 2,
+	"mar": 3, "march": 3,
+	"apr": 4, "april": 4,
+	"may": 5,
+	"jun": 6, "june": 6,
+	"jul": 7, "july": 7,
+	"aug": 8, "august": 8,
+	"sep": 9, "sept": 9, "september": 9,
+	"oct": 10, "october": 10,
+	"nov": 11, "november": 11,
+	"dec": 12, "december": 12,
+}
+
+func parseSingleDate(ref string) (parsedDate, bool) {
+	trimmed := strings.TrimSpace(ref)
+	dates := extractDates(trimmed)
+	if len(dates) == 1 && dates[0].start == 0 && dates[0].end == len(trimmed) {
+		return dates[0], true
+	}
+	return parsedDate{}, false
+}
+
+func summaryMatchesDate(want parsedDate, summary string) bool {
+	for _, got := range extractDates(summary) {
+		if got.month != want.month || got.day != want.day {
+			continue
+		}
+		if want.year != 0 {
+			if got.year != 0 {
+				if got.year != want.year {
+					continue
+				}
+			} else if summaryHasConflictingYear(summary, want.year) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func summaryHasConflictingYear(summary string, wantYear int) bool {
+	locs := yearTokenRe.FindAllStringIndex(summary, -1)
+	foundOther := false
+	for _, loc := range locs {
+		if !hasDateBoundary(summary, loc[0], loc[1]) {
+			continue
+		}
+		y, err := strconv.Atoi(summary[loc[0]:loc[1]])
+		if err != nil {
+			continue
+		}
+		if y == wantYear {
+			return false
+		}
+		foundOther = true
+	}
+	return foundOther
+}
+
+func hasDateBoundary(s string, start, end int) bool {
+	if start > 0 {
+		b := s[start-1]
+		if isASCIIAlphaNum(b) || b == '_' || b == '-' || b == '/' || b == '.' {
+			return false
+		}
+	}
+	if end < len(s) {
+		b := s[end]
+		if isASCIIAlphaNum(b) || b == '_' || b == '-' || b == '/' {
+			return false
+		}
+		if b == '.' && end+1 < len(s) && isASCIIAlphaNum(s[end+1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func extractDates(s string) []parsedDate {
+	var out []parsedDate
+	overlaps := func(start, end int) bool {
+		for _, d := range out {
+			if start < d.end && end > d.start {
+				return true
+			}
+		}
+		return false
+	}
+	add := func(start, end, year, month, day int) {
+		if month < 1 || month > 12 || day < 1 || day > 31 {
+			return
+		}
+		if overlaps(start, end) {
+			return
+		}
+		out = append(out, parsedDate{
+			raw:   s[start:end],
+			year:  year,
+			month: month,
+			day:   day,
+			start: start,
+			end:   end,
+		})
+	}
+
+	for _, idx := range isoDateRe.FindAllStringSubmatchIndex(s, -1) {
+		if !hasDateBoundary(s, idx[0], idx[1]) {
+			continue
+		}
+		y, _ := strconv.Atoi(s[idx[2]:idx[3]])
+		m, _ := strconv.Atoi(s[idx[4]:idx[5]])
+		d, _ := strconv.Atoi(s[idx[6]:idx[7]])
+		add(idx[0], idx[1], y, m, d)
+	}
+	for _, idx := range mdyDateRe.FindAllStringSubmatchIndex(s, -1) {
+		if !hasDateBoundary(s, idx[0], idx[1]) {
+			continue
+		}
+		m, _ := strconv.Atoi(s[idx[2]:idx[3]])
+		d, _ := strconv.Atoi(s[idx[4]:idx[5]])
+		y, _ := strconv.Atoi(s[idx[6]:idx[7]])
+		add(idx[0], idx[1], y, m, d)
+	}
+	for _, idx := range zhDateRe.FindAllStringSubmatchIndex(s, -1) {
+		if idx[0] > 0 && isASCIIAlphaNum(s[idx[0]-1]) {
+			continue
+		}
+		var y int
+		if idx[2] >= 0 && idx[3] >= 0 {
+			y, _ = strconv.Atoi(s[idx[2]:idx[3]])
+		}
+		m, _ := strconv.Atoi(s[idx[4]:idx[5]])
+		d, _ := strconv.Atoi(s[idx[6]:idx[7]])
+		add(idx[0], idx[1], y, m, d)
+	}
+	for _, idx := range enMDDateRe.FindAllStringSubmatchIndex(s, -1) {
+		m := englishMonths[strings.ToLower(s[idx[2]:idx[3]])]
+		d, _ := strconv.Atoi(s[idx[4]:idx[5]])
+		var y int
+		if idx[6] >= 0 && idx[7] >= 0 {
+			y, _ = strconv.Atoi(s[idx[6]:idx[7]])
+		}
+		add(idx[0], idx[1], y, m, d)
+	}
+	for _, idx := range enDMDateRe.FindAllStringSubmatchIndex(s, -1) {
+		d, _ := strconv.Atoi(s[idx[2]:idx[3]])
+		m := englishMonths[strings.ToLower(s[idx[4]:idx[5]])]
+		var y int
+		if idx[6] >= 0 && idx[7] >= 0 {
+			y, _ = strconv.Atoi(s[idx[6]:idx[7]])
+		}
+		add(idx[0], idx[1], y, m, d)
+	}
+	for _, idx := range numMDDateRe.FindAllStringSubmatchIndex(s, -1) {
+		if !hasDateBoundary(s, idx[0], idx[1]) {
+			continue
+		}
+		m, _ := strconv.Atoi(s[idx[2]:idx[3]])
+		d, _ := strconv.Atoi(s[idx[4]:idx[5]])
+		add(idx[0], idx[1], 0, m, d)
+	}
+	return out
 }
 
 func clauseRequiresPass(cl string) bool {
@@ -698,14 +919,80 @@ var criteriaStopWords = map[string]bool{
 	"there": true, "their": true, "them": true, "they": true, "when": true, "where": true,
 }
 
+var zhStopPhrases = []string{
+	"总结必须", "摘要必须", "输出必须", "回复必须", "结果必须",
+	"必须包含", "需要包含", "应当包含", "应该包含", "应包含", "需包含",
+	"必须给出", "需要给出", "应当给出", "应该给出", "应给出", "需给出",
+	"总结", "摘要", "输出", "结果", "回复", "回答",
+	"必须", "应该", "应当", "需要", "要求", "能够", "可以",
+	"包含", "包括", "给出", "列出", "提供", "说明", "返回", "提及", "注明", "写明", "指出",
+	"以及", "并且", "而且", "或者", "同时",
+}
+
 func extractCriteriaKeywords(cl string) []string {
 	raw := asciiWordRe.FindAllString(cl, -1)
 	var out []string
+	seen := map[string]bool{}
+	addWord := func(w string) {
+		if w == "" || seen[w] {
+			return
+		}
+		seen[w] = true
+		out = append(out, w)
+	}
 	for _, w := range raw {
 		if criteriaStopWords[w] {
 			continue
 		}
-		out = append(out, w)
+		addWord(w)
+	}
+	for _, kw := range extractChineseKeywords(cl) {
+		addWord(kw)
+	}
+	return out
+}
+
+func extractChineseKeywords(cl string) []string {
+	runs := hanRunRe.FindAllString(cl, -1)
+	if len(runs) == 0 {
+		return nil
+	}
+	var out []string
+	for _, run := range runs {
+		if len([]rune(run)) < 2 {
+			continue
+		}
+		cleaned := run
+		for _, stop := range zhStopPhrases {
+			cleaned = strings.ReplaceAll(cleaned, stop, " ")
+		}
+		parts := strings.Fields(cleaned)
+		for _, part := range parts {
+			runes := []rune(part)
+			if len(runes) < 2 {
+				continue
+			}
+			if len(runes) >= 4 {
+				subParts := strings.FieldsFunc(part, func(r rune) bool {
+					switch r {
+					case '和', '与', '及', '或', '并', '且', '的', '是', '为', '了':
+						return true
+					}
+					return false
+				})
+				for _, sp := range subParts {
+					sr := []rune(sp)
+					if len(sr) >= 2 {
+						out = append(out, sp)
+						if len(sr) >= 4 {
+							out = append(out, string(sr[:2]), string(sr[len(sr)-2:]))
+						}
+					}
+				}
+			} else {
+				out = append(out, part)
+			}
+		}
 	}
 	return out
 }

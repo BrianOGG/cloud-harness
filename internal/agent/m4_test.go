@@ -902,3 +902,153 @@ func TestDelegateAllowedToolsUnknownNames(t *testing.T) {
 		}
 	})
 }
+
+func TestJudgeChildOutcomeCrossLanguageFacts(t *testing.T) {
+	cases := []struct {
+		name     string
+		criteria string
+		summary  string
+	}{
+		{
+			name:     "run_d_english_criteria_chinese_summary",
+			criteria: "Summary must state the project codename, budget code BW-3107, and milestone date December 15.",
+			summary:  "项目代号为「白鹭」，预算代码 BW-3107，里程碑日期为 12 月 15 日。",
+		},
+		{
+			name:     "run_d_three_clauses_with_codename_and_iso_date",
+			criteria: "Summary must include project codename 白鹭; budget code BW-3107; and milestone date 2026-12-15.",
+			summary:  "项目代号：白鹭；预算代码：BW-3107；里程碑日期：12月15日。",
+		},
+		{
+			name:     "chinese_criteria_chinese_summary",
+			criteria: "总结必须给出项目代号、预算代码 BW-3107、里程碑日期 12月15日",
+			summary:  "子任务核实完毕：项目代号「白鹭」，预算代码 BW-3107，里程碑日期 12 月 15 日。",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			finished := storage.Run{
+				Status:      domain.RunCompleted,
+				FinalAnswer: tc.summary,
+			}
+			ok, unmet := judgeChildOutcome(finished, nil, tc.criteria, "")
+			if !ok || unmet != "" {
+				t.Fatalf("judgeChildOutcome(%q, %q) = (%v, %q), want (true, \"\")", tc.criteria, tc.summary, ok, unmet)
+			}
+		})
+	}
+}
+
+func TestJudgeChildOutcomeMissingHardTokenFails(t *testing.T) {
+	cases := []struct {
+		name     string
+		criteria string
+		summary  string
+		wantRef  string
+	}{
+		{
+			name:     "missing_budget_code_bw_3107",
+			criteria: "Summary must state the project codename, budget code BW-3107, and milestone date December 15.",
+			summary:  "项目代号为「白鹭」，里程碑日期为 12 月 15 日。",
+			wantRef:  "BW-3107",
+		},
+		{
+			name:     "wrong_budget_code_prefix",
+			criteria: "Summary must include project codename 白鹭; budget code BW-3107; and milestone date December 15.",
+			summary:  "项目代号为「白鹭」，预算代码 3107，里程碑日期为 12月15日。",
+			wantRef:  "BW-3107",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			finished := storage.Run{
+				Status:      domain.RunCompleted,
+				FinalAnswer: tc.summary,
+			}
+			ok, unmet := judgeChildOutcome(finished, nil, tc.criteria, "")
+			if ok {
+				t.Fatalf("expected judgeChildOutcome to fail when %s is missing, got ok=true", tc.wantRef)
+			}
+			if !strings.Contains(unmet, "missing required reference") || !strings.Contains(unmet, tc.wantRef) {
+				t.Fatalf("unmet = %q, want missing required reference mentioning %q", unmet, tc.wantRef)
+			}
+		})
+	}
+}
+
+func TestJudgeChildOutcomeDateFormats(t *testing.T) {
+	formats := []string{
+		"December 15",
+		"Dec 15",
+		"2026-12-15",
+		"12/15",
+		"12-15",
+		"12月15日",
+	}
+	for _, critDate := range formats {
+		for _, sumDate := range formats {
+			name := "match_" + strings.ReplaceAll(critDate, " ", "_") + "_to_" + strings.ReplaceAll(sumDate, " ", "_")
+			t.Run(name, func(t *testing.T) {
+				criteria := "Summary must state milestone date " + critDate
+				summary := "里程碑日期确认：" + sumDate
+				finished := storage.Run{
+					Status:      domain.RunCompleted,
+					FinalAnswer: summary,
+				}
+				ok, unmet := judgeChildOutcome(finished, nil, criteria, "")
+				if !ok || unmet != "" {
+					t.Fatalf("criteria=%q summary=%q -> (%v, %q), want (true, \"\")", criteria, summary, ok, unmet)
+				}
+			})
+		}
+	}
+
+	negatives := []struct {
+		name     string
+		criteria string
+		summary  string
+	}{
+		{
+			name:     "year_mismatch_iso_to_iso",
+			criteria: "Summary must state milestone date 2026-12-15",
+			summary:  "Milestone date is 2025-12-15.",
+		},
+		{
+			name:     "year_mismatch_iso_to_chinese",
+			criteria: "Summary must state milestone date 2026-12-15",
+			summary:  "里程碑日期为 2025年12月15日。",
+		},
+		{
+			name:     "year_mismatch_english_to_iso",
+			criteria: "Summary must state milestone date December 15, 2026",
+			summary:  "里程碑日期：2025-12-15",
+		},
+		{
+			name:     "day_mismatch",
+			criteria: "Summary must state milestone date December 15",
+			summary:  "里程碑日期为 12月16日。",
+		},
+		{
+			name:     "month_mismatch",
+			criteria: "Summary must state milestone date December 15",
+			summary:  "里程碑日期为 11月15日。",
+		},
+		{
+			name:     "unrelated_numbers_do_not_match_date",
+			criteria: "Summary must state milestone date December 15",
+			summary:  "本次共有 12 个模块、15 个测试文件完成检查。",
+		},
+	}
+	for _, tc := range negatives {
+		t.Run(tc.name, func(t *testing.T) {
+			finished := storage.Run{
+				Status:      domain.RunCompleted,
+				FinalAnswer: tc.summary,
+			}
+			ok, unmet := judgeChildOutcome(finished, nil, tc.criteria, "")
+			if ok || unmet == "" {
+				t.Fatalf("criteria=%q summary=%q -> (%v, %q), want failure", tc.criteria, tc.summary, ok, unmet)
+			}
+		})
+	}
+}
