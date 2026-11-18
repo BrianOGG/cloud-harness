@@ -435,7 +435,7 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 				return domain.GateNeedsApproval
 			}
 		}
-		if st != nil && st.sensitive && (inv.Name == "run_command" || inv.Name == "http_fetch") {
+		if st != nil && st.sensitive && isEgressTool(m.Broker, inv.Name) {
 			return domain.GateDeny
 		}
 		if m.Broker == nil {
@@ -443,9 +443,9 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		}
 		res, err := m.Broker.Authorize(ctx, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
-			ApprovalPossible: inv.Name == "write_file" || inv.Name == "edit_file" || inv.Name == "run_command",
+			ApprovalPossible: inv.Name == "write_file" || inv.Name == "edit_file" || inv.Name == "run_command" || strings.HasPrefix(inv.Name, "mcp."),
 			SensitiveSeen:    st != nil && st.sensitive,
-			Egress:           inv.Name == "run_command" || inv.Name == "http_fetch",
+			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),
 		})
 		if err != nil || res.Error != nil && !res.NeedsApproval && !res.OK {
@@ -490,7 +490,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
 			ApprovalPossible: false,
 			SensitiveSeen:    st.sensitive,
-			Egress:           inv.Name == "run_command" || inv.Name == "http_fetch",
+			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),
 		})
 		if err != nil {
@@ -796,4 +796,16 @@ func jsonField(raw json.RawMessage, key string) json.RawMessage {
 		return nil
 	}
 	return m[key]
+}
+
+func isEgressTool(b *tools.Broker, name string) bool {
+	if name == "run_command" || name == "http_fetch" {
+		return true
+	}
+	if strings.HasPrefix(name, "mcp.") && b != nil {
+		if fact, ok := b.Lookup(name); ok && !fact.Readonly {
+			return true
+		}
+	}
+	return false
 }

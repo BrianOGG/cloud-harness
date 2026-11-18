@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -339,6 +340,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	if err != nil {
 		return Spec{}, security.Decision{}, err
 	}
+	egress := req.Egress || spec.EgressScope != "" || (!spec.Readonly && strings.HasPrefix(spec.Name, "mcp."))
 	decision := security.Decide(grants, security.Request{
 		RunID:               req.RunID,
 		SessionID:           req.SessionID,
@@ -351,7 +353,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 		DefaultAllow:        req.DefaultAllow,
 		ApprovalPossible:    req.ApprovalPossible,
 		SensitiveSeen:       req.SensitiveSeen,
-		Egress:              req.Egress,
+		Egress:              egress,
 		Now:                 now,
 	})
 	return spec, decision, nil

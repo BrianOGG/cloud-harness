@@ -168,3 +168,30 @@ func TestServeRefusesNonLoopbackWithoutToken(t *testing.T) {
 		t.Fatal("expected Load to reject short CLOUD_HARNESS_HTTP_TOKEN")
 	}
 }
+
+func TestMCPServersConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.json")
+	body := []byte(`{
+		"servers": [
+			{"name": "fetcher", "command": "python", "args": ["-m", "mcp_fetch"], "readonly": true},
+			{"name": "writer", "command": "node", "args": ["srv.js"], "readonly": false}
+		]
+	}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Name != "fetcher" || !cfg.Servers[0].Readonly {
+		t.Fatalf("unexpected server[0]: %+v", cfg.Servers[0])
+	}
+	if cfg.Servers[1].Name != "writer" || cfg.Servers[1].Readonly {
+		t.Fatalf("unexpected server[1]: %+v", cfg.Servers[1])
+	}
+}

@@ -21,6 +21,14 @@ const (
 	MinHTTPTokenLen        = 16
 )
 
+// MCPServerConfig declares one local stdio MCP server subprocess.
+type MCPServerConfig struct {
+	Name     string   `json:"name"`
+	Command  string   `json:"command"`
+	Args     []string `json:"args"`
+	Readonly bool     `json:"readonly"`
+}
+
 // Config is the process configuration.
 type Config struct {
 	ListenAddr               string `json:"listen"`
@@ -42,6 +50,10 @@ type Config struct {
 	RetentionDays int `json:"retention_days"`
 	// CommandEnvAllow lists extra environment variable names passed to run_command subprocesses.
 	CommandEnvAllow []string `json:"command_env_allow"`
+	// Servers declares local stdio MCP servers.
+	Servers []MCPServerConfig `json:"servers,omitempty"`
+	// MCPServers is an alias for Servers in config files.
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
 }
 
 // Load reads an optional JSON file and applies environment overrides.
@@ -156,6 +168,11 @@ func Load(path string, env func(string) string) (Config, error) {
 	}
 	if cfg.OpenAIReasoningReplay != "message" && cfg.OpenAIReasoningReplay != "omit" {
 		return Config{}, domain.E(domain.CodeInvalidArgument, "openai_reasoning_replay must be message or omit")
+	}
+	if len(cfg.Servers) == 0 && len(cfg.MCPServers) > 0 {
+		cfg.Servers = cfg.MCPServers
+	} else if len(cfg.MCPServers) == 0 && len(cfg.Servers) > 0 {
+		cfg.MCPServers = cfg.Servers
 	}
 	if err := ValidateHTTPToken(cfg.HTTPToken); err != nil {
 		return Config{}, err
