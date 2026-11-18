@@ -759,3 +759,146 @@ func TestLongModelCallDoesNotExpireLease(t *testing.T) {
 		t.Fatalf("expected COMPLETED run after long model call, got %+v", run)
 	}
 }
+
+func TestDelegateAllowedToolsUnknownNames(t *testing.T) {
+	ctx := context.Background()
+	wantContent := "m7-6-workspace-note-content"
+
+	t.Run("mixed_known_and_unknown_tools", func(t *testing.T) {
+		var childOffered map[string]bool
+		prov := &stepProvider{
+			step: func(_ context.Context, call int, req provider.Request) (domain.ModelResponse, error) {
+				switch call {
+				case 1:
+					return toolResp(domain.ToolCall{
+						ProviderCallID: "del_mix",
+						Name:           domain.ToolDelegateTask,
+						Arguments:      json.RawMessage(`{"goal":"read notes.txt","allowed_tools":["read_file","read","019a3f8c","deadbeef"]}`),
+					}), nil
+				case 2:
+					childOffered = map[string]bool{}
+					for _, td := range req.Tools {
+						childOffered[td.Name] = true
+					}
+					return toolResp(domain.ToolCall{
+						ProviderCallID: "child_read",
+						Name:           "read_file",
+						Arguments:      json.RawMessage(`{"path":"notes.txt"}`),
+					}), nil
+				case 3:
+					blob := messageText(req.Messages)
+					if !strings.Contains(blob, wantContent) {
+						t.Fatalf("child did not receive notes.txt content: %s", blob)
+					}
+					return textOnly(wantContent), nil
+				case 4:
+					blob := messageText(req.Messages)
+					if !strings.Contains(blob, "ignored_tools") || !strings.Contains(blob, "019a3f8c") || !strings.Contains(blob, "deadbeef") {
+						t.Fatalf("parent did not receive ignored_tools in delegate_task result: %s", blob)
+					}
+					return textOnly("parent-done:" + wantContent), nil
+				default:
+					t.Fatalf("unexpected model call %d", call)
+					return domain.ModelResponse{}, nil
+				}
+			},
+		}
+		m, db, root := testManager(t, &provider.Mock{})
+		m.Provider = prov
+		if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte(wantContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ses, err := m.CreateSession(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := m.RunMessage(ctx, ses.ID, "delegate with mixed tools")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != domain.RunCompleted || run.FinalAnswer != "parent-done:"+wantContent {
+			t.Fatalf("unexpected parent run: %+v", run)
+		}
+		if !childOffered["read_file"] {
+			t.Fatalf("expected read_file to be offered to child, got %+v", childOffered)
+		}
+		for _, bad := range []string{"read", "019a3f8c", "deadbeef", "grep"} {
+			if childOffered[bad] {
+				t.Fatalf("unexpected tool %q offered to child: %+v", bad, childOffered)
+			}
+		}
+		runs, err := db.ListRuns(ctx, ses.ID)
+		if err != nil || len(runs) != 2 {
+			t.Fatalf("expected 2 runs (parent + child), got %+v (%v)", runs, err)
+		}
+		batches, err := db.LoadBatches(ctx, run.ID)
+		if err != nil || len(batches) != 1 || len(batches[0].Invocations) != 1 {
+			t.Fatalf("parent batches: %+v %v", batches, err)
+		}
+		inv := batches[0].Invocations[0]
+		if inv.Status != domain.InvSucceeded || inv.Result == nil || !inv.Result.OK {
+			t.Fatalf("expected delegate_task to succeed, got %+v", inv)
+		}
+		var got struct {
+			ChildRunID   string   `json:"child_run_id"`
+			Status       string   `json:"status"`
+			Summary      string   `json:"summary"`
+			Success      bool     `json:"success"`
+			IgnoredTools []string `json:"ignored_tools"`
+		}
+		if err := json.Unmarshal(inv.Result.Data, &got); err != nil {
+			t.Fatalf("unmarshal delegate result: %v (%s)", err, inv.Result.Data)
+		}
+		if got.ChildRunID == "" || got.Status != string(domain.RunCompleted) || got.Summary != wantContent || !got.Success {
+			t.Fatalf("unexpected delegate result: %+v", got)
+		}
+		wantIgnored := []string{"read", "019a3f8c", "deadbeef"}
+		if strings.Join(got.IgnoredTools, ",") != strings.Join(wantIgnored, ",") {
+			t.Fatalf("ignored_tools = %v, want %v", got.IgnoredTools, wantIgnored)
+		}
+	})
+
+	t.Run("all_unknown_tools_rejected_without_child", func(t *testing.T) {
+		mock := &provider.Mock{Responses: []domain.ModelResponse{
+			toolResp(domain.ToolCall{
+				ProviderCallID: "del_bad",
+				Name:           domain.ToolDelegateTask,
+				Arguments:      json.RawMessage(`{"goal":"do something with invented tools","allowed_tools":["read","019a3f8c","deadbeef"]}`),
+			}),
+			textOnly("parent-handled-invalid-tools"),
+		}}
+		m, db, _ := testManager(t, mock)
+		ses, err := m.CreateSession(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := m.RunMessage(ctx, ses.ID, "delegate with only unknown tools")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != domain.RunCompleted || run.FinalAnswer != "parent-handled-invalid-tools" {
+			t.Fatalf("unexpected parent run: %+v", run)
+		}
+		runs, err := db.ListRuns(ctx, ses.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != 1 || runs[0].ID != run.ID {
+			t.Fatalf("expected NO child run to be created, got runs=%+v", runs)
+		}
+		if run.Budget.UsedChildRuns != 0 {
+			t.Fatalf("rejected delegate_task must not consume child run budget, used_child_runs=%d", run.Budget.UsedChildRuns)
+		}
+		batches, err := db.LoadBatches(ctx, run.ID)
+		if err != nil || len(batches) != 1 || len(batches[0].Invocations) != 1 {
+			t.Fatalf("parent batches: %+v %v", batches, err)
+		}
+		inv := batches[0].Invocations[0]
+		if inv.Status != domain.InvFailed || inv.Result == nil || inv.Result.OK || inv.Result.Error == nil {
+			t.Fatalf("expected delegate_task invocation to fail, got %+v", inv)
+		}
+		if inv.Result.Error.Code != domain.CodeInvalidArgument {
+			t.Fatalf("delegate_task error code = %q, want %q (err=%+v)", inv.Result.Error.Code, domain.CodeInvalidArgument, inv.Result.Error)
+		}
+	})
+}

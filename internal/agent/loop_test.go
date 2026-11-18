@@ -509,3 +509,82 @@ func TestProviderSchemasContainOnlyStandardKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdatePlanRejectsEmptyAndOversize(t *testing.T) {
+	ctx := context.Background()
+	oversizePlan := strings.Repeat("p", 32*1024+1)
+	validPlan := "1. Inspect loop.go\n2. Validate update_plan input\n3. Run tests"
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "up_empty",
+			Name:           domain.ToolUpdatePlan,
+			Arguments:      json.RawMessage(`{"plan":""}`),
+		}),
+		toolResp(domain.ToolCall{
+			ProviderCallID: "up_space",
+			Name:           domain.ToolUpdatePlan,
+			Arguments:      json.RawMessage(`{"plan":"   \t\n  "}`),
+		}),
+		toolResp(domain.ToolCall{
+			ProviderCallID: "up_oversize",
+			Name:           domain.ToolUpdatePlan,
+			Arguments:      json.RawMessage(`{"plan":"` + oversizePlan + `"}`),
+		}),
+		toolResp(domain.ToolCall{
+			ProviderCallID: "up_ok",
+			Name:           domain.ToolUpdatePlan,
+			Arguments:      json.RawMessage(`{"plan":` + string(must(t, validPlan)) + `}`),
+		}),
+		textOnly("plan updated"),
+	}}
+	m, db, _ := testManager(t, mock)
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "validate update_plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.FinalAnswer != "plan updated" {
+		t.Fatalf("unexpected run state: %+v", run)
+	}
+	batches, err := db.LoadBatches(ctx, run.ID)
+	if err != nil || len(batches) != 4 {
+		t.Fatalf("expected 4 batches, got %+v (err=%v)", batches, err)
+	}
+	for i, wantCallID := range []string{"up_empty", "up_space", "up_oversize"} {
+		if len(batches[i].Invocations) != 1 {
+			t.Fatalf("batch %d invocations: %+v", i, batches[i].Invocations)
+		}
+		inv := batches[i].Invocations[0]
+		if inv.ProviderCallID != wantCallID {
+			t.Fatalf("batch %d call_id=%q, want %q", i, inv.ProviderCallID, wantCallID)
+		}
+		if inv.Status != domain.InvFailed || inv.Result == nil || inv.Result.OK || inv.Result.Error == nil {
+			t.Fatalf("batch %d (%s) expected failed invocation, got %+v", i, wantCallID, inv)
+		}
+		if inv.Result.Error.Code != domain.CodeInvalidArgument {
+			t.Fatalf("batch %d (%s) error code=%q, want %q (err=%+v)", i, wantCallID, inv.Result.Error.Code, domain.CodeInvalidArgument, inv.Result.Error)
+		}
+	}
+
+	okInv := batches[3].Invocations[0]
+	if okInv.ProviderCallID != "up_ok" || okInv.Status != domain.InvSucceeded || okInv.Result == nil || !okInv.Result.OK {
+		t.Fatalf("expected valid update_plan to succeed, got %+v", okInv)
+	}
+	var ack struct {
+		Accepted bool    `json:"accepted"`
+		Bytes    int     `json:"bytes"`
+		Plan     *string `json:"plan"`
+	}
+	if err := json.Unmarshal(okInv.Result.Data, &ack); err != nil {
+		t.Fatalf("unmarshal update_plan ack: %v (%s)", err, okInv.Result.Data)
+	}
+	if !ack.Accepted || ack.Bytes != len(validPlan) {
+		t.Fatalf("unexpected update_plan ack: %+v (want accepted=true, bytes=%d)", ack, len(validPlan))
+	}
+	if ack.Plan != nil {
+		t.Fatalf("update_plan ack echoed raw plan instead of structured ack: %s", okInv.Result.Data)
+	}
+}

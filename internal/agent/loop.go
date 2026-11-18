@@ -20,6 +20,27 @@ type sessionKeyType struct{}
 
 var sessionKey sessionKeyType
 
+const maxPlanBytes = 32 * 1024
+
+func executeUpdatePlan(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var body struct {
+		Plan string `json:"plan"`
+	}
+	if err := json.Unmarshal(args, &body); err != nil {
+		return nil, domain.E(domain.CodeInvalidArgument, "update_plan requires a string plan")
+	}
+	if strings.TrimSpace(body.Plan) == "" {
+		return nil, domain.E(domain.CodeInvalidArgument, "plan must not be empty")
+	}
+	if len(body.Plan) > maxPlanBytes {
+		return nil, domain.E(domain.CodeInvalidArgument, "plan exceeds 32KiB limit")
+	}
+	return json.Marshal(map[string]any{
+		"accepted": true,
+		"bytes":    len(body.Plan),
+	})
+}
+
 func (m *Manager) ensureTools() {
 	if m.Broker == nil {
 		return
@@ -31,12 +52,10 @@ func (m *Manager) ensureTools() {
 	}
 	if !m.Broker.Has("update_plan") {
 		m.Broker.Register(tools.Spec{
-			Name: "update_plan", Description: "Replace the current run plan.",
+			Name: "update_plan", Description: "Replace the current run plan (non-empty string, max 32 KiB).",
 			Required: []string{"plan"}, Readonly: true, Idempotent: true, SideEffectClass: "none",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}`),
-			Execute: func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
-				return args, nil
-			},
+			Execute:    executeUpdatePlan,
 		})
 	}
 	if !m.Broker.Has("retrieve_resource") {
@@ -432,6 +451,9 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		if err != nil || res.Error != nil && !res.NeedsApproval && !res.OK {
 			if res.NeedsApproval {
 				return domain.GateNeedsApproval
+			}
+			if res.Error != nil && res.Error.Code == domain.CodeInvalidArgument {
+				return domain.GateAllow
 			}
 			return domain.GateDeny
 		}

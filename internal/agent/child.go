@@ -95,10 +95,46 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 				add(name, m.Workspace)
 			}
 		default:
-			add(name, "")
+			if m.Broker == nil || m.Broker.Has(name) {
+				add(name, "")
+			}
 		}
 	}
 	return grants
+}
+
+func (m *Manager) partitionAllowedTools(names []string) (known, unknown []string) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	m.ensureTools()
+	seenKnown := map[string]bool{}
+	seenUnknown := map[string]bool{}
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if m.isKnownChildTool(name) {
+			if !seenKnown[name] {
+				seenKnown[name] = true
+				known = append(known, name)
+			}
+			continue
+		}
+		if !seenUnknown[raw] {
+			seenUnknown[raw] = true
+			unknown = append(unknown, raw)
+		}
+	}
+	return known, unknown
+}
+
+func (m *Manager) isKnownChildTool(name string) bool {
+	if name == "" || name == domain.ToolAskUser || name == domain.ToolDelegateTask {
+		return false
+	}
+	if m.Broker == nil {
+		return false
+	}
+	return m.Broker.Has(name)
 }
 
 func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -116,6 +152,10 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	}
 	if err := json.Unmarshal(args, &body); err != nil || body.Goal == "" {
 		return nil, domain.E(domain.CodeInvalidArgument, "delegate_task requires a goal")
+	}
+	knownTools, ignoredTools := m.partitionAllowedTools(body.AllowedTools)
+	if len(body.AllowedTools) > 0 && len(knownTools) == 0 {
+		return nil, domain.E(domain.CodeInvalidArgument, "allowed_tools contains no known tools: "+strings.Join(ignoredTools, ", "))
 	}
 	parentID, _ := ctx.Value(runKey).(string)
 	if parentID == "" {
@@ -166,7 +206,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		Broker:       m.Broker,
 		Workspace:    m.Workspace,
 		Depth:        m.Depth + 1,
-		AllowedTools: body.AllowedTools,
+		AllowedTools: knownTools,
 		SkipPlanner:  true,
 	}
 	message := childUserMessage(body.Goal, body.RelevantContext, body.SuccessCriteria, body.OutputContract)
@@ -201,7 +241,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 			"unmet":        waitErr.Message,
 			"error":        waitErr.Error(),
 		})
-		return json.Marshal(map[string]any{
+		waitOut := map[string]any{
 			"child_run_id": childRun.ID,
 			"status":       finished.Status,
 			"wait_reason":  waitReason,
@@ -209,7 +249,11 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 			"success":      false,
 			"unmet":        waitErr.Message,
 			"error":        waitErr.Error(),
-		})
+		}
+		if len(ignoredTools) > 0 {
+			waitOut["ignored_tools"] = ignoredTools
+		}
+		return json.Marshal(waitOut)
 	}
 	success, unmet := judgeChildOutcome(finished, runErr, body.SuccessCriteria, body.OutputContract)
 	_ = m.event(ctx, parent.ID, "child.finished", map[string]any{
@@ -224,6 +268,9 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		"summary":      finished.FinalAnswer,
 		"success":      success,
 		"unmet":        unmet,
+	}
+	if len(ignoredTools) > 0 {
+		out["ignored_tools"] = ignoredTools
 	}
 	if runErr != nil {
 		out["error"] = asDomain(runErr).Error()
