@@ -22,6 +22,7 @@ type Message struct {
 	Content    string            `json:"content"`
 	ToolCalls  []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
+	Ref        string            `json:"ref,omitempty"`
 }
 
 // Request is one completion. Continuation is the previous response items in order,
@@ -34,6 +35,8 @@ type Request struct {
 	Tools                []ToolDefinition
 	ContinuationProvider string
 	Continuation         []domain.ResponseItem
+	// OnDelta, when non-nil, receives text deltas incrementally as they arrive.
+	OnDelta func(string) `json:"-"`
 }
 
 // Provider completes one model call and returns domain items only.

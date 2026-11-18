@@ -330,6 +330,44 @@ func TestPruneHistoryKeepsNewerRows(t *testing.T) {
 	}
 }
 
+func TestLoadBatchesDeterministicOrder(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	if err := db.CreateSession(ctx, storage.Session{ID: "ses", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRun(ctx, storage.Run{
+		ID: "run_ord", SessionID: "ses", Status: domain.RunRunning, Budget: domain.DefaultBudget(),
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"bat_zzz", "bat_aaa", "bat_mmm", "bat_bbb"}
+	for i, id := range ids {
+		inv := domain.Invocation{
+			ID: "inv_" + id, Ordinal: 0, ProviderCallID: id, Name: "read_file",
+			Arguments: json.RawMessage(`{"path":"a"}`), Class: domain.ActionExecute, Status: domain.InvSucceeded,
+			Result: &domain.CallResult{OK: true, Data: json.RawMessage(`{}`)},
+		}
+		if err := db.SaveBatch(ctx, storage.StoredBatch{
+			ID: id, RunID: "run_ord", Status: domain.BatchComplete, Action: domain.ActionExecute,
+			NextOrdinal: i, Invocations: []domain.Invocation{inv},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := db.LoadBatches(ctx, "run_ord")
+	if err != nil || len(loaded) != len(ids) {
+		t.Fatalf("LoadBatches %+v %v", loaded, err)
+	}
+	for i, want := range ids {
+		if loaded[i].ID != want {
+			t.Fatalf("batch[%d]=%s, want %s", i, loaded[i].ID, want)
+		}
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

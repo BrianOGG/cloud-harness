@@ -228,3 +228,266 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+func TestPlannerReceivesHistoryCatalog(t *testing.T) {
+	ctx := context.Background()
+	seedMock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "f1",
+			Name:           domain.ToolFinishTurn,
+			Arguments:      json.RawMessage(`{"final_answer":"seeded","turn_summary":"earlier turn configured redis cache"}`),
+		}),
+	}}
+	m, db, _ := testManager(t, seedMock)
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRun, err := m.RunMessage(ctx, ses.ID, "configure cache")
+	if err != nil || seedRun.Status != domain.RunCompleted {
+		t.Fatalf("seed run: %+v %v", seedRun, err)
+	}
+
+	knownDocID := "inv_known_catalog_doc_42"
+	knownText := "production redis endpoint is redis.internal:6379 with auth enabled"
+	meta, _ := json.Marshal(map[string]string{"kind": "tool"})
+	if err := db.IndexHistory(ctx, storage.HistoryDoc{
+		SourceID:  knownDocID,
+		SessionID: ses.ID,
+		RawText:   knownText,
+		Metadata:  meta,
+		CreatedAt: m.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var plannerReq provider.Request
+	var mainReq provider.Request
+	callCount := 0
+	m.ForcePlanner = true
+	m.Provider = providerFunc(func(_ context.Context, req provider.Request) (domain.ModelResponse, error) {
+		callCount++
+		if callCount == 1 {
+			plannerReq = req
+			return textOnly(`{"resources":[{"id":"` + knownDocID + `","precision":"verbatim"}]}`), nil
+		}
+		mainReq = req
+		return textOnly("redis.internal:6379"), nil
+	})
+
+	run, err := m.RunMessage(ctx, ses.ID, "What was the redis endpoint from earlier?")
+	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "redis.internal:6379" {
+		t.Fatalf("planned run: %+v %v", run, err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 model calls (planner + main), got %d", callCount)
+	}
+	plannerInput := messageText(plannerReq.Messages)
+	if !strings.Contains(plannerInput, knownDocID) {
+		t.Fatalf("planner request input missing known doc ID %q:\n%s", knownDocID, plannerInput)
+	}
+	if !strings.Contains(plannerInput, "What was the redis endpoint from earlier?") {
+		t.Fatalf("planner request input missing user text:\n%s", plannerInput)
+	}
+	if !strings.Contains(plannerInput, "earlier turn configured redis cache") {
+		t.Fatalf("planner request input missing turn summary catalog entry:\n%s", plannerInput)
+	}
+
+	mainInput := messageText(mainReq.Messages)
+	if !strings.Contains(mainInput, knownText) {
+		t.Fatalf("main request missing retrieved doc content:\n%s", mainInput)
+	}
+	if !strings.Contains(mainInput, "earlier turn configured redis cache") {
+		t.Fatalf("main request missing recent turn summary from Assemble:\n%s", mainInput)
+	}
+}
+
+func TestCompactedRefResolvesViaRetrieve(t *testing.T) {
+	ctx := context.Background()
+	longContent := "line-1: alpha-secret-token-99\nline-2:\t\"quoted-value\"\\backslash\r\n" + strings.Repeat("verbose log entry line\n", 30)
+	var capturedRef string
+	step := 0
+
+	m, db, root := testManager(t, &provider.Mock{})
+	m.ContextTokenLimit = 80
+	m.SkipPlanner = true
+	if err := os.WriteFile(filepath.Join(root, "big.log"), []byte(longContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m.Provider = providerFunc(func(_ context.Context, req provider.Request) (domain.ModelResponse, error) {
+		step++
+		switch step {
+		case 1:
+			return toolResp(domain.ToolCall{
+				ProviderCallID: "provider_call_1",
+				Name:           "read_file",
+				Arguments:      json.RawMessage(`{"path":"big.log"}`),
+			}), nil
+		case 2:
+			return toolResp(domain.ToolCall{
+				ProviderCallID: "provider_call_2",
+				Name:           "read_file",
+				Arguments:      json.RawMessage(`{"path":"small.txt"}`),
+			}), nil
+		case 3:
+			// Find the compacted tool message for provider_call_1 and extract its ref.
+			for _, msg := range req.Messages {
+				if msg.Role != "tool" || msg.ToolCallID != "provider_call_1" {
+					continue
+				}
+				var placeholder struct {
+					Compacted  bool   `json:"compacted"`
+					ToolCallID string `json:"tool_call_id"`
+					Excerpt    string `json:"excerpt"`
+					Ref        string `json:"ref"`
+				}
+				if err := json.Unmarshal([]byte(msg.Content), &placeholder); err != nil {
+					t.Fatalf("compacted placeholder is invalid JSON: %v (%s)", err, msg.Content)
+				}
+				if !placeholder.Compacted {
+					t.Fatalf("expected provider_call_1 to be compacted, got: %s", msg.Content)
+				}
+				capturedRef = placeholder.Ref
+			}
+			if capturedRef == "" {
+				t.Fatalf("did not find compacted ref in request messages: %+v", req.Messages)
+			}
+			if capturedRef == "provider_call_1" {
+				t.Fatalf("compacted ref %q used provider_call_id instead of history_docs invocation ID", capturedRef)
+			}
+			return toolResp(domain.ToolCall{
+				ProviderCallID: "provider_call_3",
+				Name:           "retrieve_resource",
+				Arguments:      json.RawMessage(`{"id":"` + capturedRef + `","precision":"verbatim"}`),
+			}), nil
+		default:
+			for _, msg := range req.Messages {
+				if msg.Role == "tool" && msg.ToolCallID == "provider_call_3" {
+					if !strings.Contains(msg.Content, "alpha-secret-token-99") {
+						t.Fatalf("retrieve_resource output missing original tool content: %s", msg.Content)
+					}
+					return textOnly("retrieved:" + capturedRef), nil
+				}
+			}
+			t.Fatalf("missing retrieve_resource result in step 4: %+v", req.Messages)
+			return domain.ModelResponse{}, nil
+		}
+	})
+
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "read and retrieve compacted ref")
+	if err != nil || run.Status != domain.RunCompleted {
+		t.Fatalf("run failed: %+v %v", run, err)
+	}
+	if !strings.HasPrefix(capturedRef, "inv_") || run.FinalAnswer != "retrieved:"+capturedRef {
+		t.Fatalf("unexpected capturedRef=%q finalAnswer=%q", capturedRef, run.FinalAnswer)
+	}
+	doc, err := db.GetHistory(ctx, capturedRef)
+	if err != nil || !strings.Contains(doc.RawText, "alpha-secret-token-99") {
+		t.Fatalf("GetHistory(%q): %+v %v", capturedRef, doc, err)
+	}
+}
+
+func TestEstimateCountsToolCallArgs(t *testing.T) {
+	small := []contextpkg.Message{{
+		Role:      "assistant",
+		ToolCalls: []contextpkg.ToolRef{{ID: "c1", Name: "write_file"}},
+	}}
+	large := []contextpkg.Message{{
+		Role: "assistant",
+		ToolCalls: []contextpkg.ToolRef{{
+			ID:        "c1",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"a.txt","content":"` + strings.Repeat("x", 400) + `"}`),
+		}},
+	}}
+	if contextpkg.Estimate(large) <= contextpkg.Estimate(small)+80 {
+		t.Fatalf("Estimate did not include ToolCalls argument bytes: small=%d large=%d", contextpkg.Estimate(small), contextpkg.Estimate(large))
+	}
+}
+
+func TestMemoryDeltaIDsUniqueAcrossTurns(t *testing.T) {
+	ctx := context.Background()
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "f1",
+			Name:           domain.ToolFinishTurn,
+			Arguments:      json.RawMessage(`{"final_answer":"turn1","turn_summary":"s1","memory_delta":[{"op":"ADD","section":"facts","text":"fact one"}]}`),
+		}),
+		toolResp(domain.ToolCall{
+			ProviderCallID: "f2",
+			Name:           domain.ToolFinishTurn,
+			Arguments:      json.RawMessage(`{"final_answer":"turn2","turn_summary":"s2","memory_delta":[{"op":"ADD","section":"facts","text":"fact two"}]}`),
+		}),
+	}}
+	m, db, _ := testManager(t, mock)
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.RunMessage(ctx, ses.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.RunMessage(ctx, ses.ID, "second"); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _, err := db.LatestMemory(ctx, ses.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := contextpkg.ParseMemory(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem.Facts) != 2 {
+		t.Fatalf("expected 2 facts, got %+v", mem.Facts)
+	}
+	id1, id2 := mem.Facts[0].ID, mem.Facts[1].ID
+	if id1 == "" || id2 == "" || id1 == id2 {
+		t.Fatalf("expected distinct IDs across turns, got %q and %q", id1, id2)
+	}
+
+	m.Provider = &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "f3",
+			Name:           domain.ToolFinishTurn,
+			Arguments:      json.RawMessage(`{"final_answer":"turn3","turn_summary":"s3","memory_delta":[{"op":"UPDATE","section":"facts","id":"` + id1 + `","text":"fact one updated"}]}`),
+		}),
+	}}
+	if _, err := m.RunMessage(ctx, ses.ID, "third"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err = db.LatestMemory(ctx, ses.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err = contextpkg.ParseMemory(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem.Facts) != 2 {
+		t.Fatalf("expected 2 facts after update, got %+v", mem.Facts)
+	}
+	if mem.Facts[0].ID != id1 || mem.Facts[0].Text != "fact one updated" {
+		t.Fatalf("first fact was not updated: %+v", mem.Facts[0])
+	}
+	if mem.Facts[1].ID != id2 || mem.Facts[1].Text != "fact two" {
+		t.Fatalf("second fact was touched by update to first fact: %+v", mem.Facts[1])
+	}
+}
+
+type providerFunc func(context.Context, provider.Request) (domain.ModelResponse, error)
+
+func (f providerFunc) Name() string { return "func" }
+
+func (f providerFunc) Complete(ctx context.Context, req provider.Request) (domain.ModelResponse, error) {
+	return f(ctx, req)
+}

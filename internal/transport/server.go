@@ -25,6 +25,14 @@ type Server struct {
 
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
+	if s.Manager != nil {
+		if s.Now != nil && s.Manager.Now == nil {
+			s.Manager.Now = s.Now
+		}
+		if s.Manager.Store != nil {
+			_, _ = s.Manager.RecoverExpired(context.Background())
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -33,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/runs/{id}/events", s.events)
 	mux.HandleFunc("GET /v1/runs/{id}/trace", s.traceRun)
 	mux.HandleFunc("POST /v1/runs/{id}/responses", s.respond)
+	mux.HandleFunc("POST /v1/runs/{id}/answer", s.answer)
 	mux.HandleFunc("POST /v1/runs/{id}/budget", s.budget)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 	return mux
@@ -72,7 +81,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, runView(run))
+	writeJSON(w, http.StatusCreated, s.runView(r.Context(), run))
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +90,7 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runView(run))
+	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +189,38 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runView(run))
+	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
+}
+
+func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Answer string `json:"answer"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	run, err := s.Manager.Store.GetRun(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
+		writeErr(w, domain.E(domain.CodeNotWaiting, "run is not waiting for user input").WithRef(id))
+		return
+	}
+	ans := stringsTrim(body.Answer)
+	if ans == "" {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "answer is required").WithRef(id))
+		return
+	}
+	resumed, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{Answer: ans})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.runView(r.Context(), resumed))
 }
 
 func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +236,7 @@ func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runView(run))
+	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
@@ -205,25 +245,36 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runView(run))
+	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
 }
 
 type view struct {
-	ID          string            `json:"id"`
-	SessionID   string            `json:"session_id"`
-	Status      domain.RunStatus  `json:"status"`
-	WaitReason  domain.WaitReason `json:"wait_reason,omitempty"`
-	Budget      domain.Budget     `json:"budget"`
-	FinalAnswer string            `json:"final_answer,omitempty"`
-	Error       *domain.Error     `json:"error,omitempty"`
-	Version     int64             `json:"version"`
+	ID                string                   `json:"id"`
+	SessionID         string                   `json:"session_id"`
+	Status            domain.RunStatus         `json:"status"`
+	WaitReason        domain.WaitReason        `json:"wait_reason,omitempty"`
+	WaitKind          domain.WaitReason        `json:"wait_kind,omitempty"`
+	Question          string                   `json:"question,omitempty"`
+	PendingInvocation *agent.PendingInvocation `json:"pending_invocation,omitempty"`
+	Budget            domain.Budget            `json:"budget"`
+	FinalAnswer       string                   `json:"final_answer,omitempty"`
+	Error             *domain.Error            `json:"error,omitempty"`
+	Version           int64                    `json:"version"`
 }
 
-func runView(run storage.Run) view {
-	return view{
+func (s *Server) runView(ctx context.Context, run storage.Run) view {
+	v := view{
 		ID: run.ID, SessionID: run.SessionID, Status: run.Status, WaitReason: run.WaitReason,
-		Budget: run.Budget, FinalAnswer: run.FinalAnswer, Error: run.Error, Version: run.Version,
+		WaitKind: run.WaitReason, Budget: run.Budget, FinalAnswer: run.FinalAnswer,
+		Error: run.Error, Version: run.Version,
 	}
+	if run.Status == domain.RunWaiting && s.Manager != nil {
+		if info, err := s.Manager.WaitInfo(ctx, run); err == nil {
+			v.Question = info.Question
+			v.PendingInvocation = info.PendingInvocation
+		}
+	}
+	return v
 }
 
 func decode(r *http.Request, dest any) error {

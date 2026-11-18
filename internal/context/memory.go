@@ -19,12 +19,14 @@ type Decision struct {
 
 // Memory is the versioned session state shown to later turns.
 type Memory struct {
-	Goal       string     `json:"goal,omitempty"`
-	Facts      []Fact     `json:"facts,omitempty"`
-	Decisions  []Decision `json:"decisions,omitempty"`
-	Progress   string     `json:"progress,omitempty"`
-	Pending    []string   `json:"pending,omitempty"`
-	References []string   `json:"references,omitempty"`
+	Goal         string     `json:"goal,omitempty"`
+	Facts        []Fact     `json:"facts,omitempty"`
+	Decisions    []Decision `json:"decisions,omitempty"`
+	Progress     string     `json:"progress,omitempty"`
+	Pending      []string   `json:"pending,omitempty"`
+	References   []string   `json:"references,omitempty"`
+	seqFacts     int
+	seqDecisions int
 }
 
 // Delta is one memory edit from finish_turn or a post-hoc summary.
@@ -65,7 +67,7 @@ func ParseDeltas(raw []byte) ([]Delta, error) {
 
 // ApplyDelta merges edits into memory. NOOP changes nothing.
 func ApplyDelta(m Memory, deltas []Delta) (Memory, error) {
-	for i, d := range deltas {
+	for _, d := range deltas {
 		op := d.Op
 		if op == "NOOP" || op == "noop" {
 			continue
@@ -78,7 +80,7 @@ func ApplyDelta(m Memory, deltas []Delta) (Memory, error) {
 		}
 		switch op {
 		case "ADD", "add":
-			if err := add(&m, d, i); err != nil {
+			if err := add(&m, d); err != nil {
 				return m, err
 			}
 		case "UPDATE", "update":
@@ -94,10 +96,14 @@ func ApplyDelta(m Memory, deltas []Delta) (Memory, error) {
 	return m, nil
 }
 
-func add(m *Memory, d Delta, i int) error {
+func add(m *Memory, d Delta) error {
+	section := d.Section
+	if section == "" {
+		section = "facts"
+	}
 	id := d.ID
-	if id == "" {
-		id = d.Section + "-" + itoa(i+1)
+	if id == "" && (section == "facts" || section == "decisions") {
+		id = nextDeltaID(m, section)
 	}
 	switch d.Section {
 	case "facts", "":
@@ -125,34 +131,92 @@ func add(m *Memory, d Delta, i int) error {
 	return nil
 }
 
+func nextDeltaID(m *Memory, section string) string {
+	if section == "" {
+		section = "facts"
+	}
+	prefix := section + "-"
+	maxN := m.seqFacts
+	if section == "decisions" {
+		maxN = m.seqDecisions
+	}
+	used := make(map[string]bool, len(m.Facts)+len(m.Decisions))
+	for _, f := range m.Facts {
+		used[f.ID] = true
+		if section == "facts" {
+			if n := parseTrailingSeq(f.ID, prefix); n > maxN {
+				maxN = n
+			}
+		}
+	}
+	for _, dec := range m.Decisions {
+		used[dec.ID] = true
+		if section == "decisions" {
+			if n := parseTrailingSeq(dec.ID, prefix); n > maxN {
+				maxN = n
+			}
+		}
+	}
+	next := maxN + 1
+	for used[prefix+itoa(next)] {
+		next++
+	}
+	if section == "decisions" {
+		m.seqDecisions = next
+	} else {
+		m.seqFacts = next
+	}
+	return prefix + itoa(next)
+}
+
+func parseTrailingSeq(id, prefix string) int {
+	if len(id) <= len(prefix) || id[:len(prefix)] != prefix {
+		return 0
+	}
+	suf := id[len(prefix):]
+	n := 0
+	for i := 0; i < len(suf); i++ {
+		c := suf[i]
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
 func update(m *Memory, d Delta) error {
 	switch d.Section {
 	case "facts", "":
-		for i := range m.Facts {
-			if m.Facts[i].ID == d.ID {
-				if d.Text != "" {
-					m.Facts[i].Text = d.Text
+		if d.ID != "" {
+			for i := range m.Facts {
+				if m.Facts[i].ID == d.ID {
+					if d.Text != "" {
+						m.Facts[i].Text = d.Text
+					}
+					if d.Source != "" {
+						m.Facts[i].Source = d.Source
+					}
+					return nil
 				}
-				if d.Source != "" {
-					m.Facts[i].Source = d.Source
-				}
-				return nil
 			}
 		}
-		return add(m, d, len(m.Facts))
+		return add(m, d)
 	case "decisions":
-		for i := range m.Decisions {
-			if m.Decisions[i].ID == d.ID {
-				if d.Text != "" {
-					m.Decisions[i].Text = d.Text
+		if d.ID != "" {
+			for i := range m.Decisions {
+				if m.Decisions[i].ID == d.ID {
+					if d.Text != "" {
+						m.Decisions[i].Text = d.Text
+					}
+					if d.Reason != "" {
+						m.Decisions[i].Reason = d.Reason
+					}
+					return nil
 				}
-				if d.Reason != "" {
-					m.Decisions[i].Reason = d.Reason
-				}
-				return nil
 			}
 		}
-		return add(m, d, len(m.Decisions))
+		return add(m, d)
 	case "goal":
 		m.Goal = d.Text
 	case "progress":

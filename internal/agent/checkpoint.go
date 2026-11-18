@@ -15,16 +15,27 @@ type snapshot struct {
 	Continuation  []domain.ResponseItem `json:"continuation,omitempty"`
 	ContProvider  string                `json:"cont_provider,omitempty"`
 	Observations  []runtime.Observation `json:"observations,omitempty"`
+	ToolRefs      map[string]string     `json:"tool_refs,omitempty"`
 	SensitiveRead bool                  `json:"sensitive_read,omitempty"`
 	Reminded      bool                  `json:"reminded,omitempty"`
+	PrefixN       int                   `json:"prefix_n,omitempty"`
+	UserAt        int                   `json:"user_at,omitempty"`
 }
 
 func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState) error {
 	snap := snapshot{Messages: messages, Continuation: continuation, ContProvider: contProvider}
 	if st != nil {
 		snap.Observations = st.obs
+		if len(st.toolRefs) > 0 {
+			snap.ToolRefs = make(map[string]string, len(st.toolRefs))
+			for k, v := range st.toolRefs {
+				snap.ToolRefs[k] = v
+			}
+		}
 		snap.SensitiveRead = st.sensitive
 		snap.Reminded = st.reminded
+		snap.PrefixN = st.prefixN
+		snap.UserAt = st.userAt
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {

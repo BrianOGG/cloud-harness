@@ -12,7 +12,10 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 )
 
-const defaultContextTokens = 12000
+const (
+	defaultContextTokens = 12000
+	plannerCatalogLimit  = 20
+)
 
 func (m *Manager) tokenLimit() int {
 	if m.ContextTokenLimit > 0 {
@@ -156,10 +159,23 @@ func (m *Manager) injectPlan(ctx context.Context, run storage.Run, messages []pr
 	if err := m.Store.Charge(ctx, run.ID, domain.ChargeModel, 1); err != nil {
 		return messages
 	}
+	var catalog []contextpkg.CatalogEntry
+	if m.Store != nil {
+		if entries, err := m.Store.ListHistoryCatalog(ctx, run.SessionID, plannerCatalogLimit); err == nil {
+			for _, e := range entries {
+				catalog = append(catalog, contextpkg.CatalogEntry{
+					SourceID:  e.SourceID,
+					Kind:      e.Kind,
+					CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339),
+					Summary:   e.Summary,
+				})
+			}
+		}
+	}
 	started := time.Now()
 	resp, err := m.Provider.Complete(ctx, provider.Request{Messages: []provider.Message{
 		{Role: "system", Content: "You are the context planner. Return JSON {\"resources\":[{\"id\":\"...\",\"precision\":\"summary|excerpt|verbatim\"}]} and nothing else."},
-		{Role: "user", Content: userText},
+		{Role: "user", Content: contextpkg.FormatPlannerPrompt(userText, catalog)},
 	}})
 	if err != nil {
 		_ = m.event(ctx, run.ID, "planner.failed", map[string]string{"error": err.Error()})
@@ -182,11 +198,11 @@ func (m *Manager) injectPlan(ctx context.Context, run storage.Run, messages []pr
 	}
 	ids := make([]string, 0, len(resources))
 	for _, r := range resources {
-		doc, err := m.Store.GetHistory(ctx, r.ID)
-		if err != nil || doc.SessionID != run.SessionID {
+		rawText, ok := m.resolvePlanResource(ctx, run.SessionID, r.ID)
+		if !ok {
 			continue
 		}
-		body := contextpkg.Present(doc.RawText, r.Precision)
+		body := contextpkg.Present(rawText, r.Precision)
 		messages = append(messages, provider.Message{
 			Role:    "user",
 			Content: "Retrieved " + r.ID + " (" + r.Precision + ", untrusted data):\n" + body,
@@ -197,20 +213,37 @@ func (m *Manager) injectPlan(ctx context.Context, run storage.Run, messages []pr
 	return messages
 }
 
-func maybeCompact(messages []provider.Message, prefixN, userAt, limit int) []provider.Message {
+func (m *Manager) resolvePlanResource(ctx context.Context, sessionID, id string) (string, bool) {
+	if m.Store == nil || id == "" {
+		return "", false
+	}
+	if doc, err := m.Store.GetHistory(ctx, id); err == nil && doc.SessionID == sessionID {
+		return doc.RawText, true
+	}
+	if summaries, err := m.Store.RecentTurnSummaries(ctx, sessionID, plannerCatalogLimit); err == nil {
+		for _, ts := range summaries {
+			if ts.TurnID == id || "sum_"+ts.TurnID == id {
+				return ts.Summary, true
+			}
+		}
+	}
+	return "", false
+}
+
+func maybeCompact(messages []provider.Message, prefixN, userAt, limit int, refs map[string]string) []provider.Message {
 	view := toContext(messages)
 	if contextpkg.Estimate(view) <= limit {
 		return messages
 	}
 	return fromContext(contextpkg.Compact(view, contextpkg.CompactOptions{
-		PrefixCount: prefixN, KeepIndex: userAt, TokenLimit: limit,
+		PrefixCount: prefixN, KeepIndex: userAt, TokenLimit: limit, Refs: refs,
 	}))
 }
 
 func toContext(in []provider.Message) []contextpkg.Message {
 	out := make([]contextpkg.Message, len(in))
 	for i, m := range in {
-		out[i] = contextpkg.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		out[i] = contextpkg.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID, Ref: m.Ref}
 		for _, c := range m.ToolCalls {
 			out[i].ToolCalls = append(out[i].ToolCalls, contextpkg.ToolRef{
 				ID: c.ProviderCallID, Name: c.Name, Arguments: append(json.RawMessage(nil), c.Arguments...),
@@ -223,7 +256,7 @@ func toContext(in []provider.Message) []contextpkg.Message {
 func fromContext(in []contextpkg.Message) []provider.Message {
 	out := make([]provider.Message, len(in))
 	for i, m := range in {
-		out[i] = provider.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		out[i] = provider.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID, Ref: m.Ref}
 		for _, c := range m.ToolCalls {
 			out[i].ToolCalls = append(out[i].ToolCalls, domain.ToolCall{
 				ProviderCallID: c.ID, Name: c.Name, Arguments: append(json.RawMessage(nil), c.Arguments...),

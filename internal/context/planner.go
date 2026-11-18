@@ -21,6 +21,31 @@ type Resource struct {
 	Precision string `json:"precision"`
 }
 
+// CatalogEntry is a lightweight summary of one session history document or turn summary.
+type CatalogEntry struct {
+	SourceID  string `json:"source_id"`
+	Kind      string `json:"kind"`
+	CreatedAt string `json:"created_at"`
+	Summary   string `json:"summary"`
+}
+
+// FormatPlannerPrompt builds the planner user message with the session's history catalog.
+func FormatPlannerPrompt(userText string, catalog []CatalogEntry) string {
+	if len(catalog) == 0 {
+		return userText
+	}
+	clipped := make([]CatalogEntry, len(catalog))
+	for i, c := range catalog {
+		c.Summary = clip(strings.TrimSpace(c.Summary), 80)
+		clipped[i] = c
+	}
+	raw, err := json.Marshal(clipped)
+	if err != nil {
+		return userText
+	}
+	return userText + "\n\nAvailable history catalog:\n" + string(raw)
+}
+
 // ShouldPlan reports whether this turn should call the planner.
 // A short session with a clear request and room in the context budget skips it.
 func ShouldPlan(in PlanInput) (bool, string) {

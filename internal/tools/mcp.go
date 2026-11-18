@@ -30,7 +30,7 @@ type MCPText struct {
 
 // ToMCPTool maps a local spec to an MCP tool. Execution stays on the broker.
 func ToMCPTool(spec Spec) MCPTool {
-	schema := spec.Parameters
+	schema := CleanSchema(spec.Parameters)
 	if len(schema) == 0 {
 		schema = json.RawMessage(`{"type":"object","properties":{}}`)
 	}

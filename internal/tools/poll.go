@@ -49,7 +49,7 @@ func Poll(ctx context.Context, b *Broker, req PollRequest) (PollResult, error) {
 	if req.MaxAttempts > 20 {
 		req.MaxAttempts = 20
 	}
-	spec, ok := b.reg[req.TargetTool]
+	spec, ok := b.spec(req.TargetTool)
 	if !ok {
 		return PollResult{}, domain.E(domain.CodeToolError, "unknown poll target "+req.TargetTool)
 	}

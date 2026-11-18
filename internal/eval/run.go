@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
 	"github.com/cloud-harness/cloud-harness/internal/config"
@@ -87,6 +88,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		}
 	}
 	broker := tools.NewBroker(db, db)
+	broker.SetCommandEnvAllow(opt.Config.CommandEnvAllow)
 	if err := tools.RegisterLocal(broker, abs); err != nil {
 		return out, err
 	}
@@ -178,7 +180,16 @@ func build(cfg config.Config) (provider.Provider, error) {
 	case "", "mock":
 		return &provider.Mock{}, nil
 	case "openai":
-		return &provider.OpenAICompatible{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Model: cfg.OpenAIModel}, nil
+		return &provider.OpenAICompatible{
+			BaseURL:               cfg.OpenAIBaseURL,
+			APIKey:                cfg.OpenAIAPIKey,
+			Model:                 cfg.OpenAIModel,
+			ReasoningReplay:       cfg.OpenAIReasoningReplay,
+			PrivatePassthrough:    cfg.OpenAIPrivatePassthrough,
+			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
+			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
+			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+		}, nil
 	default:
 		return nil, domain.E(domain.CodeInvalidArgument, "unknown provider "+cfg.Provider)
 	}

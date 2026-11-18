@@ -122,6 +122,22 @@ type SummaryJob struct {
 	UpdatedAt time.Time
 }
 
+// TurnSummary is a persisted turn summary with its turn timestamp.
+type TurnSummary struct {
+	TurnID     string
+	Summary    string
+	SourceRefs string
+	CreatedAt  time.Time
+}
+
+// HistoryCatalogEntry is a lightweight summary of one session history record.
+type HistoryCatalogEntry struct {
+	SourceID  string    `json:"source_id"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+	Summary   string    `json:"summary"`
+}
+
 // Store is the single persisted source of truth used by the run manager.
 type Store interface {
 	Close() error
@@ -156,6 +172,9 @@ type Store interface {
 	LookupIdempotency(ctx context.Context, runID, toolName, key string) (json.RawMessage, bool, error)
 	SaveIdempotency(ctx context.Context, runID, toolName, key string, result json.RawMessage, now time.Time) error
 	ExtendModelBudget(ctx context.Context, runID string, extra int) error
+	SaveApproval(ctx context.Context, a domain.Approval) error
+	UpdateApprovalState(ctx context.Context, runID, invocationID, state string) error
+	ListApprovals(ctx context.Context, runID string) ([]domain.Approval, error)
 	SaveGrant(ctx context.Context, g domain.Grant, now time.Time) error
 	ListGrants(ctx context.Context, runID, sessionID string, now time.Time) ([]domain.Grant, error)
 	IndexHistory(ctx context.Context, doc HistoryDoc) error
@@ -163,6 +182,8 @@ type Store interface {
 	RebuildHistory(ctx context.Context, sessionID string) error
 	PruneHistory(ctx context.Context, before time.Time) (int, error)
 	GetHistory(ctx context.Context, sourceID string) (HistoryDoc, error)
+	RecentTurnSummaries(ctx context.Context, sessionID string, limit int) ([]TurnSummary, error)
+	ListHistoryCatalog(ctx context.Context, sessionID string, limit int) ([]HistoryCatalogEntry, error)
 	LatestMemory(ctx context.Context, sessionID string) (string, int, error)
 	CountTurns(ctx context.Context, sessionID string) (int, error)
 	SaveSummaryJob(ctx context.Context, job SummaryJob) error

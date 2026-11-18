@@ -62,3 +62,58 @@ func TestListenLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOpenAIReasoningReplayConfig(t *testing.T) {
+	cfg, err := Load("", func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenAIReasoningReplay != "message" {
+		t.Fatalf("default reasoning replay = %q, want message", cfg.OpenAIReasoningReplay)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.json")
+	if err := os.WriteFile(path, []byte(`{"provider":"openai","openai_reasoning_replay":"omit"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenAIReasoningReplay != "omit" {
+		t.Fatalf("reasoning replay = %q, want omit", cfg.OpenAIReasoningReplay)
+	}
+
+	if _, err := Load("", func(k string) string {
+		if k == "OPENAI_REASONING_REPLAY" {
+			return "invalid"
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("accepted invalid openai_reasoning_replay")
+	}
+}
+
+func TestCommandEnvAllowConfig(t *testing.T) {
+	cfg, err := Load("", func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CommandEnvAllow) != 0 {
+		t.Fatalf("default command_env_allow = %v, want empty", cfg.CommandEnvAllow)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.json")
+	if err := os.WriteFile(path, []byte(`{"command_env_allow":["FOO","BAR"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CommandEnvAllow) != 2 || cfg.CommandEnvAllow[0] != "FOO" || cfg.CommandEnvAllow[1] != "BAR" {
+		t.Fatalf("command_env_allow = %v, want [FOO BAR]", cfg.CommandEnvAllow)
+	}
+}

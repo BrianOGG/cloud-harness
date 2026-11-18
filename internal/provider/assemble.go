@@ -26,6 +26,7 @@ type assembler struct {
 	finish    string
 	sawDone   bool
 	usage     domain.Usage
+	onDelta   func(string)
 }
 
 func newAssembler() *assembler {
@@ -77,6 +78,9 @@ func (a *assembler) consumeData(line []byte) error {
 	for _, ch := range chunk.Choices {
 		if ch.FinishReason != "" {
 			a.finish = ch.FinishReason
+		}
+		if ch.Delta.Content != "" && a.onDelta != nil {
+			a.onDelta(ch.Delta.Content)
 		}
 		a.text.WriteString(ch.Delta.Content)
 		a.reasoning.WriteString(ch.Delta.ReasoningContent)
@@ -146,8 +150,11 @@ func (a *assembler) response() domain.ModelResponse {
 	}
 }
 
-func parseSSE(r io.Reader, scrubber func(string) string) (domain.ModelResponse, error) {
+func parseSSE(r io.Reader, scrubber func(string) string, onDelta ...func(string)) (domain.ModelResponse, error) {
 	a := newAssembler()
+	if len(onDelta) > 0 {
+		a.onDelta = onDelta[0]
+	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -163,14 +170,20 @@ func parseSSE(r io.Reader, scrubber func(string) string) (domain.ModelResponse, 
 			}
 			return domain.ModelResponse{}, err
 		}
+		if a.sawDone {
+			break
+		}
 	}
 	if err := sc.Err(); err != nil {
+		if scrubber != nil {
+			return domain.ModelResponse{}, domain.E(domain.CodeProviderHTTP, scrubber(err.Error()))
+		}
 		return domain.ModelResponse{}, domain.E(domain.CodeProviderHTTP, err.Error())
 	}
 	return a.response(), nil
 }
 
-func parseChatJSON(body []byte) (domain.ModelResponse, error) {
+func parseChatJSON(body []byte, onDelta ...func(string)) (domain.ModelResponse, error) {
 	var parsed struct {
 		ID      string     `json:"id"`
 		Usage   *chatUsage `json:"usage"`
@@ -191,6 +204,9 @@ func parseChatJSON(body []byte) (domain.ModelResponse, error) {
 	}
 	msg := parsed.Choices[0].Message
 	a := newAssembler()
+	if len(onDelta) > 0 {
+		a.onDelta = onDelta[0]
+	}
 	a.id = parsed.ID
 	a.finish = parsed.Choices[0].FinishReason
 	if a.finish == "" {
@@ -198,6 +214,9 @@ func parseChatJSON(body []byte) (domain.ModelResponse, error) {
 	}
 	if parsed.Usage != nil {
 		a.usage = parsed.Usage.domain()
+	}
+	if msg.Content != "" && a.onDelta != nil {
+		a.onDelta(msg.Content)
 	}
 	a.text.WriteString(msg.Content)
 	a.reasoning.WriteString(msg.ReasoningContent)

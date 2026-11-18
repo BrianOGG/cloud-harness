@@ -168,7 +168,7 @@ func sideEffectTool(fact tools.Fact) bool {
 
 func grantCovers(grants []domain.Grant, tool string) bool {
 	for _, g := range grants {
-		if g.Tool == tool && g.State == "active" {
+		if g.Tool == tool && g.State == "active" && g.InvocationID == "" {
 			return true
 		}
 	}

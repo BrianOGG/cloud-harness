@@ -35,13 +35,13 @@ func TestPollStopsOnConditionOrCap(t *testing.T) {
 	}
 	n = 0
 	charge.b.UsedToolCalls = 0
-	b.reg["status"] = Spec{
+	b.Register(Spec{
 		Name: "status", Readonly: true, Idempotent: true, Pollable: true, SideEffectClass: "none",
 		Execute: func(context.Context, json.RawMessage) (json.RawMessage, error) {
 			n++
 			return json.Marshal(map[string]string{"content": "down"})
 		},
-	}
+	})
 	got, err = Poll(context.Background(), b, PollRequest{
 		RunID: "run", TargetTool: "status", TargetArgs: json.RawMessage(`{}`),
 		Until: Until{Field: "content", Operator: "eq", Value: "ready"}, MaxAttempts: 3,

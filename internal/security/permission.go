@@ -21,6 +21,7 @@ const (
 type Request struct {
 	RunID               string
 	SessionID           string
+	InvocationID        string
 	Tool                string
 	SideEffectClass     string
 	Readonly            bool
@@ -88,10 +89,29 @@ func grantMatches(g domain.Grant, req Request) bool {
 	if g.RunID != "" && g.RunID != req.RunID {
 		return false
 	}
-	if g.RunID == "" && g.SessionID != "" && g.SessionID != req.SessionID {
+	if g.SessionID != "" && g.SessionID != req.SessionID {
 		return false
 	}
+	if g.InvocationID != "" {
+		if req.InvocationID == "" || g.InvocationID != req.InvocationID || g.RunID == "" {
+			return false
+		}
+		return exactResourcesAllowed(g.ResourceScope, req.Resources, req.Tool)
+	}
 	return resourcesAllowed(g.ResourceScope, req.Resources)
+}
+
+func exactResourcesAllowed(scope string, resources []string, tool string) bool {
+	if len(resources) == 0 {
+		return scope == ""
+	}
+	if scope == "" || len(resources) != 1 {
+		return false
+	}
+	if tool == "run_command" {
+		return scope == resources[0]
+	}
+	return clean(scope) == clean(resources[0])
 }
 
 func resourcesAllowed(scope string, resources []string) bool {

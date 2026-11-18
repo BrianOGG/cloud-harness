@@ -233,6 +233,37 @@ func (b *Batch) BeginUserWait(id string) error {
 	return nil
 }
 
+// CompleteUserWait resolves an exclusive ask_user pause with the user's reply.
+// The invocation passes through RUNNING in memory to honor the transition table,
+// then becomes SUCCEEDED with Dispatched=false.
+func (b *Batch) CompleteUserWait(id string, data json.RawMessage) error {
+	idx, err := b.index(id)
+	if err != nil {
+		return err
+	}
+	if b.Action != ActionAskUser || len(b.Invocations) != 1 {
+		return E(CodeProtocol, "user wait requires an exclusive ask_user batch")
+	}
+	if b.Invocations[idx].Dispatched {
+		return E(CodeConflict, "ask_user was dispatched")
+	}
+	if b.Invocations[idx].Status == InvPending {
+		if err := b.step(idx, InvStart); err != nil {
+			return err
+		}
+		b.Invocations[idx].Dispatched = false
+	}
+	if err := b.step(idx, InvSucceed); err != nil {
+		return err
+	}
+	b.Invocations[idx].Result = &CallResult{
+		OK:   true,
+		Data: append(json.RawMessage(nil), data...),
+	}
+	b.Status = BatchComplete
+	return b.Pairing()
+}
+
 // Approve continues a waiting call by moving it to RUNNING and marking it dispatched
 // before the executor is entered.
 func (b *Batch) Approve(id string) error {

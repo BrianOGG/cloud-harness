@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,4 +110,33 @@ func TestMCPAdapterDoesNotBypassBroker(t *testing.T) {
 	if res.Dispatched || res.OK {
 		t.Fatal("adapter spec ran without a grant")
 	}
+}
+
+func TestBrokerConcurrentAccess(t *testing.T) {
+	b := NewBroker(&memCharge{b: domain.Budget{MaxToolCalls: 1000}}, memGrants{})
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := fmt.Sprintf("tool_%d", i)
+			for j := 0; j < 20; j++ {
+				if !b.Has(name) {
+					b.Register(Spec{
+						Name: name, Description: "concurrent", Readonly: true, Idempotent: true, SideEffectClass: "none",
+						ExtractResources: func(json.RawMessage) ([]string, error) { return []string{"res"}, nil },
+						StatusProbe:      func(context.Context, json.RawMessage) (Probe, error) { return Probe{}, nil },
+						Execute:          func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`{}`), nil },
+					})
+				}
+				_, _ = b.Lookup(name)
+				_ = b.List()
+				_, _ = b.ExtractResources(name, json.RawMessage(`{}`))
+				_, _ = b.Probe(context.Background(), Request{Tool: name, Args: json.RawMessage(`{}`)})
+				_, _ = b.Authorize(context.Background(), Request{Tool: name, Args: json.RawMessage(`{}`), DefaultAllow: []string{name}})
+			}
+		}()
+	}
+	wg.Wait()
 }

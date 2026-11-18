@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
@@ -18,6 +21,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/eval"
 	"github.com/cloud-harness/cloud-harness/internal/program"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
+	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
@@ -36,6 +40,11 @@ func main() {
 
 // Main runs one CLI invocation. It is split from main so tests can call it.
 func Main(args []string, stdout, stderr io.Writer) int {
+	return MainWithIO(args, os.Stdin, stdout, stderr)
+}
+
+// MainWithIO runs one CLI invocation with an injectable stdin reader.
+func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -51,6 +60,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdServe(args[1:], stdout, stderr)
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
+	case "chat":
+		return cmdChat(args[1:], stdin, stdout, stderr)
 	case "runs":
 		return cmdRuns(args[1:], stdout, stderr)
 	case "trace":
@@ -74,11 +85,13 @@ const usage = `Cloud Harness M5
   cloud-harness version
   cloud-harness serve [--addr 127.0.0.1:19421] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness run --message TEXT [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness chat [--message TEXT] [--session ID] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
   cloud-harness eval suite [--db path] [--workspace dir]
   cloud-harness runs list [--session ID] [--db path]
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
+  cloud-harness runs recover [RUN_ID | --all-expired] [--db path] [--workspace dir]
   cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] RUN_ID
   cloud-harness trace RUN_ID
   cloud-harness retain --days N [--db path]
@@ -146,6 +159,7 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		return nil, nil, err
 	}
 	broker := tools.NewBroker(db, db)
+	broker.SetCommandEnvAllow(cfg.CommandEnvAllow)
 	if err := tools.RegisterLocal(broker, abs); err != nil {
 		_ = db.Close()
 		return nil, nil, err
@@ -181,7 +195,16 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 	case "", "mock":
 		return &provider.Mock{}, nil
 	case "openai":
-		return &provider.OpenAICompatible{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Model: cfg.OpenAIModel}, nil
+		return &provider.OpenAICompatible{
+			BaseURL:               cfg.OpenAIBaseURL,
+			APIKey:                cfg.OpenAIAPIKey,
+			Model:                 cfg.OpenAIModel,
+			ReasoningReplay:       cfg.OpenAIReasoningReplay,
+			PrivatePassthrough:    cfg.OpenAIPrivatePassthrough,
+			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
+			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
+			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+		}, nil
 	default:
 		return nil, domain.E(domain.CodeInvalidArgument, "unknown provider "+cfg.Provider)
 	}
@@ -211,6 +234,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	if _, err := mgr.RecoverExpired(ctx); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           (&transport.Server{Manager: mgr}).Handler(),
@@ -287,7 +314,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 
 func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runs requires list, inspect, cancel, or resume")
+		fmt.Fprintln(stderr, "runs requires list, inspect, cancel, recover, or resume")
 		return 2
 	}
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
@@ -297,8 +324,19 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	decision := fs.String("decision", "", "resume decision: approve, deny, child_done, reconcile_success, reconcile_fail")
 	answer := fs.String("answer", "", "answer for an ask_user wait")
 	extra := fs.Int("extra-model-calls", 0, "model calls to add when resuming a budget wait")
-	if err := fs.Parse(args[1:]); err != nil {
+	allExpired := fs.Bool("all-expired", false, "recover all lease-expired running runs")
+	var leadingID string
+	parseArgs := args[1:]
+	if (args[0] == "recover" || args[0] == "inspect" || args[0] == "cancel") && len(parseArgs) > 0 && !strings.HasPrefix(parseArgs[0], "-") {
+		leadingID = parseArgs[0]
+		parseArgs = parseArgs[1:]
+	}
+	if err := fs.Parse(parseArgs); err != nil {
 		return 2
+	}
+	posArgs := fs.Args()
+	if leadingID != "" {
+		posArgs = append([]string{leadingID}, posArgs...)
 	}
 	cfg, err := load(c)
 	if err != nil {
@@ -320,12 +358,35 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return writeJSON(stdout, runs)
+	case "recover":
+		if *allExpired {
+			if len(posArgs) != 0 {
+				fmt.Fprintln(stderr, "cannot combine --all-expired with a run id")
+				return 2
+			}
+			runs, err := mgr.RecoverExpired(ctx)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return writeJSON(stdout, runs)
+		}
+		if len(posArgs) != 1 {
+			fmt.Fprintln(stderr, "run id or --all-expired required")
+			return 2
+		}
+		run, err := mgr.Recover(ctx, posArgs[0])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return writeJSON(stdout, run)
 	case "inspect", "cancel", "resume":
-		if fs.NArg() != 1 {
+		if len(posArgs) != 1 {
 			fmt.Fprintln(stderr, "run id required")
 			return 2
 		}
-		id := fs.Arg(0)
+		id := posArgs[0]
 		switch args[0] {
 		case "inspect":
 			run, err := db.GetRun(ctx, id)
@@ -544,6 +605,227 @@ func cmdEval(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	c := addCommon(fs)
+	message := fs.String("message", "", "initial user message")
+	session := fs.String("session", "", "session id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	initMsg := strings.TrimSpace(*message)
+	if initMsg == "" && fs.NArg() > 0 {
+		initMsg = strings.TrimSpace(strings.Join(fs.Args(), " "))
+	}
+	cfg, err := load(c)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	ctx := context.Background()
+	mgr, db, err := openManager(ctx, cfg, c.workspace)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer db.Close()
+	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
+}
+
+func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	reader := bufio.NewReader(stdin)
+	if sessionID == "" {
+		ses, err := mgr.CreateSession(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		sessionID = ses.ID
+	} else if _, err := mgr.Store.GetSession(ctx, sessionID); err != nil {
+		now := time.Now().UTC()
+		if cerr := mgr.Store.CreateSession(ctx, storage.Session{ID: sessionID, CreatedAt: now, UpdatedAt: now}); cerr != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+
+	if initialMessage != "" {
+		_, code, _ := runChatTurn(ctx, mgr, sessionID, initialMessage, reader, stdout, stderr)
+		return code
+	}
+
+	for {
+		line, eof, err := readChatLine(reader)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		msg := strings.TrimSpace(line)
+		if msg == "" {
+			if eof {
+				return 0
+			}
+			continue
+		}
+		_, code, stoppedOnEOF := runChatTurn(ctx, mgr, sessionID, msg, reader, stdout, stderr)
+		if code != 0 || stoppedOnEOF || eof {
+			return code
+		}
+	}
+}
+
+func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message string, reader *bufio.Reader, stdout, stderr io.Writer) (storage.Run, int, bool) {
+	run, err := mgr.RunMessage(ctx, sessionID, message)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return run, 1, false
+	}
+	for {
+		run, err = pollRunState(ctx, mgr, run.ID, 5*time.Millisecond)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return run, 1, false
+		}
+		if domain.TerminalRun(run.Status) {
+			if run.FinalAnswer != "" {
+				fmt.Fprintln(stdout, run.FinalAnswer)
+			}
+			if run.Status == domain.RunFailed {
+				if run.Error != nil {
+					fmt.Fprintln(stderr, run.Error)
+				}
+				return run, 1, false
+			}
+			return run, 0, false
+		}
+		if run.Status != domain.RunWaiting {
+			continue
+		}
+		info, err := mgr.WaitInfo(ctx, run)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return run, 1, false
+		}
+		switch run.WaitReason {
+		case domain.WaitUser:
+			question := info.Question
+			if question == "" {
+				question = "Input required:"
+			}
+			fmt.Fprintln(stdout, question)
+			var answer string
+			for {
+				line, eof, rerr := readChatLine(reader)
+				if rerr != nil {
+					fmt.Fprintln(stderr, rerr)
+					return run, 1, false
+				}
+				answer = strings.TrimSpace(line)
+				if answer != "" {
+					break
+				}
+				if eof {
+					return run, 0, true
+				}
+			}
+			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Answer: answer})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return run, 1, false
+			}
+		case domain.WaitApproval:
+			toolName := ""
+			argsSummary := "{}"
+			resources := "none"
+			if info.PendingInvocation != nil {
+				toolName = info.PendingInvocation.Tool
+				if info.PendingInvocation.ArgsSummary != "" {
+					argsSummary = info.PendingInvocation.ArgsSummary
+				}
+				if len(info.PendingInvocation.Resources) > 0 {
+					resources = strings.Join(info.PendingInvocation.Resources, ", ")
+				} else if info.PendingInvocation.ResourceScope != "" {
+					resources = info.PendingInvocation.ResourceScope
+				}
+			}
+			fmt.Fprintf(stdout, "Approval required: tool=%s args=%s resources=%s\n", toolName, argsSummary, resources)
+			var decision string
+			for {
+				fmt.Fprint(stdout, "Approve? [y/n]: ")
+				line, eof, rerr := readChatLine(reader)
+				if rerr != nil {
+					fmt.Fprintln(stderr, rerr)
+					return run, 1, false
+				}
+				if d, ok := parseApprovalDecision(line); ok {
+					decision = d
+					break
+				}
+				if eof {
+					return run, 0, true
+				}
+			}
+			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Decision: decision})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return run, 1, false
+			}
+		default:
+			fmt.Fprintf(stdout, "run %s waiting (%s)\n", run.ID, run.WaitReason)
+			return run, 0, true
+		}
+	}
+}
+
+func pollRunState(ctx context.Context, mgr *agent.Manager, runID string, interval time.Duration) (storage.Run, error) {
+	if interval <= 0 {
+		interval = 5 * time.Millisecond
+	}
+	for {
+		run, err := mgr.Store.GetRun(ctx, runID)
+		if err != nil {
+			return storage.Run{}, err
+		}
+		if run.Status != domain.RunRunning {
+			return run, nil
+		}
+		select {
+		case <-ctx.Done():
+			return run, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func readChatLine(r *bufio.Reader) (string, bool, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			if len(line) == 0 {
+				return "", true, nil
+			}
+			return strings.TrimRight(line, "\r\n"), false, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimRight(line, "\r\n"), false, nil
+}
+
+func parseApprovalDecision(input string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "y", "yes", "approve":
+		return "approve", true
+	case "n", "no", "deny":
+		return "deny", true
+	default:
+		return "", false
+	}
 }
 
 type memoryCharge struct{ b domain.Budget }

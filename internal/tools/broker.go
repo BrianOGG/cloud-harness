@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
@@ -66,6 +67,7 @@ type Result struct {
 type Request struct {
 	RunID            string
 	SessionID        string
+	InvocationID     string
 	Tool             string
 	Args             json.RawMessage
 	IdempotencyKey   string
@@ -76,12 +78,18 @@ type Request struct {
 	Now              time.Time
 }
 
+type requestKeyType struct{}
+
+var requestKey requestKeyType
+
 // Broker is the single tool entry point.
 type Broker struct {
-	reg    map[string]Spec
-	charge Charger
-	grants GrantSource
-	now    func() time.Time
+	mu              sync.RWMutex
+	reg             map[string]Spec
+	charge          Charger
+	grants          GrantSource
+	now             func() time.Time
+	CommandEnvAllow []string
 }
 
 // NewBroker builds a broker. charge and grants are required so a call cannot skip them.
@@ -89,9 +97,38 @@ func NewBroker(charge Charger, grants GrantSource) *Broker {
 	return &Broker{reg: map[string]Spec{}, charge: charge, grants: grants, now: time.Now}
 }
 
+// SetCommandEnvAllow sets the extra environment variable names passed to run_command subprocesses.
+func (b *Broker) SetCommandEnvAllow(names []string) {
+	b.mu.Lock()
+	b.CommandEnvAllow = append([]string(nil), names...)
+	b.mu.Unlock()
+}
+
+func (b *Broker) commandEnvAllowList() []string {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	out := append([]string(nil), b.CommandEnvAllow...)
+	b.mu.RUnlock()
+	return out
+}
+
 // Register adds a local tool. Registering does not authorize it.
 func (b *Broker) Register(spec Spec) {
+	b.mu.Lock()
+	if b.reg == nil {
+		b.reg = map[string]Spec{}
+	}
 	b.reg[spec.Name] = spec
+	b.mu.Unlock()
+}
+
+func (b *Broker) spec(name string) (Spec, bool) {
+	b.mu.RLock()
+	spec, ok := b.reg[name]
+	b.mu.RUnlock()
+	return spec, ok
 }
 
 // Lookup returns a copy of the spec without exposing Execute to other packages
@@ -107,7 +144,7 @@ type Fact struct {
 
 // Lookup returns the authorization facts for a registered tool.
 func (b *Broker) Lookup(name string) (Fact, bool) {
-	spec, ok := b.reg[name]
+	spec, ok := b.spec(name)
 	if !ok {
 		return Fact{}, false
 	}
@@ -118,7 +155,7 @@ func (b *Broker) Lookup(name string) (Fact, bool) {
 }
 
 func (b *Broker) Has(name string) bool {
-	_, ok := b.reg[name]
+	_, ok := b.spec(name)
 	return ok
 }
 
@@ -129,8 +166,9 @@ type PublicSpec struct {
 	Parameters  json.RawMessage
 }
 
-// List returns registered tools in name order.
+// List returns registered tools in name order with provider-safe JSON schemas.
 func (b *Broker) List() []PublicSpec {
+	b.mu.RLock()
 	names := make([]string, 0, len(b.reg))
 	for name := range b.reg {
 		names = append(names, name)
@@ -139,15 +177,114 @@ func (b *Broker) List() []PublicSpec {
 	out := make([]PublicSpec, 0, len(names))
 	for _, name := range names {
 		spec := b.reg[name]
-		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: CleanSchema(spec.Parameters)})
 	}
+	b.mu.RUnlock()
 	return out
+}
+
+var standardJSONSchemaKeys = map[string]bool{
+	"type":                 true,
+	"properties":           true,
+	"required":             true,
+	"items":                true,
+	"description":          true,
+	"enum":                 true,
+	"additionalProperties": true,
+	"default":              true,
+	"minimum":              true,
+	"maximum":              true,
+	"minItems":             true,
+	"maxItems":             true,
+	"minLength":            true,
+	"maxLength":            true,
+	"pattern":              true,
+	"format":               true,
+	"title":                true,
+	"anyOf":                true,
+	"oneOf":                true,
+	"allOf":                true,
+	"not":                  true,
+	"const":                true,
+}
+
+// CleanSchema strips non-standard or internal tool metadata keys (such as readOnly,
+// sideEffect, reversible) from a JSON Schema so provider requests contain only
+// standard JSON Schema keywords.
+func CleanSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	cleanSchemaNode(m)
+	cleaned, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return cleaned
+}
+
+func cleanSchemaNode(m map[string]any) {
+	for k := range m {
+		if !standardJSONSchemaKeys[k] {
+			delete(m, k)
+		}
+	}
+	if props, ok := m["properties"].(map[string]any); ok {
+		for propName, propVal := range props {
+			propMap, ok := propVal.(map[string]any)
+			if !ok {
+				delete(props, propName)
+				continue
+			}
+			cleanSchemaNode(propMap)
+		}
+	}
+	if items, ok := m["items"].(map[string]any); ok {
+		cleanSchemaNode(items)
+	} else if itemsArr, ok := m["items"].([]any); ok {
+		for _, item := range itemsArr {
+			if itemMap, ok := item.(map[string]any); ok {
+				cleanSchemaNode(itemMap)
+			}
+		}
+	}
+	if addProps, ok := m["additionalProperties"].(map[string]any); ok {
+		cleanSchemaNode(addProps)
+	}
+	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := m[comb].([]any); ok {
+			for _, elem := range arr {
+				if elemMap, ok := elem.(map[string]any); ok {
+					cleanSchemaNode(elemMap)
+				}
+			}
+		}
+	}
+	if notMap, ok := m["not"].(map[string]any); ok {
+		cleanSchemaNode(notMap)
+	}
+}
+
+// ExtractResources resolves the resource scopes for a tool invocation's arguments.
+func (b *Broker) ExtractResources(tool string, args json.RawMessage) ([]string, error) {
+	spec, ok := b.spec(tool)
+	if !ok {
+		return nil, domain.E(domain.CodeToolError, "unknown tool "+tool)
+	}
+	if spec.ExtractResources == nil {
+		return nil, nil
+	}
+	return spec.ExtractResources(args)
 }
 
 // Probe asks the tool whether the side effect is already visible.
 // It does not charge budget and does not call Execute.
 func (b *Broker) Probe(ctx context.Context, req Request) (Probe, error) {
-	spec, ok := b.reg[req.Tool]
+	spec, ok := b.spec(req.Tool)
 	if !ok || spec.StatusProbe == nil {
 		return Probe{}, nil
 	}
@@ -177,7 +314,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	if b.charge == nil || b.grants == nil {
 		return Spec{}, security.Decision{}, domain.E(domain.CodeConflict, "broker is missing budget or permission")
 	}
-	spec, ok := b.reg[req.Tool]
+	spec, ok := b.spec(req.Tool)
 	if !ok {
 		return Spec{}, security.Decision{}, domain.E(domain.CodeToolError, "unknown tool "+req.Tool)
 	}
@@ -205,6 +342,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	decision := security.Decide(grants, security.Request{
 		RunID:               req.RunID,
 		SessionID:           req.SessionID,
+		InvocationID:        req.InvocationID,
 		Tool:                req.Tool,
 		SideEffectClass:     spec.SideEffectClass,
 		Readonly:            spec.Readonly,
@@ -257,9 +395,10 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 	if spec.Execute == nil {
 		return Result{Error: domain.E(domain.CodeToolError, "tool has no executor")}, nil
 	}
-	data, err := spec.Execute(ctx, req.Args)
+	execCtx := context.WithValue(ctx, requestKey, req)
+	data, err := spec.Execute(execCtx, req.Args)
 	if err != nil {
-		return Result{Dispatched: true, Error: asDomain(err)}, nil
+		return Result{Dispatched: true, Data: data, Error: asDomain(err)}, nil
 	}
 	if req.IdempotencyKey != "" {
 		if store, ok := b.charge.(idempotencyStore); ok && len(data) > 0 {
@@ -288,7 +427,7 @@ func validateArgs(spec Spec, raw json.RawMessage) *domain.Error {
 	}
 	for _, key := range spec.Required {
 		v, ok := m[key]
-		if !ok || v == nil || v == "" {
+		if !ok || v == nil || (v == "" && key != "new_string") {
 			return domain.E(domain.CodeInvalidArgument, "missing argument "+key)
 		}
 	}

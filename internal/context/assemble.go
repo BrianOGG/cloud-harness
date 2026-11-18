@@ -13,6 +13,7 @@ type Message struct {
 	Content    string    `json:"content"`
 	ToolCalls  []ToolRef `json:"tool_calls,omitempty"`
 	ToolCallID string    `json:"tool_call_id,omitempty"`
+	Ref        string    `json:"ref,omitempty"`
 }
 
 // Assembly is the ordered model input.

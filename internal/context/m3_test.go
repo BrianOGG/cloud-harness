@@ -105,3 +105,110 @@ func TestCompactKeepsPairsPrefixAndUser(t *testing.T) {
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
+
+func TestEstimateCountsToolCallArgs(t *testing.T) {
+	withoutArgs := []Message{
+		{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []ToolRef{{ID: "c1", Name: "write_file"}},
+		},
+	}
+	bigArgs := json.RawMessage(`{"path":"notes.txt","content":"` + strings.Repeat("payload-bytes-", 40) + `"}`)
+	withArgs := []Message{
+		{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []ToolRef{{ID: "c1", Name: "write_file", Arguments: bigArgs}},
+		},
+	}
+	baseEst := Estimate(withoutArgs)
+	argsEst := Estimate(withArgs)
+	if argsEst <= baseEst {
+		t.Fatalf("Estimate did not count ToolCalls arguments: withArgs=%d withoutArgs=%d", argsEst, baseEst)
+	}
+	wantMinDelta := len(bigArgs) / 5
+	if argsEst-baseEst < wantMinDelta {
+		t.Fatalf("Estimate delta too small: got %d, want at least %d", argsEst-baseEst, wantMinDelta)
+	}
+
+	// Also verify Compact uses the argument byte estimate and escapes multi-line tool output validly.
+	msgs := []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolRef{{ID: "c1", Name: "read_file", Arguments: bigArgs}}},
+		{Role: "tool", ToolCallID: "c1", Content: "line1\nline2\r\n\t\"quoted\"\\slash"},
+		{Role: "assistant", ToolCalls: []ToolRef{{ID: "c2", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "c2", Content: "ok"},
+	}
+	compacted := Compact(msgs, CompactOptions{
+		PrefixCount: 1,
+		KeepIndex:   1,
+		TokenLimit:  50,
+		Refs:        map[string]string{"c1": "inv_real_1"},
+	})
+	var parsed struct {
+		Compacted  bool   `json:"compacted"`
+		ToolCallID string `json:"tool_call_id"`
+		Excerpt    string `json:"excerpt"`
+		Ref        string `json:"ref"`
+	}
+	if err := json.Unmarshal([]byte(compacted[3].Content), &parsed); err != nil {
+		t.Fatalf("compacted tool output is not valid JSON: %v (%s)", err, compacted[3].Content)
+	}
+	if !parsed.Compacted || parsed.ToolCallID != "c1" || parsed.Ref != "inv_real_1" {
+		t.Fatalf("unexpected compacted payload: %+v", parsed)
+	}
+}
+
+func TestMemoryDeltaIDsUniqueAcrossTurns(t *testing.T) {
+	turn1, err := ParseDeltas([]byte(`[{"op":"ADD","section":"facts","text":"fact from turn 1","source":"trn_1"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := ApplyDelta(Memory{}, turn1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Round-trip through JSON as persistence does between turns.
+	mem, err = ParseMemory(mem.JSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	turn2, err := ParseDeltas([]byte(`[{"op":"ADD","section":"facts","text":"fact from turn 2","source":"trn_2"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err = ApplyDelta(mem, turn2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem.Facts) != 2 {
+		t.Fatalf("expected 2 facts, got %+v", mem.Facts)
+	}
+	id1, id2 := mem.Facts[0].ID, mem.Facts[1].ID
+	if id1 == "" || id2 == "" || id1 == id2 {
+		t.Fatalf("expected distinct non-empty IDs across turns, got %q and %q", id1, id2)
+	}
+
+	// Updating the first fact must not touch the second fact.
+	mem, err = ParseMemory(mem.JSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	upd := []Delta{{Op: "UPDATE", Section: "facts", ID: id1, Text: "updated turn 1 fact"}}
+	mem, err = ApplyDelta(mem, upd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem.Facts) != 2 {
+		t.Fatalf("expected 2 facts after update, got %+v", mem.Facts)
+	}
+	if mem.Facts[0].ID != id1 || mem.Facts[0].Text != "updated turn 1 fact" || mem.Facts[0].Source != "trn_1" {
+		t.Fatalf("first fact was not updated properly: %+v", mem.Facts[0])
+	}
+	if mem.Facts[1].ID != id2 || mem.Facts[1].Text != "fact from turn 2" || mem.Facts[1].Source != "trn_2" {
+		t.Fatalf("second fact was modified by update to first fact: %+v", mem.Facts[1])
+	}
+}

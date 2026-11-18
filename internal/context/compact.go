@@ -1,9 +1,6 @@
 package context
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "encoding/json"
 
 // ToolRef is the id pairing a call with its result. Compaction keeps both.
 type ToolRef struct {
@@ -17,6 +14,7 @@ type CompactOptions struct {
 	PrefixCount int
 	KeepIndex   int
 	TokenLimit  int
+	Refs        map[string]string
 }
 
 // Compact shortens the dynamic suffix once it exceeds TokenLimit.
@@ -42,7 +40,7 @@ func Compact(msgs []Message, opt CompactOptions) []Message {
 			continue
 		}
 		if out[i].Role == "tool" {
-			out[i].Content = compactTool(out[i])
+			out[i].Content = compactTool(out[i], opt.Refs)
 			continue
 		}
 		if len([]rune(out[i].Content)) > 160 {
@@ -83,15 +81,39 @@ func ToolPairsIntact(msgs []Message) bool {
 	return true
 }
 
-func compactTool(m Message) string {
+type compactedToolPayload struct {
+	Untrusted  bool   `json:"untrusted"`
+	Compacted  bool   `json:"compacted"`
+	ToolCallID string `json:"tool_call_id"`
+	Excerpt    string `json:"excerpt"`
+	Ref        string `json:"ref"`
+}
+
+func compactTool(m Message, refs map[string]string) string {
+	ref := m.Ref
+	if refs != nil && refs[m.ToolCallID] != "" {
+		ref = refs[m.ToolCallID]
+	}
 	excerpt := clip(m.Content, 80)
-	return `{"untrusted":true,"compacted":true,"tool_call_id":"` + jsonEscape(m.ToolCallID) + `","excerpt":"` + jsonEscape(excerpt) + `","ref":"` + jsonEscape(m.ToolCallID) + `"}`
+	var prev compactedToolPayload
+	if err := json.Unmarshal([]byte(m.Content), &prev); err == nil && prev.Compacted {
+		excerpt = prev.Excerpt
+		if ref == "" {
+			ref = prev.Ref
+		}
+	}
+	if ref == "" {
+		ref = m.ToolCallID
+	}
+	return `{"untrusted":true,"compacted":true,"tool_call_id":"` + jsonEscape(m.ToolCallID) + `","excerpt":"` + jsonEscape(excerpt) + `","ref":"` + jsonEscape(ref) + `"}`
 }
 
 func jsonEscape(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
+	b, err := json.Marshal(s)
+	if err != nil || len(b) < 2 {
+		return ""
+	}
+	return string(b[1 : len(b)-1])
 }
 
 func cloneMessages(in []Message) []Message {
@@ -109,7 +131,11 @@ func cloneMessages(in []Message) []Message {
 func Estimate(msgs []Message) int {
 	n := 0
 	for _, m := range msgs {
-		n += (len(m.Content)+3)/4 + 4
+		bytes := len(m.Content)
+		for _, tc := range m.ToolCalls {
+			bytes += len(tc.Arguments)
+		}
+		n += (bytes+3)/4 + 4
 	}
 	if n < 1 {
 		return 1

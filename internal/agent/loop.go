@@ -24,11 +24,16 @@ func (m *Manager) ensureTools() {
 	if m.Broker == nil {
 		return
 	}
+	if m.Workspace != "" {
+		_ = tools.EnsureLocal(m.Broker, m.Workspace)
+	} else if !m.Broker.Has("edit_file") || !m.Broker.Has("list_files") || !m.Broker.Has("grep") || !m.Broker.Has("git_status") || !m.Broker.Has("git_diff") || !m.Broker.Has("git_log") {
+		_ = tools.EnsureLocal(m.Broker, ".")
+	}
 	if !m.Broker.Has("update_plan") {
 		m.Broker.Register(tools.Spec{
 			Name: "update_plan", Description: "Replace the current run plan.",
 			Required: []string{"plan"}, Readonly: true, Idempotent: true, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}`),
 			Execute: func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 				return args, nil
 			},
@@ -38,7 +43,7 @@ func (m *Manager) ensureTools() {
 		m.Broker.Register(tools.Spec{
 			Name: "retrieve_resource", Description: "Load one history row by id at summary, excerpt, or verbatim precision.",
 			Required: []string{"id"}, Readonly: true, Idempotent: true, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"precision":{"type":"string"}},"required":["id"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"precision":{"type":"string"}},"required":["id"],"additionalProperties":false}`),
 			Execute: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 				session, _ := ctx.Value(sessionKey).(string)
 				var body struct {
@@ -65,7 +70,7 @@ func (m *Manager) ensureTools() {
 		m.Broker.Register(tools.Spec{
 			Name: "retrieve_history", Description: "Search this session's history index.",
 			Required: []string{"query"}, Readonly: true, Idempotent: true, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`),
 			Execute: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 				session, _ := ctx.Value(sessionKey).(string)
 				if session == "" || m.Store == nil {
@@ -89,7 +94,7 @@ func (m *Manager) ensureTools() {
 		m.Broker.Register(tools.Spec{
 			Name: domain.ToolPoll, Description: "Poll a readonly tool until a JSON field matches or the attempt cap is hit.",
 			Required: []string{"target_tool", "until", "max_attempts"}, Readonly: true, Idempotent: true, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"target_tool":{"type":"string"},"target_args":{"type":"object"},"until":{"type":"object"},"interval_seconds":{"type":"number"},"max_attempts":{"type":"number"},"timeout_seconds":{"type":"number"}},"required":["target_tool","until","max_attempts"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"target_tool":{"type":"string"},"target_args":{"type":"object"},"until":{"type":"object"},"interval_seconds":{"type":"number"},"max_attempts":{"type":"number"},"timeout_seconds":{"type":"number"}},"required":["target_tool","until","max_attempts"],"additionalProperties":false}`),
 			Execute:    m.executePoll,
 		})
 	}
@@ -97,7 +102,7 @@ func (m *Manager) ensureTools() {
 		m.Broker.Register(tools.Spec{
 			Name: domain.ToolExecuteProgram, Description: "Run a pre-authorized Starlark script. The script cannot request new permissions.",
 			Required: []string{"script", "allow"}, Readonly: true, Idempotent: false, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"script":{"type":"string"},"allow":{"type":"array"},"confirm_side_effects":{"type":"array"}},"required":["script","allow"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"script":{"type":"string"},"allow":{"type":"array","items":{"type":"string"}},"confirm_side_effects":{"type":"array","items":{"type":"string"}}},"required":["script","allow"],"additionalProperties":false}`),
 			Execute:    m.executeProgram,
 		})
 	}
@@ -105,8 +110,30 @@ func (m *Manager) ensureTools() {
 		m.Broker.Register(tools.Spec{
 			Name: domain.ToolDelegateTask, Description: "Run a child task with its own trace, checkpoint, and budget.",
 			Required: []string{"goal"}, Readonly: true, Idempotent: false, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"relevant_context":{"type":"string"},"allowed_tools":{"type":"array"},"max_model_calls":{"type":"number"},"max_tool_calls":{"type":"number"}},"required":["goal"]}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"relevant_context":{"type":"string"},"success_criteria":{"type":"string","description":"Natural-language conditions for the subtask to count as done."},"output_contract":{"type":"string","description":"Expected output shape or format."},"allowed_tools":{"type":"array","items":{"type":"string"}},"max_model_calls":{"type":"number"},"max_tool_calls":{"type":"number"}},"required":["goal"],"additionalProperties":false}`),
 			Execute:    m.executeDelegate,
+		})
+	}
+	if !m.Broker.Has(domain.ToolFinishTurn) {
+		m.Broker.Register(tools.Spec{
+			Name:            domain.ToolFinishTurn,
+			Description:     "End the current turn with a final answer, turn summary, and structured memory updates. Must be the only tool call in the response.",
+			Required:        []string{"final_answer"},
+			Readonly:        true,
+			Idempotent:      true,
+			SideEffectClass: "none",
+			Parameters:      json.RawMessage(`{"type":"object","properties":{"final_answer":{"type":"string","description":"User-visible final response for this turn."},"turn_summary":{"type":"string","description":"Concise summary of the turn."},"memory_delta":{"type":"array","description":"Structured session memory updates from this turn.","items":{"type":"object","properties":{"op":{"type":"string","description":"Memory operation: ADD, UPDATE, DELETE, or NOOP."},"section":{"type":"string","description":"Memory section: facts, decisions, pending, references, goal, or progress."},"id":{"type":"string","description":"Entry identifier for facts or decisions."},"text":{"type":"string","description":"Statement or value to store."},"fact":{"type":"string","description":"Shorthand text when adding a fact."},"reason":{"type":"string","description":"Rationale when recording a decision."},"source":{"type":"string","description":"Source turn, invocation, or document id."}},"required":["op"],"additionalProperties":false}},"source_refs":{"type":"array","description":"Source identifiers referenced in this turn.","items":{"type":"string"}}},"required":["final_answer"],"additionalProperties":false}`),
+		})
+	}
+	if !m.Broker.Has(domain.ToolAskUser) {
+		m.Broker.Register(tools.Spec{
+			Name:            domain.ToolAskUser,
+			Description:     "Pause the run and ask the user a question when a decision is needed from the user. Must be the only tool call in the response.",
+			Required:        []string{"question"},
+			Readonly:        true,
+			Idempotent:      true,
+			SideEffectClass: "none",
+			Parameters:      json.RawMessage(`{"type":"object","properties":{"question":{"type":"string","description":"Question to ask the user."}},"required":["question"],"additionalProperties":false}`),
 		})
 	}
 }
@@ -116,8 +143,19 @@ type loopState struct {
 	reminded  bool
 	obs       []runtime.Observation
 	versions  map[string]int
+	toolRefs  map[string]string
 	prefixN   int
 	userAt    int
+}
+
+func (st *loopState) setToolRef(providerCallID, invID string) {
+	if providerCallID == "" || invID == "" {
+		return
+	}
+	if st.toolRefs == nil {
+		st.toolRefs = map[string]string{}
+	}
+	st.toolRefs[providerCallID] = invID
 }
 
 func (st *loopState) version(id string) int {
@@ -172,7 +210,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		if st.prefixN > 0 && st.prefixN <= len(messages) {
 			beforePrefix = contextpkg.PrefixHash(toContext(messages[:st.prefixN]))
 		}
-		messages = maybeCompact(messages, st.prefixN, st.userAt, m.tokenLimit())
+		messages = maybeCompact(messages, st.prefixN, st.userAt, m.tokenLimit(), st.toolRefs)
 		var prefix []provider.Message
 		if st.prefixN > 0 && st.prefixN <= len(messages) {
 			prefix = append([]provider.Message(nil), messages[:st.prefixN]...)
@@ -267,6 +305,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		if driveErr != nil && !errors.Is(driveErr, domain.ErrUnknownOutcome) && batch.Status != domain.BatchProtocolError && ctx.Err() == nil {
 			return m.finish(ctx, run, domain.EventFatal, "", asDomain(driveErr))
 		} else if errors.Is(driveErr, domain.ErrUnknownOutcome) {
+			_ = m.saveCheckpoint(persist, run, messages, resp.Items, resp.Provider, st)
 			current, gerr := m.Store.GetRun(persist, run.ID)
 			if gerr != nil {
 				return storage.Run{}, gerr
@@ -291,6 +330,9 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		}
 		switch batch.Status {
 		case domain.BatchWaitingApproval:
+			if err := m.recordPendingApproval(ctx, run, batch); err != nil {
+				return storage.Run{}, err
+			}
 			_ = m.saveCheckpoint(ctx, run, messages, resp.Items, resp.Provider, st)
 			return m.finish(ctx, run, domain.EventApproval, "", nil)
 		case domain.BatchNeedsReconciliation:
@@ -361,8 +403,13 @@ func (m *Manager) commitAnswer(ctx context.Context, run storage.Run, resp domain
 
 func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func(domain.Invocation) domain.GateDecision {
 	return func(inv domain.Invocation) domain.GateDecision {
-		if inv.Name == "run_command" && tools.Dangerous(jsonString(inv.Arguments, "command"), m.Workspace) {
-			return domain.GateNeedsApproval
+		if inv.Name == "run_command" {
+			if !tools.ValidCwd(m.Workspace, jsonString(inv.Arguments, "cwd")) {
+				return domain.GateDeny
+			}
+			if tools.Dangerous(jsonString(inv.Arguments, "command"), m.Workspace) {
+				return domain.GateNeedsApproval
+			}
 		}
 		if st != nil && st.sensitive && (inv.Name == "run_command" || inv.Name == "http_fetch") {
 			return domain.GateDeny
@@ -371,8 +418,8 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 			return domain.GateDeny
 		}
 		res, err := m.Broker.Authorize(ctx, tools.Request{
-			RunID: run.ID, SessionID: run.SessionID, Tool: inv.Name, Args: inv.Arguments,
-			ApprovalPossible: inv.Name == "write_file" || inv.Name == "run_command",
+			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
+			ApprovalPossible: inv.Name == "write_file" || inv.Name == "edit_file" || inv.Name == "run_command",
 			SensitiveSeen:    st != nil && st.sensitive,
 			Egress:           inv.Name == "run_command" || inv.Name == "http_fetch",
 			Now:              m.now(),
@@ -412,7 +459,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			return nil, domain.ErrUnknownOutcome
 		}
 		res, err := m.Broker.Invoke(ctx, tools.Request{
-			RunID: run.ID, SessionID: run.SessionID, Tool: inv.Name, Args: inv.Arguments,
+			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
 			ApprovalPossible: false,
 			SensitiveSeen:    st.sensitive,
@@ -449,6 +496,9 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 		st.setVersion(inv.ID, nextVer)
 		if text := string(data); !domain.ContainsOpaqueBytes([]byte(text), nil) {
 			m.indexDoc(ctx, inv.ID, run.SessionID, text, "tool")
+			if st != nil {
+				st.setToolRef(inv.ProviderCallID, inv.ID)
+			}
 		}
 		return data, nil
 	}
@@ -503,9 +553,11 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 		})
 	}
 	if m.Depth > 0 {
+		canWrite := m.parentHasWorkspaceWriteGrant(ctx, run)
+		canEdit := m.parentHasWorkspaceToolGrant(ctx, run, "edit_file") || canWrite
 		for _, name := range m.AllowedTools {
 			scope := ""
-			if m.Workspace != "" && (name == "read_file" || name == "run_command") {
+			if m.Workspace != "" && (name == "read_file" || name == "list_files" || name == "grep" || name == "git_status" || name == "git_diff" || name == "git_log" || name == "run_command" || (name == "write_file" && canWrite) || (name == "edit_file" && canEdit)) {
 				scope = m.Workspace
 			}
 			add(name, scope)
@@ -513,6 +565,11 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 	} else {
 		if m.Workspace != "" {
 			add("read_file", m.Workspace)
+			add("list_files", m.Workspace)
+			add("grep", m.Workspace)
+			add("git_status", m.Workspace)
+			add("git_diff", m.Workspace)
+			add("git_log", m.Workspace)
 			add("run_command", m.Workspace)
 		}
 		add("update_plan", "")
@@ -542,13 +599,49 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 	return nil
 }
 
+func (m *Manager) parentHasWorkspaceWriteGrant(ctx context.Context, run storage.Run) bool {
+	return m.parentHasWorkspaceToolGrant(ctx, run, "write_file")
+}
+
+func (m *Manager) parentHasWorkspaceToolGrant(ctx context.Context, run storage.Run, tool string) bool {
+	if m.Workspace == "" {
+		return false
+	}
+	for _, g := range m.Grants {
+		if (g.State == "" || g.State == "active") && g.Tool == tool && (g.Op == "" || g.Op == "call") && g.InvocationID == "" && g.ResourceScope == m.Workspace {
+			return true
+		}
+	}
+	if m.Store == nil || run.ParentRunID == "" {
+		return false
+	}
+	parentGrants, err := m.Store.ListGrants(ctx, run.ParentRunID, run.SessionID, m.now())
+	if err != nil {
+		return false
+	}
+	for _, g := range parentGrants {
+		if (g.State == "" || g.State == "active") && g.Tool == tool && (g.Op == "" || g.Op == "call") && g.InvocationID == "" && g.ResourceScope == m.Workspace {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) toolDefs() []provider.ToolDefinition {
 	if m.Broker == nil {
 		return nil
 	}
+	m.ensureTools()
 	var out []provider.ToolDefinition
 	for _, spec := range m.Broker.List() {
-		out = append(out, provider.ToolDefinition{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+		if m.Depth > 0 && (spec.Name == domain.ToolAskUser || spec.Name == domain.ToolDelegateTask) {
+			continue
+		}
+		params := tools.CleanSchema(spec.Parameters)
+		if len(params) == 0 {
+			params = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		out = append(out, provider.ToolDefinition{Name: spec.Name, Description: spec.Description, Parameters: params})
 	}
 	return out
 }
@@ -574,7 +667,7 @@ func toolResultMessages(batch domain.Batch) []provider.Message {
 		if err != nil {
 			raw = []byte(`{"untrusted":true}`)
 		}
-		out = append(out, provider.Message{Role: "tool", ToolCallID: inv.ProviderCallID, Content: string(raw)})
+		out = append(out, provider.Message{Role: "tool", ToolCallID: inv.ProviderCallID, Ref: inv.ID, Content: string(raw)})
 	}
 	return out
 }

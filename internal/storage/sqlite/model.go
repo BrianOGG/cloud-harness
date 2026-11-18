@@ -254,7 +254,7 @@ func (db *DB) SaveMemory(ctx context.Context, sessionID, stateJSON, sourceRefs s
 func (db *DB) LoadBatches(ctx context.Context, runID string) ([]storage.StoredBatch, error) {
 	rows, err := db.sql.QueryContext(ctx, `
 		SELECT batch_id, model_response_id, run_id, status, action, next_ordinal, protocol_json
-		FROM tool_batches WHERE run_id = ?`, runID)
+		FROM tool_batches WHERE run_id = ? ORDER BY rowid ASC`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -326,21 +326,72 @@ func (db *DB) loadInvocations(ctx context.Context, batchID string) ([]domain.Inv
 	return out, rows.Err()
 }
 
+func (db *DB) SaveApproval(ctx context.Context, a domain.Approval) error {
+	if a.ID == "" {
+		a.ID = domain.NewID("apr_")
+	}
+	until := ""
+	if !a.ValidUntil.IsZero() {
+		until = formatTime(a.ValidUntil)
+	}
+	created := a.CreatedAt
+	if created.IsZero() {
+		created = db.now()
+	}
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO approvals(id, run_id, invocation_id, tool, resource_scope, state, valid_until, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET state = excluded.state, resource_scope = excluded.resource_scope, valid_until = excluded.valid_until`,
+		a.ID, a.RunID, a.InvocationID, a.Tool, a.ResourceScope, a.State, until, formatTime(created))
+	return err
+}
+
+func (db *DB) UpdateApprovalState(ctx context.Context, runID, invocationID, state string) error {
+	_, err := db.sql.ExecContext(ctx, `
+		UPDATE approvals SET state = ? WHERE run_id = ? AND invocation_id = ?`,
+		state, runID, invocationID)
+	return err
+}
+
+func (db *DB) ListApprovals(ctx context.Context, runID string) ([]domain.Approval, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT id, run_id, invocation_id, tool, resource_scope, state, valid_until, created_at
+		FROM approvals WHERE run_id = ? ORDER BY created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Approval
+	for rows.Next() {
+		var a domain.Approval
+		var until, created string
+		if err := rows.Scan(&a.ID, &a.RunID, &a.InvocationID, &a.Tool, &a.ResourceScope, &a.State, &until, &created); err != nil {
+			return nil, err
+		}
+		if until != "" {
+			a.ValidUntil, _ = parseTime(until)
+		}
+		a.CreatedAt, _ = parseTime(created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) SaveGrant(ctx context.Context, g domain.Grant, now time.Time) error {
 	until := ""
 	if !g.ValidUntil.IsZero() {
 		until = formatTime(g.ValidUntil)
 	}
 	_, err := db.sql.ExecContext(ctx, `
-		INSERT INTO scoped_grants(id, subject, run_id, session_id, tool, op, resource_scope, valid_until, state, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		g.ID, g.Subject, g.RunID, g.SessionID, g.Tool, g.Op, g.ResourceScope, until, g.State, formatTime(now))
+		INSERT INTO scoped_grants(id, subject, run_id, session_id, invocation_id, tool, op, resource_scope, valid_until, state, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Subject, g.RunID, g.SessionID, g.InvocationID, g.Tool, g.Op, g.ResourceScope, until, g.State, formatTime(now))
 	return err
 }
 
 func (db *DB) ListGrants(ctx context.Context, runID, sessionID string, now time.Time) ([]domain.Grant, error) {
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT id, subject, run_id, session_id, tool, op, resource_scope, valid_until, state
+		SELECT id, subject, run_id, session_id, invocation_id, tool, op, resource_scope, valid_until, state
 		FROM scoped_grants
 		WHERE state = 'active' AND (run_id = ? OR (run_id = '' AND session_id = ?))`, runID, sessionID)
 	if err != nil {
@@ -351,7 +402,7 @@ func (db *DB) ListGrants(ctx context.Context, runID, sessionID string, now time.
 	for rows.Next() {
 		var g domain.Grant
 		var until string
-		if err := rows.Scan(&g.ID, &g.Subject, &g.RunID, &g.SessionID, &g.Tool, &g.Op, &g.ResourceScope, &until, &g.State); err != nil {
+		if err := rows.Scan(&g.ID, &g.Subject, &g.RunID, &g.SessionID, &g.InvocationID, &g.Tool, &g.Op, &g.ResourceScope, &until, &g.State); err != nil {
 			return nil, err
 		}
 		if until != "" {

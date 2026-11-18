@@ -12,7 +12,8 @@ Settings load from an optional JSON file and then from the environment. The envi
   "db": ".cloud-harness/harness.db",
   "provider": "mock",
   "openai_base_url": "https://api.openai.com/v1",
-  "openai_model": "gpt-4.1-mini"
+  "openai_model": "gpt-4.1-mini",
+  "command_env_allow": []
 }
 ```
 

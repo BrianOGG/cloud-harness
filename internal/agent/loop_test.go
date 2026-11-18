@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
@@ -161,6 +162,197 @@ func TestDangerousCommandWaitsWithoutRunning(t *testing.T) {
 	}
 }
 
+func TestToolDefsExposeControlTools(t *testing.T) {
+	ctx := context.Background()
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "d1",
+			Name:           domain.ToolDelegateTask,
+			Arguments:      json.RawMessage(`{"goal":"finish child with structured summary","max_model_calls":2,"max_tool_calls":2}`),
+		}),
+		toolResp(domain.ToolCall{
+			ProviderCallID: "cf1",
+			Name:           domain.ToolFinishTurn,
+			Arguments:      json.RawMessage(`{"final_answer":"child done","turn_summary":"child finished"}`),
+		}),
+		textOnly("parent done"),
+	}}
+	m, db, root := testManager(t, mock)
+
+	topByName := map[string]provider.ToolDefinition{}
+	for _, td := range m.toolDefs() {
+		topByName[td.Name] = td
+	}
+	for _, want := range []string{domain.ToolFinishTurn, domain.ToolAskUser, domain.ToolDelegateTask} {
+		if _, ok := topByName[want]; !ok {
+			t.Fatalf("top-level toolDefs missing %q: %+v", want, topByName)
+		}
+	}
+
+	var finishSchema struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(topByName[domain.ToolFinishTurn].Parameters, &finishSchema); err != nil {
+		t.Fatalf("unmarshal finish_turn schema: %v", err)
+	}
+	if finishSchema.Type != "object" {
+		t.Fatalf("finish_turn schema type=%q, want object", finishSchema.Type)
+	}
+	for _, prop := range []string{"final_answer", "turn_summary", "memory_delta", "source_refs"} {
+		if _, ok := finishSchema.Properties[prop]; !ok {
+			t.Fatalf("finish_turn schema missing property %q: %s", prop, topByName[domain.ToolFinishTurn].Parameters)
+		}
+	}
+	var memDeltaProp struct {
+		Type  string `json:"type"`
+		Items struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+			Required   []string                   `json:"required"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(finishSchema.Properties["memory_delta"], &memDeltaProp); err != nil {
+		t.Fatalf("unmarshal memory_delta property: %v", err)
+	}
+	if memDeltaProp.Type != "array" || memDeltaProp.Items.Type != "object" {
+		t.Fatalf("unexpected memory_delta schema: %+v", memDeltaProp)
+	}
+	for _, deltaField := range []string{"op", "section", "id", "text", "fact", "reason", "source"} {
+		if _, ok := memDeltaProp.Items.Properties[deltaField]; !ok {
+			t.Fatalf("memory_delta.items missing property %q", deltaField)
+		}
+	}
+
+	var askSchema struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(topByName[domain.ToolAskUser].Parameters, &askSchema); err != nil {
+		t.Fatalf("unmarshal ask_user schema: %v", err)
+	}
+	if askSchema.Type != "object" {
+		t.Fatalf("ask_user schema type=%q, want object", askSchema.Type)
+	}
+	if _, ok := askSchema.Properties["question"]; !ok {
+		t.Fatalf("ask_user schema missing question property: %s", topByName[domain.ToolAskUser].Parameters)
+	}
+	hasQuestionReq := false
+	for _, r := range askSchema.Required {
+		if r == "question" {
+			hasQuestionReq = true
+		}
+	}
+	if !hasQuestionReq {
+		t.Fatalf("ask_user required=%v, want question", askSchema.Required)
+	}
+
+	childMgr := &Manager{Store: db, Provider: mock, Broker: m.Broker, Workspace: root, Depth: 1}
+	childByName := map[string]provider.ToolDefinition{}
+	for _, td := range childMgr.toolDefs() {
+		childByName[td.Name] = td
+	}
+	if _, ok := childByName[domain.ToolFinishTurn]; !ok {
+		t.Fatalf("child toolDefs missing finish_turn: %+v", childByName)
+	}
+	if _, ok := childByName[domain.ToolAskUser]; ok {
+		t.Fatalf("child toolDefs must not include ask_user: %+v", childByName)
+	}
+	if _, ok := childByName[domain.ToolDelegateTask]; ok {
+		t.Fatalf("child toolDefs must not include delegate_task: %+v", childByName)
+	}
+
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "delegate and finish")
+	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "parent done" {
+		t.Fatalf("run %+v %v", run, err)
+	}
+	if len(mock.Requests) < 2 {
+		t.Fatalf("expected at least 2 requests, got %d", len(mock.Requests))
+	}
+	parentReqTools := map[string]bool{}
+	for _, td := range mock.Requests[0].Tools {
+		parentReqTools[td.Name] = true
+	}
+	if !parentReqTools[domain.ToolFinishTurn] || !parentReqTools[domain.ToolAskUser] || !parentReqTools[domain.ToolDelegateTask] {
+		t.Fatalf("parent request tools missing control/delegate tools: %+v", parentReqTools)
+	}
+	childReqTools := map[string]bool{}
+	for _, td := range mock.Requests[1].Tools {
+		childReqTools[td.Name] = true
+	}
+	if !childReqTools[domain.ToolFinishTurn] {
+		t.Fatalf("child request tools missing finish_turn: %+v", childReqTools)
+	}
+	if childReqTools[domain.ToolAskUser] || childReqTools[domain.ToolDelegateTask] {
+		t.Fatalf("child request tools leaked ask_user or delegate_task: %+v", childReqTools)
+	}
+}
+
+func TestFinishTurnPersistsMemoryDelta(t *testing.T) {
+	ctx := context.Background()
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{
+			ProviderCallID: "ft_1",
+			Name:           domain.ToolFinishTurn,
+			Arguments: json.RawMessage(`{
+				"final_answer":"database port set to 5432",
+				"turn_summary":"configured postgres on 5432",
+				"memory_delta":[
+					{"op":"ADD","section":"facts","id":"db_port","text":"postgres runs on port 5432","source":"turn_1"},
+					{"op":"ADD","section":"decisions","id":"db_engine","text":"use postgres","reason":"ACID compliance","source":"turn_1"}
+				],
+				"source_refs":["cfg_1"]
+			}`),
+		}),
+	}}
+	m, db, _ := testManager(t, mock)
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "configure database")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunCompleted || run.FinalAnswer != "database port set to 5432" {
+		t.Fatalf("unexpected run state: %+v", run)
+	}
+	if run.Budget.UsedToolCalls != 0 {
+		t.Fatalf("finish_turn must not execute via Broker.Invoke, used_tool_calls=%d", run.Budget.UsedToolCalls)
+	}
+	batches, err := db.LoadBatches(ctx, run.ID)
+	if err != nil || len(batches) != 1 || len(batches[0].Invocations) != 1 {
+		t.Fatalf("batches %+v %v", batches, err)
+	}
+	if batches[0].Invocations[0].Dispatched || batches[0].Invocations[0].Status != domain.InvSucceeded {
+		t.Fatalf("finish_turn invocation %+v", batches[0].Invocations[0])
+	}
+	summary, err := db.GetTurnSummary(ctx, run.TurnID)
+	if err != nil || summary != "configured postgres on 5432" {
+		t.Fatalf("summary=%q err=%v", summary, err)
+	}
+	rawMem, ver, err := db.LatestMemory(ctx, ses.ID)
+	if err != nil || ver < 1 {
+		t.Fatalf("LatestMemory ver=%d err=%v", ver, err)
+	}
+	mem, err := contextpkg.ParseMemory(rawMem)
+	if err != nil {
+		t.Fatalf("ParseMemory: %v", err)
+	}
+	if len(mem.Facts) != 1 || mem.Facts[0].ID != "db_port" || mem.Facts[0].Text != "postgres runs on port 5432" {
+		t.Fatalf("unexpected facts in session memory: %+v", mem.Facts)
+	}
+	if len(mem.Decisions) != 1 || mem.Decisions[0].ID != "db_engine" || mem.Decisions[0].Text != "use postgres" || mem.Decisions[0].Reason != "ACID compliance" {
+		t.Fatalf("unexpected decisions in session memory: %+v", mem.Decisions)
+	}
+}
+
 func must(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -168,4 +360,152 @@ func must(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestEnsureToolsRegistersFileToolsetAndEditApproval(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// Do not call tools.RegisterLocal manually: verify ensureTools registers the toolset.
+	broker := tools.NewBroker(db, db)
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(
+			domain.ToolCall{ProviderCallID: "lf1", Name: "list_files", Arguments: json.RawMessage(`{"pattern":"*.txt"}`)},
+			domain.ToolCall{ProviderCallID: "gr1", Name: "grep", Arguments: json.RawMessage(`{"pattern":"OLD_VAL","literal":true}`)},
+			domain.ToolCall{ProviderCallID: "ed1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"cfg.txt","old_string":"OLD_VAL","new_string":"NEW_VAL"}`)},
+		),
+		textOnly("edited after approval"),
+	}}
+	m := &Manager{Store: db, Provider: mock, Broker: broker, Workspace: root, OwnerID: "loop"}
+	if err := os.WriteFile(filepath.Join(root, "cfg.txt"), []byte("key=OLD_VAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defs := map[string]provider.ToolDefinition{}
+	for _, td := range m.toolDefs() {
+		defs[td.Name] = td
+	}
+	for _, want := range []string{"read_file", "write_file", "edit_file", "list_files", "grep", "git_status", "git_diff", "git_log", "run_command"} {
+		if _, ok := defs[want]; !ok {
+			t.Fatalf("ensureTools did not expose %q in toolDefs", want)
+		}
+	}
+
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "update cfg.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
+		t.Fatalf("expected edit_file to wait for approval, got %+v", run)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "cfg.txt"))
+	if err != nil || string(body) != "key=OLD_VAL\n" {
+		t.Fatalf("edit_file modified file before approval: %q %v", body, err)
+	}
+
+	resumed, err := m.Resume(ctx, run.ID, ResumeInput{Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != domain.RunCompleted || resumed.FinalAnswer != "edited after approval" {
+		t.Fatalf("resumed %+v", resumed)
+	}
+	body, err = os.ReadFile(filepath.Join(root, "cfg.txt"))
+	if err != nil || string(body) != "key=NEW_VAL\n" {
+		t.Fatalf("cfg.txt after approved edit = %q %v", body, err)
+	}
+}
+
+func TestProviderSchemasContainOnlyStandardKeys(t *testing.T) {
+	mock := &provider.Mock{}
+	m, _, _ := testManager(t, mock)
+	m.Broker.Register(tools.Spec{
+		Name:            "polluted_spec",
+		Description:     "Tool with internal metadata in raw parameters",
+		Readonly:        true,
+		Idempotent:      true,
+		SideEffectClass: "none",
+		Parameters: json.RawMessage(`{
+			"type":"object",
+			"readOnly":true,
+			"sideEffect":"none",
+			"reversible":true,
+			"properties":{
+				"input":{"type":"string","readOnly":true,"sideEffect":"none","reversible":false}
+			},
+			"required":["input"],
+			"additionalProperties":false
+		}`),
+	})
+
+	standardKeys := map[string]bool{
+		"type":                 true,
+		"properties":           true,
+		"required":             true,
+		"items":                true,
+		"description":          true,
+		"enum":                 true,
+		"additionalProperties": true,
+		"default":              true,
+		"minimum":              true,
+		"maximum":              true,
+		"minItems":             true,
+		"maxItems":             true,
+		"minLength":            true,
+		"maxLength":            true,
+		"pattern":              true,
+		"format":               true,
+		"title":                true,
+		"anyOf":                true,
+		"oneOf":                true,
+		"allOf":                true,
+		"not":                  true,
+		"const":                true,
+	}
+	var checkNode func(toolName, loc string, node map[string]any)
+	checkNode = func(toolName, loc string, node map[string]any) {
+		t.Helper()
+		for k := range node {
+			if !standardKeys[k] {
+				t.Fatalf("tool %s at %s contains non-standard schema key %q in %v", toolName, loc, k, node)
+			}
+		}
+		if props, ok := node["properties"].(map[string]any); ok {
+			for propName, propVal := range props {
+				propMap, ok := propVal.(map[string]any)
+				if !ok {
+					t.Fatalf("tool %s property %s.%s is not a schema object: %#v", toolName, loc, propName, propVal)
+				}
+				checkNode(toolName, loc+".properties."+propName, propMap)
+			}
+		}
+		if items, ok := node["items"].(map[string]any); ok {
+			checkNode(toolName, loc+".items", items)
+		}
+	}
+
+	defs := m.toolDefs()
+	if len(defs) == 0 {
+		t.Fatal("toolDefs returned no tools")
+	}
+	for _, td := range defs {
+		var node map[string]any
+		if err := json.Unmarshal(td.Parameters, &node); err != nil {
+			t.Fatalf("tool %s parameters invalid JSON: %v (%s)", td.Name, err, td.Parameters)
+		}
+		checkNode(td.Name, "$", node)
+		for _, forbidden := range []string{"readOnly", "readonly", "sideEffect", "sideEffectClass", "reversible"} {
+			if strings.Contains(string(td.Parameters), `"`+forbidden+`"`) {
+				t.Fatalf("tool %s provider schema leaked %q: %s", td.Name, forbidden, td.Parameters)
+			}
+		}
+	}
 }

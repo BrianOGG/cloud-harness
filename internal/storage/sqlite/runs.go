@@ -82,6 +82,28 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 	return out, rows.Err()
 }
 
+func (db *DB) ListExpiredRunningRuns(ctx context.Context, now time.Time) ([]storage.Run, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at
+		FROM runs r
+		LEFT JOIN run_leases l ON l.run_id = r.id
+		WHERE r.status = ? AND (l.run_id IS NULL OR l.expires_at <= ?)
+		ORDER BY r.created_at ASC`, domain.RunRunning, formatTime(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storage.Run
+	for rows.Next() {
+		r, err := scanRun(rows, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) CompareAndSwapRun(ctx context.Context, next storage.Run, expectedVersion int64) error {
 	budget, err := json.Marshal(next.Budget)
 	if err != nil {
