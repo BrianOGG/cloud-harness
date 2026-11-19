@@ -24,6 +24,10 @@ type snapshot struct {
 }
 
 func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState) error {
+	return m.writeCheckpoint(ctx, run, messages, continuation, contProvider, st, false)
+}
+
+func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState, initial bool) error {
 	snap := snapshot{Messages: messages, Continuation: continuation, ContProvider: contProvider}
 	if st != nil {
 		snap.Observations = st.obs
@@ -42,6 +46,11 @@ func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages 
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		return err
+	}
+	if initial {
+		// Version zero keeps this fallback behind every existing checkpoint,
+		// including when a caller uses a frozen clock for the whole run.
+		return m.Store.SaveCheckpoint(ctx, run.ID, 0, raw, m.now())
 	}
 	current, err := m.Store.GetRun(ctx, run.ID)
 	if err != nil {

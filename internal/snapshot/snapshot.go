@@ -116,6 +116,17 @@ func Open(workspace string, store RecordStore) (*Snapshotter, error) {
 // WorkspaceID returns the stable ID derived from the absolute workspace path.
 func (s *Snapshotter) WorkspaceID() string { return s.workspaceID }
 
+// WorkspaceIDForPath returns the stable workspace ID without initializing the
+// shadow repository. Callers can persist the workspace binding before the
+// first (possibly much later) snapshot is captured.
+func WorkspaceIDForPath(workspace string) (string, error) {
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", err
+	}
+	return workspaceIDFor(filepath.Clean(abs)), nil
+}
+
 // Status reports disabled when the git executable could not be resolved.
 func (s *Snapshotter) Status() Status {
 	if s.gitErr != nil {
@@ -296,6 +307,42 @@ func (s *Snapshotter) Diff(ctx context.Context, a, b storage.WorkspaceSnapshot) 
 		return DiffSummary{}, err
 	}
 	return DiffSummary{Changes: changes, Stat: strings.TrimSpace(string(stat))}, nil
+}
+
+// DiffCurrent compares the live workspace with a persisted target without
+// creating a snapshot record. It stages only in the isolated shadow index.
+func (s *Snapshotter) DiffCurrent(ctx context.Context, target storage.WorkspaceSnapshot) (DiffSummary, error) {
+	// Capture under the same lock as Snapshot/Restore, then let Diff acquire
+	// that lock itself. The captured tree is immutable and needs no DB record.
+	current, err := func() (storage.WorkspaceSnapshot, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := s.ensureGit(ctx); err != nil {
+			return storage.WorkspaceSnapshot{}, err
+		}
+		if target.WorkspaceID != s.workspaceID {
+			return storage.WorkspaceSnapshot{}, errors.New("snapshot belongs to a different workspace")
+		}
+		if _, err := s.git(ctx, "add", "-A", "--", "."); err != nil {
+			return storage.WorkspaceSnapshot{}, err
+		}
+		if err := s.replaceFilteredBlobs(ctx); err != nil {
+			return storage.WorkspaceSnapshot{}, err
+		}
+		out, err := s.git(ctx, "write-tree")
+		if err != nil {
+			return storage.WorkspaceSnapshot{}, err
+		}
+		oid := strings.TrimSpace(string(out))
+		if oid == "" {
+			return storage.WorkspaceSnapshot{}, errors.New("git write-tree returned an empty tree OID")
+		}
+		return storage.WorkspaceSnapshot{WorkspaceID: s.workspaceID, TreeOID: oid}, nil
+	}()
+	if err != nil {
+		return DiffSummary{}, err
+	}
+	return s.Diff(ctx, current, target)
 }
 
 type treeEntry struct {

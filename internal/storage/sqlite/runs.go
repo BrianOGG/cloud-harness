@@ -45,21 +45,21 @@ func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
 		return err
 	}
 	_, err = db.sql.ExecContext(ctx, `
-		INSERT INTO runs(id, parent_run_id, session_id, turn_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
+		INSERT INTO runs(id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.WorkspaceID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	return err
 }
 
 func (db *DB) GetRun(ctx context.Context, id string) (storage.Run, error) {
 	row := db.sql.QueryRowContext(ctx, `
-		SELECT id, parent_run_id, session_id, turn_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at
+		SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at
 		FROM runs WHERE id = ?`, id)
 	return scanRun(row, id)
 }
 
 func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, error) {
-	q := `SELECT id, parent_run_id, session_id, turn_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at FROM runs`
+	q := `SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at FROM runs`
 	var (
 		rows *sql.Rows
 		err  error
@@ -86,7 +86,7 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 
 func (db *DB) ListExpiredRunningRuns(ctx context.Context, now time.Time) ([]storage.Run, error) {
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at
+		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.workspace_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at
 		FROM runs r
 		LEFT JOIN run_leases l ON l.run_id = r.id
 		WHERE r.status = ? AND (l.run_id IS NULL OR l.expires_at <= ?)
@@ -328,19 +328,83 @@ func (db *DB) CommitRunTransition(ctx context.Context, next storage.Run, expecte
 
 func (db *DB) SaveCheckpoint(ctx context.Context, runID string, version int64, snapshot []byte, now time.Time) error {
 	_, err := db.sql.ExecContext(ctx, `
-		INSERT INTO checkpoints(id, run_id, version, snapshot_json, created_at) VALUES(?, ?, ?, ?, ?)`,
-		domain.NewID("ckp_"), runID, version, string(snapshot), formatTime(now))
+		INSERT INTO checkpoints(id, run_id, version, snapshot_json, event_seq, created_at)
+		VALUES(?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?), ?)`,
+		domain.NewID("ckp_"), runID, version, string(snapshot), runID, formatTime(now))
 	return err
 }
 
 func (db *DB) LatestCheckpoint(ctx context.Context, runID string) ([]byte, error) {
 	var raw string
 	err := db.sql.QueryRowContext(ctx, `
-		SELECT snapshot_json FROM checkpoints WHERE run_id = ? ORDER BY version DESC, created_at DESC LIMIT 1`, runID).Scan(&raw)
+		SELECT snapshot_json FROM checkpoints WHERE run_id = ?
+		ORDER BY version DESC, created_at DESC LIMIT 1`, runID).Scan(&raw)
 	if err != nil {
 		return nil, mapErr(err, runID)
 	}
 	return []byte(raw), nil
+}
+
+// LatestCheckpointAtOrBefore locates a whole checkpoint by its actual event
+// boundary. Legacy checkpoints without a sequence are never guessed from time
+// or run version.
+func (db *DB) LatestCheckpointAtOrBefore(ctx context.Context, runID string, eventSeq int64) ([]byte, int64, error) {
+	var raw string
+	var seq sql.NullInt64
+	err := db.sql.QueryRowContext(ctx, `
+		SELECT snapshot_json, event_seq FROM checkpoints
+		WHERE run_id = ? AND event_seq IS NOT NULL AND event_seq <= ?
+		ORDER BY event_seq DESC, version DESC, created_at DESC LIMIT 1`, runID, eventSeq).Scan(&raw, &seq)
+	if err != nil {
+		return nil, 0, mapErr(err, runID)
+	}
+	if !seq.Valid {
+		return nil, 0, fmt.Errorf("checkpoint for run %q has no event sequence", runID)
+	}
+	return []byte(raw), seq.Int64, nil
+}
+
+// RewindChat removes events after the requested boundary and drops newer
+// checkpoints in one transaction. It refuses to mutate anything when the run
+// has no checkpoint at or before that boundary.
+func (db *DB) RewindChat(ctx context.Context, runID string, eventSeq int64) (storage.ChatRewindResult, error) {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return storage.ChatRewindResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var checkpointSeq, checkpointVersion int64
+	var checkpointTime string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT event_seq, version, created_at FROM checkpoints
+		WHERE run_id = ? AND event_seq IS NOT NULL AND event_seq <= ?
+		ORDER BY event_seq DESC, version DESC, created_at DESC LIMIT 1`, runID, eventSeq).Scan(&checkpointSeq, &checkpointVersion, &checkpointTime); err != nil {
+		if err == sql.ErrNoRows {
+			return storage.ChatRewindResult{}, fmt.Errorf("run %q has no checkpoint at or before event seq %d", runID, eventSeq)
+		}
+		return storage.ChatRewindResult{}, err
+	}
+	var result storage.ChatRewindResult
+	result.CheckpointSeq = checkpointSeq
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1), COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0)
+		FROM events WHERE run_id = ? AND seq > ?`, runID, eventSeq).
+		Scan(&result.DeletedEvents, &result.FirstSeq, &result.LastSeq); err != nil {
+		return storage.ChatRewindResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE run_id = ? AND seq > ?`, runID, eventSeq); err != nil {
+		return storage.ChatRewindResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM checkpoints WHERE run_id = ? AND
+		(event_seq IS NULL OR event_seq > ? OR version > ? OR (version = ? AND created_at > ?))`,
+		runID, checkpointSeq, checkpointVersion, checkpointVersion, checkpointTime); err != nil {
+		return storage.ChatRewindResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return storage.ChatRewindResult{}, err
+	}
+	return result, nil
 }
 
 func (db *DB) LookupIdempotency(ctx context.Context, runID, toolName, key string) (json.RawMessage, bool, error) {
@@ -515,7 +579,7 @@ func scanRun(sc scanner, id string) (storage.Run, error) {
 	var r storage.Run
 	var budget, errJSON, created, updated string
 	var status, reason string
-	err := sc.Scan(&r.ID, &r.ParentRunID, &r.SessionID, &r.TurnID, &status, &reason, &budget, &r.Version, &r.FinalAnswer, &errJSON, &created, &updated)
+	err := sc.Scan(&r.ID, &r.ParentRunID, &r.SessionID, &r.TurnID, &r.WorkspaceID, &status, &reason, &budget, &r.Version, &r.FinalAnswer, &errJSON, &created, &updated)
 	if err != nil {
 		return storage.Run{}, mapErr(err, id)
 	}

@@ -177,6 +177,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	childRun := storage.Run{
 		ID: domain.NewID("run_"), ParentRunID: parent.ID, SessionID: parent.SessionID, TurnID: turn.ID,
 		Status: domain.RunRunning, Budget: childBudget, Version: 1, CreatedAt: now, UpdatedAt: now,
+		WorkspaceID: parent.WorkspaceID,
 	}
 	if err := m.Store.CreateRun(ctx, childRun); err != nil {
 		return nil, err

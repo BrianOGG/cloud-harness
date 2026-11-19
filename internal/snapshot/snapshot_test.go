@@ -144,6 +144,65 @@ func TestSnapshotUnavailableWhenGitIsNotOnPath(t *testing.T) {
 	}
 }
 
+func TestDiffCurrentPreviewsLiveChangesWithoutSnapshotRecord(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "harness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	snapper, err := Open(workspace, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := WorkspaceIDForPath(workspace)
+	if err != nil || id != snapper.WorkspaceID() {
+		t.Fatalf("path identity=%q, snapshot identity=%q, err=%v", id, snapper.WorkspaceID(), err)
+	}
+	writeWorkspaceFile(t, workspace, "A", []byte("old"))
+	writeWorkspaceFile(t, workspace, "C", []byte("restore me"))
+	target, err := snapper.Snapshot(ctx, "target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceFile(t, workspace, "A", []byte("live"))
+	writeWorkspaceFile(t, workspace, "B", []byte("delete me"))
+	if err := os.Remove(filepath.Join(workspace, "C")); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := snapper.DiffCurrent(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"A": "M", "B": "D", "C": "A"}
+	if len(diff.Changes) != len(want) {
+		t.Fatalf("diff=%+v", diff)
+	}
+	for _, change := range diff.Changes {
+		if want[change.Path] != change.Status {
+			t.Fatalf("unexpected change: %+v", change)
+		}
+	}
+	records, err := snapper.List(ctx)
+	if err != nil || len(records) != 1 || records[0].ID != target.ID {
+		t.Fatalf("preview persisted snapshot: %+v, err=%v", records, err)
+	}
+	for file, expected := range map[string]string{"A": "live", "B": "delete me"} {
+		got, err := os.ReadFile(filepath.Join(workspace, file))
+		if err != nil || string(got) != expected {
+			t.Fatalf("preview changed %s: %q, err=%v", file, got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "C")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preview restored C: %v", err)
+	}
+	target.WorkspaceID = "other"
+	if _, err := snapper.DiffCurrent(ctx, target); err == nil {
+		t.Fatal("preview accepted a different workspace")
+	}
+}
+
 func fileHash(t *testing.T, path string) [32]byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

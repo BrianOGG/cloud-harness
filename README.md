@@ -99,6 +99,7 @@ Non-Linux builds compile and refuse programmatic execution. They do not interpre
 
 ## Docs
 
+- [docs/cli.md](docs/cli.md) rewind modes, preview, confirmation, and safety snapshots
 - [docs/config.md](docs/config.md) configuration
 - [docs/tools.md](docs/tools.md) tool, poll, script, and MCP mapping
 - [docs/errors.md](docs/errors.md) error codes

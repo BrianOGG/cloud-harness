@@ -12,6 +12,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
+	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
@@ -112,6 +113,13 @@ func (m *Manager) RunMessage(ctx context.Context, sessionID, message string) (st
 		Status: domain.RunRunning, Budget: m.budget(), Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	if m.Workspace != "" {
+		workspaceID, err := workspacesnapshot.WorkspaceIDForPath(m.Workspace)
+		if err != nil {
+			return storage.Run{}, err
+		}
+		run.WorkspaceID = workspaceID
+	}
 	if err := m.Store.CreateRun(ctx, run); err != nil {
 		return storage.Run{}, err
 	}
@@ -194,6 +202,9 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 	st := &loopState{prefixN: prefixN, userAt: userAt}
 	if m.Depth > 0 {
 		_ = m.saveCheckpoint(ctx, run, messages, nil, "", st)
+	} else {
+		// A root run's first workspace snapshot can precede any wait checkpoint.
+		_ = m.writeCheckpoint(ctx, run, messages, nil, "", st, true)
 	}
 	if plan {
 		messages = m.injectPlan(ctx, run, messages, message)

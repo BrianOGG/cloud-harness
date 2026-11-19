@@ -32,7 +32,7 @@ func TestMigrationWALAndForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	ver, err := db.SchemaVersion(ctx)
-	if err != nil || ver != 4 {
+	if err != nil || ver != 5 {
 		t.Fatalf("version %d %v", ver, err)
 	}
 	mode, err := db.JournalMode(ctx)
@@ -59,7 +59,7 @@ func TestMigrationWALAndForeignKeys(t *testing.T) {
 	}
 	defer db.Close()
 	ver, err = db.SchemaVersion(ctx)
-	if err != nil || ver != 4 {
+	if err != nil || ver != 5 {
 		t.Fatalf("reopen version %d %v", ver, err)
 	}
 	got, err := db.GetSession(ctx, "ses_1")

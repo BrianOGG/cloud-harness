@@ -69,6 +69,12 @@ Snapshot failures only add a `snapshot_skipped` event and never fail the run.
 Unavailable Git is reported at most once per run. Setting `disable_snapshots`
 to `true` also suppresses snapshot initialization and diagnostics.
 
+Use `cloud-harness rewind RUN_ID --to SNAPSHOT_ID` to preview and restore a
+snapshot (default `--all`; also `--code-only` and `--chat-only`). Code restore
+first creates a safety snapshot. Interactive confirmation defaults to N;
+non-interactive callers must pass `--yes`. See [CLI rewind](cli.md#rewind) for
+checkpoint scope, safety recovery, and argument order.
+
 ## One real call
 
 ```bash

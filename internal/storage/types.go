@@ -32,6 +32,7 @@ type Run struct {
 	ParentRunID string
 	SessionID   string
 	TurnID      string
+	WorkspaceID string
 	Status      domain.RunStatus
 	WaitReason  domain.WaitReason
 	Budget      domain.Budget
@@ -40,6 +41,14 @@ type Run struct {
 	Error       *domain.Error
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// ChatRewindResult describes the persistent events removed by a rewind.
+type ChatRewindResult struct {
+	DeletedEvents int
+	FirstSeq      int64
+	LastSeq       int64
+	CheckpointSeq int64
 }
 
 // Lease is the single-owner scheduler lock for a run.

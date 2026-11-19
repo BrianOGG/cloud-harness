@@ -74,6 +74,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdEval(args[1:], stdout, stderr)
 	case "retain":
 		return cmdRetain(args[1:], stdout, stderr)
+	case "rewind":
+		return cmdRewind(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -95,6 +97,7 @@ const usage = `Cloud Harness M5
   cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] RUN_ID
   cloud-harness trace RUN_ID
   cloud-harness retain [--days N] [--prune-runs-days N] [--db path]
+  cloud-harness rewind RUN_ID --to SNAPSHOT_ID [--all|--code-only|--chat-only] [--yes] [--db path] [--workspace dir]
   cloud-harness isolation
   cloud-harness program check
 
