@@ -85,6 +85,56 @@ an existing path. Add `--force` with `--out` to replace it. The database remains
 read-only in either output mode; the database and its SQLite sidecars cannot be
 used as the output path.
 
+## review
+
+```bash
+cloud-harness review [--workspace dir] [--json] [--diff]
+cloud-harness review --workspace ./project --json --diff
+```
+
+`review` summarizes the Git worktree that contains `--workspace`, which
+defaults to the current directory. Markdown shows risks first, then file and
+line totals and a table of paths. JSON reports `clean`, `file_count`, `staged`,
+`unstaged`, `untracked`, `additions`, `deletions`, `files`, and `risks`. Group
+counts can overlap when a path has both staged and unstaged edits. The total
+counts each path once. Line totals add the changes from HEAD to the index,
+from the index to the worktree, and from an empty file to each untracked file.
+Both views display adds (`A`), modifications (`M`), deletes (`D`), and
+untracked paths (`??`). Renames appear as an add and a delete. Unresolved
+paths are marked `U` and counted as unstaged.
+
+`--diff` adds the patch for staged, unstaged, and untracked files in that
+order. Use `--json --diff` to receive it as a `diff` string. The patch masks
+recognized credentials using the text rules from `export`. Binary changes
+use Git's binary markers and contribute no line counts. Submodule commit
+changes are shown at the parent path. Review the submodule worktree or a
+nested untracked repository separately to inspect its files.
+
+Risks are advisory and keep exit code 0. The report flags each binary change,
+each path with more than 500 deleted lines across both comparisons, and each
+changed regular file whose index or worktree version exceeds 1,000,000 bytes
+(1 MB). It also scans newly added text files, including untracked ones, for
+the same patterns as `export`, such as long `sk-` tokens, `hsurr:` values,
+bearer credentials, and `api_key` assignments. Each suspected match reports
+its path, source version, and line number. A clean worktree report says
+`工作区干净` and exits 0. An unavailable Git executable, a directory outside a
+Git worktree, or a failed Git read exits 1 with the reason on stderr.
+
+The command reads the existing worktree and limits Git to read-only commands.
+
+- `git rev-parse --show-toplevel` and `git rev-parse --git-path index` locate the worktree and index.
+- `git config --null --name-only --get-regexp` identifies clean filters to disable for the review.
+- `git status --porcelain=v1 -z --untracked-files=all` lists individual changes.
+- `git diff --numstat` and `git diff --cached --numstat` supply line counts. `git diff --no-index --numstat` compares untracked regular files against `/dev/null`. Untracked symlinks use `readlink` to generate line counts and `new file mode 120000` patches from the link text without following file or directory targets.
+- `git ls-files --stage`, `git cat-file --batch-check`, and `git cat-file blob` read staged paths, blob sizes, and newly added text.
+- `git diff --patch`, `git diff --cached --patch`, and `git diff --no-index --patch` read patches only when `--diff` is set.
+
+Git runs with optional index locking, pagers, filesystem monitor hooks,
+external diff drivers, text conversion, and external clean filters disabled.
+The review compares worktree contents without external clean filters. Active
+split indexes return exit 1 because Git updates their shared index timestamp
+even during reads.
+
 ## retain
 
 ```bash
