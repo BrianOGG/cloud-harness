@@ -37,7 +37,7 @@ func (m *Manager) executePoll(ctx context.Context, args json.RawMessage) (json.R
 	if err := m.checkNestedPolicy(ctx, body.TargetTool, body.TargetArgs); err != nil {
 		return nil, err
 	}
-	res, err := tools.Poll(ctx, m.Broker, tools.PollRequest{
+	res, err := m.pollHooked(ctx, tools.PollRequest{
 		RunID: runID, SessionID: sessionID, TargetTool: body.TargetTool, TargetArgs: body.TargetArgs,
 		Until: body.Until, Interval: time.Duration(body.IntervalSeconds * float64(time.Second)),
 		MaxAttempts: body.MaxAttempts, Timeout: time.Duration(body.TimeoutSeconds * float64(time.Second)),
@@ -99,7 +99,7 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 		if err := m.Store.Charge(callCtx, runID, domain.ChargeScript, 1); err != nil {
 			return false, nil, asDomain(err)
 		}
-		res, callErr := m.Broker.Invoke(callCtx, tools.Request{
+		res, callErr := m.invokeNestedHooked(callCtx, tools.Request{
 			RunID: runID, SessionID: sessionID, Tool: tool, Args: toolArgs, Now: m.now(),
 		})
 		m.recordSnapshotDispatch(callCtx, domain.Invocation{Name: tool, Arguments: toolArgs}, res)

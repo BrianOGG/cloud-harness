@@ -11,6 +11,7 @@ import (
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/imageinput"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
@@ -173,6 +174,10 @@ type loopState struct {
 	policyRecorded map[string]bool
 	policyDenials  map[string]string
 	policyErr      error
+	hooks          *hooks.Engine
+	hookPre        map[string]bool
+	hookDenials    map[string]*domain.Error
+	hookErr        error
 }
 
 func (st *loopState) setToolRef(providerCallID, invID string) {
@@ -564,6 +569,9 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 		if policy.Effect == security.EffectDeny {
 			return nil, domain.E(domain.CodeAuthDenied, policy.Reason())
 		}
+		if err := m.preToolHooks(ctx, run, st, inv); err != nil {
+			return nil, err
+		}
 		fp := runtime.Fingerprint(inv.Name, inv.Arguments)
 		if st != nil && (runtime.Blocked(st.obs, fp) || (runtime.AlternatingNoProgress(st.obs) && fingerprintInTail(st.obs, fp))) {
 			return nil, domain.E("no_progress", "repeated tool calls made no progress; replan and do not repeat this call")
@@ -583,7 +591,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 		if m.CrashOnTool != "" && m.CrashOnTool == inv.Name {
 			return nil, domain.ErrUnknownOutcome
 		}
-		res, err := m.Broker.Invoke(ctx, tools.Request{
+		res, err := m.invokeHooked(ctx, run, st, inv, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
 			ApprovalPossible: false,

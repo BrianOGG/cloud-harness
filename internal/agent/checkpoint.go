@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
 	"github.com/cloud-harness/cloud-harness/internal/security"
@@ -23,6 +24,7 @@ type snapshot struct {
 	UserAt             int                    `json:"user_at,omitempty"`
 	WorkspaceSnapshots workspaceSnapshotState `json:"workspace_snapshots,omitempty"`
 	Policy             *security.Policy       `json:"policy,omitempty"`
+	Hooks              *hooks.Config          `json:"hooks,omitempty"`
 }
 
 func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState) error {
@@ -45,6 +47,9 @@ func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages
 		snap.UserAt = st.userAt
 		snap.WorkspaceSnapshots = st.snapshots
 		snap.Policy = st.policy
+		if st.hooks != nil {
+			snap.Hooks = st.hooks.Config
+		}
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {

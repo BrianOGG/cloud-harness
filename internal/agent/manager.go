@@ -15,6 +15,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/config"
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
@@ -185,6 +186,13 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
 		return result, errors.Join(err, finishErr)
 	}
+	hookConfig, err := hooks.Load(m.Workspace)
+	if err != nil {
+		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
+		return result, errors.Join(err, finishErr)
+	}
+	engine := hooks.New(hookConfig)
+	ctx = withHooks(ctx, run, engine)
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
 	if err != nil {
@@ -203,6 +211,10 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 	}
 	ctx = context.WithValue(ctx, sessionKey, run.SessionID)
 	ctx = context.WithValue(ctx, runKey, run.ID)
+	if err := m.startHooks(ctx, run, lease.LeaseVersion, engine, message); err != nil {
+		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		return result, errors.Join(err, finishErr)
+	}
 	ctx, err = m.withModelRouting(ctx)
 	if err != nil {
 		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
@@ -259,7 +271,7 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 		SuffixTokens: contextpkg.Estimate(asm.DynamicSuffix), TokenLimit: m.tokenLimit(),
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
-	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy}
+	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine}
 	if m.Depth > 0 {
 		_ = m.saveCheckpoint(ctx, run, messages, nil, "", st)
 	} else {
@@ -289,6 +301,10 @@ func cloneImages(images []provider.Image) []provider.Image {
 
 func (m *Manager) finish(ctx context.Context, run storage.Run, event domain.RunEvent, answer string, cause *domain.Error) (storage.Run, error) {
 	current, err := m.Store.GetRun(ctx, run.ID)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	event, answer, cause, err = m.stopHooks(ctx, current, event, answer, cause)
 	if err != nil {
 		return storage.Run{}, err
 	}
@@ -500,6 +516,7 @@ func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error)
 		}
 		return run, nil
 	}
+	hookErr := m.cancelHooks(ctx, run)
 	next, err := domain.TransitionRun(domain.RunState{RunID: run.ID, Status: run.Status, Reason: run.WaitReason}, domain.EventCancel)
 	if err != nil {
 		return storage.Run{}, err
@@ -527,7 +544,8 @@ func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error)
 			return run, err
 		}
 	}
-	return m.Store.GetRun(ctx, runID)
+	finished, err := m.Store.GetRun(ctx, runID)
+	return finished, errors.Join(err, hookErr)
 }
 
 func asDomain(err error) *domain.Error {

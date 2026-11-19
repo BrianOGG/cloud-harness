@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/security"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
@@ -261,15 +262,29 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	default:
 		return run, domain.E(domain.CodeConflict, "unsupported wait reason "+string(run.WaitReason)).WithRef(run.ID)
 	}
+	hookSnapshot, err := m.loadCheckpoint(ctx, run.ID)
+	if err != nil {
+		return run, err
+	}
+	if hookSnapshot.Hooks == nil {
+		hookSnapshot.Hooks, err = hooks.Load(m.Workspace)
+		if err != nil {
+			return run, err
+		}
+	}
+	engine := hooks.New(hookSnapshot.Hooks)
+	ctx = withHooks(ctx, run, engine)
+	if run.WaitReason == domain.WaitUser {
+		if err := m.replyHook(ctx, run, lease.LeaseVersion, engine, in.Answer); err != nil {
+			return run, err
+		}
+	}
 	running, err := m.markRunning(ctx, run)
 	if err != nil {
 		return storage.Run{}, err
 	}
 	defer m.finishWorktreeExecution(ctx, running, &result, &err)
-	snap, err := m.loadCheckpoint(ctx, run.ID)
-	if err != nil {
-		return storage.Run{}, err
-	}
+	snap := hookSnapshot
 	if snap.Policy == nil {
 		// Checkpoints created before policies existed acquire a snapshot once.
 		snap.Policy, err = security.LoadPolicy(m.Workspace)
@@ -286,6 +301,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		userAt:    snap.UserAt,
 		snapshots: snap.WorkspaceSnapshots,
 		policy:    snap.Policy,
+		hooks:     engine,
 	}
 	ctx = context.WithValue(ctx, sessionKey, running.SessionID)
 	ctx = context.WithValue(ctx, runKey, running.ID)
@@ -396,7 +412,10 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 		if err := batch.Approve(waiting.ID); err != nil {
 			return storage.Run{}, err
 		}
-		if err := m.driveBatch(ctx, run, &batch, st); err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
+		stopHookHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
+		driveErr := m.driveBatch(ctx, run, &batch, st)
+		stopHookHeartbeat()
+		if err := driveErr; err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
 			return storage.Run{}, err
 		}
 	}

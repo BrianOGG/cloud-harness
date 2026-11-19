@@ -20,6 +20,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/eval"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/imageinput"
 	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/program"
@@ -198,6 +199,10 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 	}
 	abs, err := filepath.Abs(workspace)
 	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	if _, err := hooks.Load(abs); err != nil {
 		_ = db.Close()
 		return nil, nil, err
 	}

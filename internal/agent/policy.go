@@ -165,7 +165,7 @@ func (st *loopState) denyPolicy(inv domain.Invocation, reason string) domain.Gat
 // policy reason before persistence and before results are sent to the model.
 func (m *Manager) drivePolicyBatch(ctx context.Context, run storage.Run, batch *domain.Batch, st *loopState) error {
 	ctx = context.WithValue(ctx, policyContextKey{}, policyContext{run: run, st: st})
-	err := domain.Drive(batch, m.gate(ctx, run, st), m.execute(ctx, run, st))
+	err := m.driveHooked(ctx, run, batch, st)
 	for i := range batch.Invocations {
 		inv := &batch.Invocations[i]
 		if reason := st.policyDenials[inv.ID]; reason != "" && inv.Status == domain.InvDenied {
