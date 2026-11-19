@@ -1,6 +1,104 @@
 package context
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
+
+const MaxCompactionSummaryBytes = 4 << 10
+
+// NormalizeCompactionSummary turns a model response into a bounded,
+// structured data document suitable for the durable session system message.
+func NormalizeCompactionSummary(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var value map[string]any
+	if start, end := strings.Index(raw, "{"), strings.LastIndex(raw, "}"); start >= 0 && end > start {
+		_ = json.Unmarshal([]byte(raw[start:end+1]), &value)
+	}
+	keys := []string{"confirmed_facts", "in_progress", "pending", "key_files_and_decisions"}
+	normalized := make(map[string][]string, len(keys))
+	hasContent := false
+	if value != nil {
+		for _, key := range keys {
+			normalized[key] = summaryStrings(value[key])
+			if normalized[key] == nil {
+				normalized[key] = []string{}
+			}
+			hasContent = hasContent || len(normalized[key]) > 0
+		}
+	}
+	if !hasContent {
+		normalized["confirmed_facts"] = []string{}
+		normalized["in_progress"] = []string{}
+		normalized["pending"] = []string{}
+		normalized["key_files_and_decisions"] = []string{}
+		normalized["notes"] = []string{raw}
+	}
+	encode := func(truncated bool) []byte {
+		body := make(map[string]any, len(normalized)+1)
+		for _, key := range keys {
+			body[key] = normalized[key]
+		}
+		if notes := normalized["notes"]; len(notes) > 0 {
+			body["notes"] = notes
+		}
+		if truncated {
+			body["truncated"] = true
+		}
+		b, _ := json.Marshal(body)
+		return b
+	}
+	b := encode(false)
+	if len(b) <= MaxCompactionSummaryBytes {
+		return string(b)
+	}
+	// Trim the largest individual statement first, preserving the structured
+	// sections and as much of every other statement as possible.
+	for {
+		longestKey, longestIndex, longestRunes := "", -1, 0
+		for key, values := range normalized {
+			for i, item := range values {
+				if n := len([]rune(item)); n > longestRunes {
+					longestKey, longestIndex, longestRunes = key, i, n
+				}
+			}
+		}
+		if longestIndex < 0 {
+			break
+		}
+		runes := []rune(normalized[longestKey][longestIndex])
+		if longestRunes <= 40 {
+			normalized[longestKey] = append(normalized[longestKey][:longestIndex], normalized[longestKey][longestIndex+1:]...)
+		} else {
+			normalized[longestKey][longestIndex] = string(runes[:longestRunes/2]) + "...[truncated at 4KiB]"
+		}
+		b = encode(true)
+		if len(b) <= MaxCompactionSummaryBytes {
+			return string(b)
+		}
+	}
+	if candidate := encode(true); len(candidate) <= MaxCompactionSummaryBytes {
+		return string(candidate)
+	}
+	return `{"confirmed_facts":[],"in_progress":[],"pending":[],"key_files_and_decisions":[],"truncated":true}`
+}
+
+func summaryStrings(raw any) []string {
+	var out []string
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	case []any:
+		for _, item := range value {
+			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
 
 // ToolRef is the id pairing a call with its result. Compaction keeps both.
 type ToolRef struct {

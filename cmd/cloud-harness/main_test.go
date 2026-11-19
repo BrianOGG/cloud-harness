@@ -55,6 +55,32 @@ func TestVersionAndMockRun(t *testing.T) {
 	}
 }
 
+func TestCompactCommandUsesExistingSession(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
+	root := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "compact.db")
+	cfg := config.Config{Provider: "mock", DBPath: dbPath}
+	mgr, db, err := openManager(context.Background(), cfg, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := mgr.CreateSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.RunMessage(context.Background(), session.ID, "preserve the compact session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	code := Main([]string{"compact", "--session", session.ID, "--db", dbPath, "--provider", "mock", "--workspace", root}, &out, &stderr)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(out.String(), session.ID) || !strings.Contains(out.String(), "summary") {
+		t.Fatalf("compact code=%d out=%q stderr=%q", code, out.String(), stderr.String())
+	}
+}
+
 func TestSkillCLIUsesWorkspaceLoader(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(t.TempDir(), "config.json"))

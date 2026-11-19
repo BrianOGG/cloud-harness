@@ -67,6 +67,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdRun(args[1:], stdout, stderr)
 	case "chat":
 		return cmdChat(args[1:], stdin, stdout, stderr)
+	case "compact":
+		return cmdCompact(args[1:], stdout, stderr)
 	case "runs":
 		return cmdRuns(args[1:], stdout, stderr)
 	case "trace":
@@ -111,6 +113,7 @@ const usage = `Cloud Harness M5
   cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
   cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
   cloud-harness runs list [--session ID] [--db path]
@@ -144,6 +147,38 @@ type commonFlags struct {
 	workspace         string
 	httpToken         string
 	httpAllowInsecure bool
+}
+
+func cmdCompact(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("compact", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	c := addCommon(fs)
+	session := fs.String("session", "", "session id to compact")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*session) == "" {
+		fmt.Fprintln(stderr, "--session is required")
+		return 2
+	}
+	cfg, err := load(c)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	mgr, db, err := openManager(context.Background(), cfg, c.workspaceOrDot())
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer db.Close()
+	summary, err := mgr.CompactSession(context.Background(), *session)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	_ = writeJSON(stdout, map[string]any{"session_id": *session, "summary": summary})
+	return 0
 }
 
 func addCommon(fs *flag.FlagSet) *commonFlags {
@@ -915,6 +950,9 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 	}
 
 	if initialMessage != "" {
+		if strings.TrimSpace(initialMessage) == "/compact" {
+			return runChatCompact(ctx, mgr, sessionID, stdout, stderr)
+		}
 		if handled, code := runChatSkillCommand(mgr.Workspace, initialMessage, stdout, stderr); handled {
 			return code
 		}
@@ -938,11 +976,29 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 		if handled, _ := runChatSkillCommand(mgr.Workspace, msg, stdout, stderr); handled {
 			continue
 		}
+		if msg == "/compact" {
+			if code := runChatCompact(ctx, mgr, sessionID, stdout, stderr); code != 0 {
+				return code
+			}
+			continue
+		}
 		_, code, stoppedOnEOF := runChatTurn(ctx, mgr, sessionID, msg, reader, stdout, stderr)
 		if code != 0 || stoppedOnEOF || eof {
 			return code
 		}
 	}
+}
+
+func runChatCompact(ctx context.Context, mgr *agent.Manager, sessionID string, stdout, stderr io.Writer) int {
+	summary, err := mgr.CompactSession(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if summary != "" {
+		fmt.Fprintln(stdout, "session compacted")
+	}
+	return 0
 }
 
 func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message string, reader *bufio.Reader, stdout, stderr io.Writer) (storage.Run, int, bool) {

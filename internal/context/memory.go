@@ -19,14 +19,18 @@ type Decision struct {
 
 // Memory is the versioned session state shown to later turns.
 type Memory struct {
-	Goal         string     `json:"goal,omitempty"`
-	Facts        []Fact     `json:"facts,omitempty"`
-	Decisions    []Decision `json:"decisions,omitempty"`
-	Progress     string     `json:"progress,omitempty"`
-	Pending      []string   `json:"pending,omitempty"`
-	References   []string   `json:"references,omitempty"`
-	seqFacts     int
-	seqDecisions int
+	Goal       string     `json:"goal,omitempty"`
+	Facts      []Fact     `json:"facts,omitempty"`
+	Decisions  []Decision `json:"decisions,omitempty"`
+	Progress   string     `json:"progress,omitempty"`
+	Pending    []string   `json:"pending,omitempty"`
+	References []string   `json:"references,omitempty"`
+	// CompactionSummary is the durable system-message replacement for history
+	// removed from the visible context. Raw events and history rows remain in
+	// storage for audit and retrieval.
+	CompactionSummary string `json:"compaction_summary,omitempty"`
+	seqFacts          int
+	seqDecisions      int
 }
 
 // Delta is one memory edit from finish_turn or a post-hoc summary.
@@ -246,7 +250,7 @@ func remove(m *Memory, d Delta) {
 
 // Prompt is the dynamic-suffix rendering. Empty memory renders as empty.
 func (m Memory) Prompt() string {
-	if m.Goal == "" && m.Progress == "" && len(m.Facts) == 0 && len(m.Decisions) == 0 && len(m.Pending) == 0 && len(m.References) == 0 {
+	if m.Goal == "" && m.Progress == "" && len(m.Facts) == 0 && len(m.Decisions) == 0 && len(m.Pending) == 0 && len(m.References) == 0 && m.CompactionSummary == "" {
 		return ""
 	}
 	raw, err := json.Marshal(m)
