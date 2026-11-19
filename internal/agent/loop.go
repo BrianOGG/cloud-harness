@@ -204,6 +204,11 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	if st == nil {
 		st = &loopState{}
 	}
+	// New runs start at version 1; every resume has already committed a state
+	// transition and restores its frozen rules from the checkpoint instead.
+	if run.Version == 1 {
+		messages = m.injectProjectRules(ctx, run, messages, st)
+	}
 	if hasImages(messages) {
 		if !provider.SupportsImages(m.Provider) {
 			return m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input"))

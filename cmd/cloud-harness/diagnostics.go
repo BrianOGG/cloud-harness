@@ -18,6 +18,7 @@ import (
 
 	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
+	"github.com/cloud-harness/cloud-harness/internal/rules"
 	"github.com/cloud-harness/cloud-harness/internal/snapshot"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/migrations"
@@ -108,6 +109,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	} else {
 		items = append(items, doctorItem{Name: "workspace", Status: "ok", Detail: fmt.Sprintf("directory is enterable; mode=%04o", wsInfo.Mode().Perm())})
 	}
+	items = append(items, checkProjectRules(ws))
 
 	gitBin, gitErr := exec.LookPath("git")
 	if gitErr != nil {
@@ -162,6 +164,27 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func checkProjectRules(workspace string) doctorItem {
+	loaded := rules.Load(workspace)
+	item := doctorItem{Name: "project_rules", Status: "ok", Detail: "AGENTS.md: none"}
+	if len(loaded.Files) > 0 {
+		files := make([]string, 0, len(loaded.Files))
+		for _, file := range loaded.Files {
+			files = append(files, fmt.Sprintf("%s (%d bytes)", file.Path, file.Bytes))
+		}
+		item.Detail = "AGENTS.md: " + strings.Join(files, "; ")
+	}
+	if len(loaded.Omitted) > 0 {
+		item.Status = "warn"
+		item.Detail += "; truncated at 32 KiB (including source markers)"
+	}
+	for _, diagnostic := range loaded.Diagnostics {
+		item.Status = "warn"
+		item.Detail += fmt.Sprintf("; skipped %s: %s", diagnostic.Path, diagnostic.Error)
+	}
+	return item
 }
 
 func configErrorDetail(err error) string {

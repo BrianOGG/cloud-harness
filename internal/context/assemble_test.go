@@ -2,6 +2,8 @@ package context
 
 import (
 	"bytes"
+	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -26,5 +28,39 @@ func TestPrefixStableAcrossUserMessages(t *testing.T) {
 	}
 	if a.StaticPrefix[0].Content != system || a.StaticPrefix[1].Content != tools {
 		t.Fatalf("prefix %#v", a.StaticPrefix)
+	}
+}
+
+func TestProjectRulesBetweenStaticPrefixAndHistory(t *testing.T) {
+	recent := []Message{{Role: "assistant", Content: "earlier answer"}}
+	base := Assemble("system", "tools", "memory", recent, "user")
+	withRules := WithProjectRules(base, "Project rules\n<!-- AGENTS.md: global -->\nglobal rule\n<!-- AGENTS.md: AGENTS.md -->\nroot rule")
+	if len(withRules.StaticPrefix) != 3 || withRules.StaticPrefix[2].Role != "system" {
+		t.Fatalf("rules are not a separate system section: %+v", withRules)
+	}
+	if !reflect.DeepEqual(base.StaticPrefix, withRules.StaticPrefix[:2]) || !reflect.DeepEqual(base.DynamicSuffix, withRules.DynamicSuffix) {
+		t.Fatal("project rules changed the static instructions or session history")
+	}
+	compacted := Compact(append(append([]Message(nil), withRules.StaticPrefix...), withRules.DynamicSuffix...), CompactOptions{
+		PrefixCount: len(withRules.StaticPrefix), KeepIndex: 5, TokenLimit: 1,
+	})
+	if PrefixHash(compacted[:3]) != PrefixHash(withRules.StaticPrefix) {
+		t.Fatal("compaction rewrote frozen project rules")
+	}
+}
+
+func TestNoProjectRulesByteForByteRegression(t *testing.T) {
+	// Literal pre-M11-3 wire shape: a missing rules file must add no section,
+	// whitespace, or metadata, including when memory and history are populated.
+	const want = `{"static_prefix":[{"role":"system","content":"system"},{"role":"system","content":"tools"}],"dynamic_suffix":[{"role":"system","content":"memory"},{"role":"assistant","content":"earlier"},{"role":"user","content":"user"}]}`
+	asm := WithProjectRules(Assemble("system", "tools", "memory", []Message{{Role: "assistant", Content: "earlier"}}, "user"), "")
+	got, err := json.Marshal(asm)
+	if err != nil || string(got) != want {
+		t.Fatalf("empty rules changed assembly bytes:\n%s\nerror=%v", got, err)
+	}
+	const wantEmpty = `{"static_prefix":[{"role":"system","content":"system"}],"dynamic_suffix":[{"role":"user","content":"user"}]}`
+	got, err = json.Marshal(WithProjectRules(Assemble("system", "", "", nil, "user"), ""))
+	if err != nil || string(got) != wantEmpty {
+		t.Fatalf("empty assembly changed bytes:\n%s\nerror=%v", got, err)
 	}
 }

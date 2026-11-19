@@ -38,6 +38,19 @@ func Assemble(system, toolDigest, memory string, recent []Message, user string) 
 	return Assembly{StaticPrefix: prefix, DynamicSuffix: suffix}
 }
 
+// WithProjectRules appends one frozen project-rules section after the static
+// system instructions, before memory and history. Protect it as part of the
+// stable prefix so compaction cannot rewrite rules during a run.
+// Empty rules preserve the original assembly byte for byte.
+func WithProjectRules(a Assembly, rules string) Assembly {
+	if rules == "" {
+		return a
+	}
+	prefix := append([]Message(nil), a.StaticPrefix...)
+	a.StaticPrefix = append(prefix, Message{Role: "system", Content: rules})
+	return a
+}
+
 // PrefixBytes is the canonical encoding of the stable prefix.
 func PrefixBytes(a Assembly) ([]byte, error) {
 	return json.Marshal(a.StaticPrefix)
