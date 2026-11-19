@@ -47,6 +47,27 @@ func RegisterLocal(b *Broker, root string) error {
 	return nil
 }
 
+// ForkWorkspace copies a broker's registrations and execution settings, then
+// binds its local tools to root. reset names are rebound by the owning manager
+// because their executors close over that manager's workspace and broker.
+func (b *Broker) ForkWorkspace(root string, reset ...string) (*Broker, error) {
+	b.mu.RLock()
+	fork := NewBroker(b.charge, b.grants)
+	fork.now = b.now
+	fork.CommandEnvAllow = append([]string(nil), b.CommandEnvAllow...)
+	for name, spec := range b.reg {
+		fork.reg[name] = spec
+	}
+	b.mu.RUnlock()
+	for _, name := range reset {
+		delete(fork.reg, name)
+	}
+	if err := RegisterLocal(fork, root); err != nil {
+		return nil, err
+	}
+	return fork, nil
+}
+
 // EnsureLocal registers any missing workspace tools on b without overwriting existing registrations.
 func EnsureLocal(b *Broker, root string) error {
 	specs, err := LocalSpecs(b, root)

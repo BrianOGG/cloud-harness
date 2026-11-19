@@ -17,6 +17,8 @@ Set `agent` in a `delegate_task` call to select `explorer`, `reviewer`, or a def
 go build -o cloud-harness ./cmd/cloud-harness
 
 ./cloud-harness run --message "检索历史"
+./cloud-harness run --worktree --message "Review this Git project in isolation"
+./cloud-harness chat --worktree --message "Inspect this Git project"
 ./cloud-harness serve
 ./cloud-harness eval suite
 ./cloud-harness isolation
@@ -25,6 +27,13 @@ go build -o cloud-harness ./cmd/cloud-harness
 ```
 
 `serve` listens on `127.0.0.1:19421`. A non-loopback address is refused unless `CLOUD_HARNESS_ALLOW_EXTERNAL=1`.
+
+`run` and `chat` optionally accept `--worktree` in a Git workspace. Each run
+starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under
+`.cloud-harness/worktrees/<run-id>/`; files are isolated while the database
+stays in the original workspace. A final `worktree.summary` event records the
+base SHA, file list, stat, and capped diff (including pending edits). Worktrees
+are retained; cleanup commands arrive in M10.2-4. See [docs/cli.md](docs/cli.md#run--chat).
 
 Resume flags come before the run id:
 

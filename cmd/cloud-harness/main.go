@@ -99,8 +99,8 @@ const usage = `Cloud Harness M5
 
   cloud-harness version
   cloud-harness serve [--addr 127.0.0.1:19421] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness run --message TEXT [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness chat [--message TEXT] [--session ID] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness run --message TEXT [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
   cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
   cloud-harness runs list [--session ID] [--db path]
@@ -345,6 +345,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
 	message := fs.String("message", "", "user message")
+	useWorktree := fs.Bool("worktree", false, "run in a retained Git worktree isolated from the workspace")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -357,8 +358,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx := context.Background()
-	mgr, db, err := openManager(ctx, cfg, c.workspace)
+	ctx, stop := runWorktreeContext(*useWorktree)
+	defer stop()
+	mgr, db, err := openRunManager(ctx, cfg, c.workspaceOrDot(), *useWorktree)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -825,6 +827,7 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	c := addCommon(fs)
 	message := fs.String("message", "", "initial user message")
 	session := fs.String("session", "", "session id")
+	useWorktree := fs.Bool("worktree", false, "run each turn in a retained Git worktree isolated from the workspace")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -837,8 +840,9 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx := context.Background()
-	mgr, db, err := openManager(ctx, cfg, c.workspace)
+	ctx, stop := runWorktreeContext(*useWorktree)
+	defer stop()
+	mgr, db, err := openRunManager(ctx, cfg, c.workspaceOrDot(), *useWorktree)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -951,7 +955,11 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 					return run, 0, true
 				}
 			}
-			answerText, answerImages, err := imageinput.ParseAndLoad(answer, mgr.Workspace)
+			workspace := mgr.Workspace
+			if run.WorktreePath != "" {
+				workspace = run.WorktreePath
+			}
+			answerText, answerImages, err := imageinput.ParseAndLoad(answer, workspace)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return run, 1, false

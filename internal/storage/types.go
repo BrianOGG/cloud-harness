@@ -28,19 +28,22 @@ type Turn struct {
 
 // Run is the persisted execution record.
 type Run struct {
-	ID          string
-	ParentRunID string
-	SessionID   string
-	TurnID      string
-	WorkspaceID string
-	Status      domain.RunStatus
-	WaitReason  domain.WaitReason
-	Budget      domain.Budget
-	Version     int64
-	FinalAnswer string
-	Error       *domain.Error
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID              string
+	ParentRunID     string
+	SessionID       string
+	TurnID          string
+	WorkspaceID     string
+	WorktreeBaseSHA string
+	WorktreeBranch  string
+	WorktreePath    string
+	Status          domain.RunStatus
+	WaitReason      domain.WaitReason
+	Budget          domain.Budget
+	Version         int64
+	FinalAnswer     string
+	Error           *domain.Error
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // ChatRewindResult describes the persistent events removed by a rewind.

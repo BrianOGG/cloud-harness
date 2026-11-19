@@ -161,10 +161,17 @@ type ResumeInput struct {
 
 // Resume continues the same waiting run after a lease is acquired.
 // A live lease held by another owner is rejected. An expired lease can be taken.
-func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (storage.Run, error) {
+func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (result storage.Run, err error) {
 	run, err := m.Store.GetRun(ctx, runID)
 	if err != nil {
 		return storage.Run{}, err
+	}
+	executor, err := m.worktreeManager(run)
+	if err != nil {
+		return run, err
+	}
+	if executor != m {
+		return executor.Resume(ctx, runID, in)
 	}
 	if run.Status != domain.RunWaiting {
 		return run, domain.E(domain.CodeNotWaiting, "run is not waiting").WithRef(runID)
@@ -241,6 +248,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 	if err != nil {
 		return storage.Run{}, err
 	}
+	defer m.finishWorktreeExecution(ctx, running, &result, &err)
 	snap, err := m.loadCheckpoint(ctx, run.ID)
 	if err != nil {
 		return storage.Run{}, err
@@ -534,6 +542,13 @@ func (m *Manager) Recover(ctx context.Context, runID string) (storage.Run, error
 	run, err := m.Store.GetRun(ctx, runID)
 	if err != nil {
 		return storage.Run{}, err
+	}
+	executor, err := m.worktreeManager(run)
+	if err != nil {
+		return run, err
+	}
+	if executor != m {
+		return executor.Recover(ctx, runID)
 	}
 	now := m.now()
 	if _, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor())); err != nil {

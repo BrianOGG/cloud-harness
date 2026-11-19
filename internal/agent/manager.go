@@ -32,6 +32,9 @@ type Manager struct {
 	ToolDigest    string
 	Broker        *tools.Broker
 	Workspace     string
+	// Worktree isolates each new root run at its dispatch HEAD. The store stays
+	// in the caller's workspace; child runs inherit the execution workspace.
+	Worktree bool
 	// DisableSnapshots opts out of automatic workspace snapshots (on by default).
 	DisableSnapshots bool
 	Grants           []domain.Grant
@@ -53,8 +56,9 @@ type Manager struct {
 	definitionToolLimit bool
 	failOnToolBudget    bool
 
-	cancelMu sync.Mutex
-	cancels  map[string]context.CancelFunc
+	cancelMu    sync.Mutex
+	cancels     map[string]context.CancelFunc
+	cancelOwner *Manager
 
 	snapshotMu   sync.Mutex
 	snapshotters map[string]*runSnapshotter
@@ -124,20 +128,24 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 	}
 	now := m.now()
 	turn := storage.Turn{ID: domain.NewID("trn_"), SessionID: sessionID, UserInput: message, Status: "completed", CreatedAt: now}
-	if err := m.Store.CreateTurn(ctx, turn); err != nil {
-		return storage.Run{}, err
-	}
 	run := storage.Run{
 		ID: domain.NewID("run_"), SessionID: sessionID, TurnID: turn.ID,
 		Status: domain.RunRunning, Budget: m.budget(), Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if m.Workspace != "" {
-		workspaceID, err := workspacesnapshot.WorkspaceIDForPath(m.Workspace)
+	executor, err := m.prepareWorktree(ctx, &run)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	if executor.Workspace != "" {
+		workspaceID, err := workspacesnapshot.WorkspaceIDForPath(executor.Workspace)
 		if err != nil {
 			return storage.Run{}, err
 		}
 		run.WorkspaceID = workspaceID
+	}
+	if err := m.Store.CreateTurn(ctx, turn); err != nil {
+		return storage.Run{}, err
 	}
 	if err := m.Store.CreateRun(ctx, run); err != nil {
 		return storage.Run{}, err
@@ -145,7 +153,7 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 	if err := m.event(ctx, run.ID, "run.created", map[string]string{"session_id": sessionID}); err != nil {
 		return storage.Run{}, err
 	}
-	return m.runPreparedWithImages(ctx, run, message, images)
+	return executor.runPreparedWithImages(ctx, run, message, images)
 }
 
 // runPrepared executes an existing run. Child runs use it so they keep their own id.
@@ -153,7 +161,8 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 	return m.runPreparedWithImages(ctx, run, message, nil)
 }
 
-func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, message string, images []provider.Image) (storage.Run, error) {
+func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, message string, images []provider.Image) (result storage.Run, err error) {
+	defer m.finishWorktreeExecution(ctx, run, &result, &err)
 	defer m.releaseRunSnapshotter(ctx, run.ID)
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
@@ -293,6 +302,10 @@ func (m *Manager) event(ctx context.Context, runID, typ string, payload any) err
 }
 
 func (m *Manager) trackCancel(id string, cancel context.CancelFunc) {
+	if m.cancelOwner != nil {
+		m.cancelOwner.trackCancel(id, cancel)
+		return
+	}
 	m.cancelMu.Lock()
 	defer m.cancelMu.Unlock()
 	if m.cancels == nil {
@@ -302,29 +315,40 @@ func (m *Manager) trackCancel(id string, cancel context.CancelFunc) {
 }
 
 func (m *Manager) untrackCancel(id string) {
+	if m.cancelOwner != nil {
+		m.cancelOwner.untrackCancel(id)
+		return
+	}
 	m.cancelMu.Lock()
 	defer m.cancelMu.Unlock()
 	delete(m.cancels, id)
 }
 
-func (m *Manager) stopRun(id string) {
+func (m *Manager) stopRun(id string) bool {
+	if m.cancelOwner != nil {
+		return m.cancelOwner.stopRun(id)
+	}
 	m.cancelMu.Lock()
 	cancel := m.cancels[id]
 	m.cancelMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	return cancel != nil
 }
 
 // Cancel moves a running or waiting run to CANCELLED and cancels in-flight work.
 // Cancelling twice is success.
 func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error) {
-	m.stopRun(runID)
+	active := m.stopRun(runID)
 	run, err := m.Store.GetRun(ctx, runID)
 	if err != nil {
 		return storage.Run{}, err
 	}
 	if run.Status == domain.RunCancelled {
+		if !active {
+			return run, m.summarizeWorktree(ctx, run)
+		}
 		return run, nil
 	}
 	next, err := domain.TransitionRun(domain.RunState{RunID: run.ID, Status: run.Status, Reason: run.WaitReason}, domain.EventCancel)
@@ -340,6 +364,12 @@ func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error)
 	}
 	if err := m.event(ctx, run.ID, "run.cancelled", map[string]string{"status": string(domain.RunCancelled)}); err != nil {
 		return storage.Run{}, err
+	}
+	// Active execution emits its summary after its last tool has unwound.
+	if !active {
+		if err := m.summarizeWorktree(ctx, run); err != nil {
+			return run, err
+		}
 	}
 	return m.Store.GetRun(ctx, runID)
 }

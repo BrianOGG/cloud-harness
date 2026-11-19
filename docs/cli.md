@@ -177,6 +177,44 @@ if the parent has sufficient budget.
 The parent's `child.started` and `child.finished` events include `agent` when
 the caller names a definition.
 
+## run / chat
+
+```bash
+cloud-harness run --message TEXT [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness chat [--message TEXT] [--session ID] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+```
+
+`--worktree` is off by default. When enabled, each new run (each chat turn)
+checks out the dispatch-time `HEAD` commit in
+`<workspace>/.cloud-harness/worktrees/<run-id>/`, on a new branch named
+`cloud-harness/<run-id>`. Existing uncommitted changes in the main workspace
+are not copied. The workspace must have a `.git` entry and a committed `HEAD`;
+a non-Git workspace or an already linked worktree is rejected before opening
+the database or creating run records. Nested worktree runs are not supported.
+
+File and command tools, delegated children, and shadow snapshots use the new
+worktree. Children share their parent's worktree. The SQLite store and run
+events stay in the original workspace (the default database is
+`<workspace>/.cloud-harness/harness.db`); an explicit `--db` still selects its
+own path. Each run record persists `WorktreeBaseSHA`, `WorktreeBranch`, and
+`WorktreePath`, including across approval resumes. `.cloud-harness/` is also
+added idempotently to the main repository's `.git/info/exclude` so its Git
+status stays clean without editing tracked files.
+
+When a run completes, fails, or is cancelled, its persistent event stream
+receives `worktree.summary`: `run_id`, `base_sha`, `branch`, `worktree_path`,
+`files`, `stat`, `diff`, and `truncated`. The summary compares against the
+merge base of the dispatch SHA and worktree `HEAD` (`base...HEAD`) and includes
+pending tracked and untracked edits, without changing the real index or
+making a commit. Harness state is excluded. The unified diff is capped at
+64 KiB; the file list and stat remain complete. If Git cannot produce the
+summary, the event still records its identity and an `error` diagnostic.
+Waiting for approval or user input does not end the run or emit its summary.
+
+Worktrees and branches remain after the run. There is no automatic removal;
+list/diff/merge/discard and cleanup commands are planned for M10.2-4. This flag
+does not apply to `serve`.
+
 ## Images in chat and run (`@image:<path>`)
 
 Attach local images by putting `@image:<path>` in a user message. `run
