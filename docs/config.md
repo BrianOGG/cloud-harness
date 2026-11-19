@@ -23,7 +23,9 @@ Settings load from an optional JSON file and then from the environment. The envi
     "channels": [
       {"type": "webhook", "url": "https://hooks.example/harness", "events": ["approval", "completion"], "timeout_ms": 5000},
       {"type": "bark", "url": "https://bark.example", "events": ["approval"]},
-      {"type": "ntfy", "url": "https://ntfy.sh/my-topic"}
+      {"type": "ntfy", "url": "https://ntfy.sh/my-topic"},
+      {"type": "osc9", "events": ["approval", "ask_user", "completion", "failure"]},
+      {"type": "desktop", "events": ["approval", "completion"]}
     ]
   }
 }
@@ -32,29 +34,46 @@ Settings load from an optional JSON file and then from the environment. The envi
 ## Run notifications
 
 Notifications are disabled when `notify` is absent or its `channels` list is
-empty. Each channel has a required `type` and HTTP(S) `url`, optional `events`
-filter, and optional `timeout_ms` (default 5000). The supported types are:
+empty. Each channel has a required `type`, optional `events` filter, and optional
+`timeout_ms` (default 5000). Network channels also require an HTTP(S) `url`.
+The supported types are:
 
 | Type | `url` | Credential environment variable |
 | --- | --- | --- |
 | `webhook` | Destination that receives a JSON `POST` | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_WEBHOOK_BEARER` (optional bearer token) |
 | `bark` | Bark server base URL; the device key is added as the final path component | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_BARK_KEY` (required device key) |
 | `ntfy` | Full ntfy topic URL, such as `https://ntfy.sh/my-topic` | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_NTFY_TOKEN` (optional bearer token) |
+| `osc9` | Omit; writes an OSC 9 notification to process stderr | None |
+| `desktop` | Omit; runs `notify-send` on Linux | None |
 
 `N` is the one-based position of that channel in `notify.channels`. Secret
 fields are rejected in JSON; credentials are loaded only from these
 environment variables and are omitted from redacted configuration logs.
-Targets must use HTTP or HTTPS and cannot contain URL credentials, query
+Network targets must use HTTP or HTTPS and cannot contain URL credentials, query
 strings, or fragments; inject secrets through the listed environment
 variables. Logs show only each target's host and path.
+
+Local channels accept no URL or credentials. OSC 9 requires a terminal that
+supports these notifications. Its text is the event summary, or
+`<event_type> <status>` when no summary is available. Control characters
+(including escape characters) are removed before the text is truncated to 200
+Unicode characters and written as `ESC ] 9 ; <text> BEL` to stderr.
+
+Desktop notifications use the event type as the title and the same summary or
+fallback text as Bark for the body. Linux must have `notify-send` in `PATH` and
+an accessible desktop notification service. A missing command or a failed
+invocation is a delivery error. Configuring `desktop` on any other operating
+system fails startup with an `unsupported` error.
 
 The valid event names are `approval`, `ask_user`, `completion`, and `failure`.
 The `failure` event also covers cancellation. Omit `events` or use an empty
 list to receive every lifecycle event; an explicitly listed filter receives
 only those events.
-Channels post concurrently. A channel's timeout is independent, defaults to
+Channels send concurrently. A channel's timeout is independent, defaults to
 five seconds, and failures are not retried. Delivery errors add a `notify.failed`
 run event and a log entry without changing the run result.
+Canceling a run discards its pending notifications using the existing lifecycle
+cancellation behavior.
 
 Set `approval_base_url` to the externally reachable approval page origin or
 base path. Waiting notifications then carry

@@ -87,9 +87,18 @@ func New(cfg Config) (Notifier, error) {
 		if typ == "" {
 			return nil, fmt.Errorf("notify channel %d: type is required", i+1)
 		}
-		u, err := url.Parse(c.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("notify channel %d: url must be http or https", i+1)
+		if typ == "osc9" || typ == "desktop" {
+			if c.URL != "" {
+				return nil, fmt.Errorf("notify channel %d: %s does not accept url", i+1, typ)
+			}
+			if c.Credential != "" {
+				return nil, fmt.Errorf("notify channel %d: %s does not accept credentials", i+1, typ)
+			}
+		} else {
+			u, err := url.Parse(c.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return nil, fmt.Errorf("notify channel %d: url must be http or https", i+1)
+			}
 		}
 		if c.TimeoutMS < 0 {
 			return nil, fmt.Errorf("notify channel %d: timeout_ms must not be negative", i+1)
@@ -115,6 +124,14 @@ func New(cfg Config) (Notifier, error) {
 			ch = &bark{base: strings.TrimRight(c.URL, "/"), key: c.Credential}
 		case "ntfy":
 			ch = &ntfy{url: strings.TrimRight(c.URL, "/"), token: c.Credential}
+		case "osc9":
+			ch = &osc9{}
+		case "desktop":
+			var err error
+			ch, err = newDesktop()
+			if err != nil {
+				return nil, fmt.Errorf("notify channel %d: %w", i+1, err)
+			}
 		default:
 			return nil, fmt.Errorf("notify channel %d: unknown type %q", i+1, typ)
 		}
@@ -146,7 +163,7 @@ func validEvent(e string) bool {
 func SafeTarget(raw string) string { return safeTarget(raw) }
 
 // Notify starts selected channels concurrently and returns their failures on a
-// buffered result stream. It never waits for HTTP delivery.
+// buffered result stream. It never waits for channel delivery.
 func (n *notifier) Notify(ctx context.Context, e Event) <-chan error {
 	var selected []configuredChannel
 	for _, cc := range n.channels {
@@ -183,10 +200,7 @@ func (n *ntfy) Send(ctx context.Context, e Event) error { return postJSON(ctx, n
 type bark struct{ base, key string }
 
 func (b *bark) Send(ctx context.Context, e Event) error {
-	body := e.Summary
-	if body == "" {
-		body = e.EventType + " " + e.Status
-	}
+	body := notificationBody(e)
 	payload := struct {
 		RunID       string    `json:"run_id"`
 		EventType   string    `json:"event_type"`
@@ -200,6 +214,13 @@ func (b *bark) Send(ctx context.Context, e Event) error {
 		URL         string    `json:"url,omitempty"`
 	}{e.RunID, e.EventType, e.Status, e.Summary, e.ApprovalURL, e.OccurredAt, e.EventType, body, e.RunID, e.ApprovalURL}
 	return postJSON(ctx, b.base+"/"+url.PathEscape(b.key), payload, "")
+}
+
+func notificationBody(e Event) string {
+	if e.Summary != "" {
+		return e.Summary
+	}
+	return e.EventType + " " + e.Status
 }
 
 func postJSON(ctx context.Context, target string, payload any, bearer string) error {

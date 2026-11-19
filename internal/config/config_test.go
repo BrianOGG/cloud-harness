@@ -2,10 +2,14 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/cloud-harness/cloud-harness/internal/domain"
 )
 
 func TestLoadKeyFromEnvOnly(t *testing.T) {
@@ -90,6 +94,51 @@ func TestNotifyConfigValidationAndCredentials(t *testing.T) {
 	}
 	if strings.Contains(string(redacted), "https://notify.example") || strings.Contains(string(redacted), "https://approve.example") {
 		t.Fatalf("redacted config contains a full URL: %s", redacted)
+	}
+}
+
+func TestNotifyLocalChannelCredentialEnvironment(t *testing.T) {
+	for _, channelType := range []string{"osc9", "desktop"} {
+		t.Run(channelType, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			body := fmt.Sprintf(`{"notify":{"channels":[{"type":"webhook","url":"https://notify.example/hook"},{"type":%q}]}}`, channelType)
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Run("no_credentials", func(t *testing.T) {
+				if channelType == "desktop" && runtime.GOOS != "linux" {
+					t.Skip("desktop notifications are only supported on Linux")
+				}
+				cfg, err := Load(path, func(string) string { return "" })
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cfg.Notify.Channels) != 2 || cfg.Notify.Channels[1].Type != channelType || cfg.Notify.Channels[1].Credential != "" {
+					t.Fatalf("unexpected local channel config: %+v", cfg.Notify.Channels)
+				}
+			})
+			for _, suffix := range []string{"WEBHOOK_BEARER", "BARK_KEY", "NTFY_TOKEN"} {
+				t.Run(suffix, func(t *testing.T) {
+					envName := "CLOUD_HARNESS_NOTIFY_CHANNEL_2_" + suffix
+					const credential = "local-channel-secret"
+					_, err := Load(path, func(key string) string {
+						if key == envName {
+							return credential
+						}
+						return ""
+					})
+					if !domain.IsCode(err, domain.CodeInvalidArgument) {
+						t.Fatalf("expected invalid_argument for %s, got %v", envName, err)
+					}
+					if !strings.Contains(err.Error(), "notify channel 2:") || !strings.Contains(err.Error(), envName) {
+						t.Fatalf("error must identify the channel and environment variable: %v", err)
+					}
+					if strings.Contains(err.Error(), credential) {
+						t.Fatal("validation error exposed the credential")
+					}
+				})
+			}
+		})
 	}
 }
 

@@ -144,6 +144,13 @@ func Load(path string, env func(string) string) (Config, error) {
 			ch.Credential = env(fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_BARK_KEY", i+1))
 		case "ntfy":
 			ch.Credential = env(fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_NTFY_TOKEN", i+1))
+		case "osc9", "desktop":
+			for _, suffix := range []string{"WEBHOOK_BEARER", "BARK_KEY", "NTFY_TOKEN"} {
+				envName := fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_%s", i+1, suffix)
+				if env(envName) != "" {
+					return Config{}, domain.E(domain.CodeInvalidArgument, fmt.Sprintf("notify channel %d: %s must be empty", i+1, envName))
+				}
+			}
 		}
 	}
 	if _, err := notify.New(cfg.Notify); err != nil {
