@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloud-harness/cloud-harness/internal/config"
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
@@ -209,6 +210,21 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	if st == nil {
 		st = &loopState{}
 	}
+	ctx, err := m.withModelRouting(ctx)
+	if err != nil {
+		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+	}
+	model := m.Provider
+	profiled, err := m.profiledModel(ctx, run.ID, leaseVersion, config.RoleExecutor)
+	if err != nil {
+		if ctx.Err() != nil {
+			return m.Cancel(context.WithoutCancel(ctx), run.ID)
+		}
+		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+	}
+	if profiled != nil {
+		model = profiled
+	}
 	// New runs start at version 1; every resume has already committed a state
 	// transition and restores its frozen rules from the checkpoint instead.
 	if run.Version == 1 {
@@ -270,7 +286,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			}
 		}
 		started := time.Now()
-		resp, err := m.Provider.Complete(ctx, provider.Request{
+		resp, err := model.Complete(ctx, provider.Request{
 			Model:                m.Model,
 			Messages:             messages,
 			Prefix:               prefix,
@@ -283,6 +299,15 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			usage.LatencyMS = time.Since(started).Milliseconds()
 		}
 		if err != nil {
+			if profiled != nil {
+				if ctx.Err() != nil {
+					return m.Cancel(context.WithoutCancel(ctx), run.ID)
+				}
+				if domain.IsCode(err, domain.CodeBudget) {
+					_ = m.saveCheckpoint(ctx, run, messages, continuation, contProvider, st)
+					return m.finish(ctx, run, domain.EventBudgetExhausted, "", asDomain(err))
+				}
+			}
 			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
 		}
 		if err := m.Store.HeartbeatLease(ctx, run.ID, m.owner(), leaseVersion, m.now(), m.now().Add(m.leaseFor())); err != nil {
@@ -466,7 +491,7 @@ func (m *Manager) commitAnswer(ctx context.Context, run storage.Run, resp domain
 	if err := m.Store.SaveSummaryJob(ctx, job); err != nil {
 		return finished, nil
 	}
-	if err := m.runSummaryJob(ctx, finished, job, answer); err != nil {
+	if err := m.runModelSummary(ctx, finished, job, answer); err != nil {
 		return finished, nil
 	}
 	return m.Store.GetRun(ctx, finished.ID)

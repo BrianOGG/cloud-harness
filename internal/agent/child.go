@@ -270,6 +270,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		LeaseFor:            m.LeaseFor,
 		System:              childSystemPrompt(def.System, body.SuccessCriteria, body.OutputContract),
 		Model:               model,
+		childModelOverride:  def.Model != "",
 		Broker:              m.Broker,
 		Workspace:           m.Workspace,
 		DisableSnapshots:    m.DisableSnapshots,

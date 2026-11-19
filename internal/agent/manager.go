@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloud-harness/cloud-harness/internal/config"
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/notify"
@@ -37,9 +38,11 @@ type Manager struct {
 	UseBudget       bool
 	System          string
 	Model           string // Empty uses the provider's default model.
-	ToolDigest      string
-	Broker          *tools.Broker
-	Workspace       string
+	// ModelRouting overrides process routing settings when set by an embedder.
+	ModelRouting *config.ModelRouting
+	ToolDigest   string
+	Broker       *tools.Broker
+	Workspace    string
 	// Worktree isolates each new root run at its dispatch HEAD. The store stays
 	// in the caller's workspace; child runs inherit the execution workspace.
 	Worktree bool
@@ -63,6 +66,7 @@ type Manager struct {
 
 	definitionToolLimit bool
 	failOnToolBudget    bool
+	childModelOverride  bool
 
 	cancelMu    sync.Mutex
 	cancels     map[string]context.CancelFunc
@@ -199,7 +203,11 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 	}
 	ctx = context.WithValue(ctx, sessionKey, run.SessionID)
 	ctx = context.WithValue(ctx, runKey, run.ID)
-	m.retrySummaries(ctx, run.SessionID)
+	ctx, err = m.withModelRouting(ctx)
+	if err != nil {
+		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+	}
+	m.retryModelSummaries(ctx, run.SessionID)
 	m.indexDoc(ctx, run.TurnID, run.SessionID, message, "user")
 	system := m.System
 	if system == "" {
@@ -259,7 +267,13 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 		_ = m.writeCheckpoint(ctx, run, messages, nil, "", st, true)
 	}
 	if plan {
-		messages = m.injectPlan(ctx, run, messages, message)
+		messages, err = m.injectModelPlan(ctx, run, lease.LeaseVersion, messages, message)
+		if err != nil {
+			if ctx.Err() != nil {
+				return m.Cancel(context.WithoutCancel(ctx), run.ID)
+			}
+			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		}
 		_ = m.event(ctx, run.ID, "planner.selected", map[string]string{"reason": why})
 	}
 	return m.loopFrom(ctx, run, lease.LeaseVersion, messages, nil, "", st)
@@ -495,6 +509,12 @@ func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error)
 	run.UpdatedAt = m.now()
 	expected := run.Version
 	if err := m.Store.CompareAndSwapRun(ctx, run, expected); err != nil {
+		// The model call may also reach Cancel when it wakes from backoff.
+		if domain.IsCode(err, domain.CodeConflict) {
+			if current, readErr := m.Store.GetRun(ctx, runID); readErr == nil && current.Status == domain.RunCancelled {
+				return current, nil
+			}
+		}
 		return storage.Run{}, err
 	}
 	if err := m.event(ctx, run.ID, "run.cancelled", map[string]string{"status": string(domain.RunCancelled)}); err != nil {

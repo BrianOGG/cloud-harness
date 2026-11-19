@@ -98,10 +98,59 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_RETENTION_DAYS` | `0` | history-index age limit; `0` keeps every row |
 | `CLOUD_HARNESS_CONFIG` | unset | optional JSON file |
 | `CLOUD_HARNESS_DISABLE_SNAPSHOTS` | `false` | Disable automatic workspace snapshots (`1` or `true`); the default captures pre/post snapshots around batches with side effects |
+| `CLOUD_HARNESS_MODEL_PROFILES` | unset | JSON object replacing `model_profiles` from the file |
+| `CLOUD_HARNESS_MODEL_ROLES` | unset | JSON object replacing `model_roles` from the file |
 | `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
-| `OPENAI_MODEL` | `gpt-4.1-mini` | model id sent on that one call |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | default model id for roles without a profile |
 | `OPENAI_DISABLE_IMAGES` | `false` | Reject image input locally for a text-only compatible endpoint/model; JSON field `openai_disable_images` |
+
+## Model profiles
+
+Use `model_profiles` to name model choices and `model_roles` to assign them.
+Each profile requires a `model` and can specify a different `fallback_model`.
+Both models use the configured provider, endpoint, and credentials. For example:
+
+```json
+{
+  "provider": "openai",
+  "model_profiles": {
+    "planning": {"model": "gpt-4.1-mini"},
+    "work": {"model": "gpt-4.1", "fallback_model": "gpt-4.1-mini"},
+    "brief": {"model": "gpt-4.1-nano"}
+  },
+  "model_roles": {"planner": "planning", "executor": "work", "fast": "brief"}
+}
+```
+
+| Role | Used for |
+| --- | --- |
+| `planner` | The context planner, on turns that already qualify for planning |
+| `executor` | The main model loop and delegated runs without a child agent `model` override |
+| `fast` | Optional model based turn summaries when a summarizer is supplied, and future lightweight calls such as `/compact` |
+
+Setting a `fast` profile does not replace the default local summary with a
+model call. A child agent with a `model` override uses that model and does not
+switch to the executor profile's backup. Any role you leave unmapped keeps its
+existing default model and retry behavior. With no role mappings, the call and
+event sequence is unchanged. The optional environment variables above each
+replace their entire JSON object; a role must refer to a profile in the
+resulting configuration.
+
+For a mapped role, HTTP 429 and 5xx responses trigger up to three retries. The
+delay starts at one second and doubles up to a cap of eight seconds (the
+three waits are 1, 2, and 4 seconds). Cancellation interrupts the wait. Other
+4xx responses and errors within a response stream follow the existing error
+path without retrying or switching models.
+
+When retries are exhausted, the call can try the backup immediately if one
+is configured. The switch persists for that profile in the same run,
+including after a wait and resume. `provider.fallback` records the switch
+with only `role`, `from_model`, `to_model`, and `reason` (`rate_limited` or
+`upstream_5xx`). It is available from `GET /v1/runs/{id}/events`. Each attempted
+call, including retries and the backup, uses a slot in `model_calls`. If the
+budget is already exhausted when the switch is recorded, the backup cannot
+be called until the budget is extended.
 
 ## Model prices
 
@@ -115,6 +164,8 @@ No default prices are supplied, so an unpriced model is reported with cost
 the model id on each response; stats therefore maps OpenAI rows to the current
 `openai_model` and uses the persisted provider value for other rows. Keep the
 matching key aligned with that attribution when enabling estimates.
+With model profiles, these estimates still use the default model's price;
+they cannot break down costs by the models actually called.
 
 Each model entry contains numeric `input`, `output`, and `cached` fields. Use
 the exact model name as the key, and fill the values from the provider's

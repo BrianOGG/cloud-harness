@@ -237,7 +237,9 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 		baseDelay = DefaultRetryBaseDelay
 	}
 	maxRetries := p.MaxRetries
-	if maxRetries <= 0 {
+	if req.singleAttempt {
+		maxRetries = 0
+	} else if maxRetries <= 0 {
 		maxRetries = DefaultMaxRetries
 	}
 
@@ -307,6 +309,9 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 			message = scrub(truncate(message, 400), p.APIKey)
 			if len(images) > 0 {
 				message = "provider/model rejected image input: " + message
+			}
+			if req.singleAttempt {
+				return domain.ModelResponse{}, NewHTTPStatusError(res.StatusCode, message)
 			}
 			lastErr = domain.E(domain.CodeProviderHTTP, message)
 			if isRetryableStatus(res.StatusCode) && attempt < maxRetries && ctx.Err() == nil {

@@ -100,6 +100,7 @@ type Config struct {
 	Servers []MCPServerConfig `json:"servers,omitempty"`
 	// MCPServers is an alias for Servers in config files.
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	ModelRouting
 	// ModelPrices optionally maps a model name to per-million-token prices.
 	ModelPrices map[string]ModelPrice `json:"model_prices,omitempty"`
 	// Notify configures optional run lifecycle notifications.
@@ -121,19 +122,11 @@ func Load(path string, env func(string) string) (Config, error) {
 		OpenAIReasoningReplay: DefaultReasoningReplay,
 		OwnerID:               "local",
 	}
-	if path == "" {
-		path = env("CLOUD_HARNESS_CONFIG")
+	if err := loadFile(path, env, &cfg); err != nil {
+		return Config{}, err
 	}
-	if path != "" {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return Config{}, err
-		}
-		dec := json.NewDecoder(strings.NewReader(string(body)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg); err != nil {
-			return Config{}, domain.E(domain.CodeInvalidArgument, "config file: "+err.Error())
-		}
+	if err := cfg.ModelRouting.applyEnv(env); err != nil {
+		return Config{}, err
 	}
 	for i := range cfg.Notify.Channels {
 		ch := &cfg.Notify.Channels[i]
@@ -262,6 +255,25 @@ func Load(path string, env func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func loadFile(path string, env func(string) string, cfg *Config) error {
+	if path == "" {
+		path = env("CLOUD_HARNESS_CONFIG")
+	}
+	if path == "" {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(cfg); err != nil {
+		return domain.E(domain.CodeInvalidArgument, "config file: "+err.Error())
+	}
+	return nil
 }
 
 // ValidateModelPrices rejects malformed or negative prices before they can be

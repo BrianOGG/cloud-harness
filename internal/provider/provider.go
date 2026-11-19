@@ -55,6 +55,8 @@ type Request struct {
 	Continuation         []domain.ResponseItem
 	// OnDelta, when non-nil, receives text deltas incrementally as they arrive.
 	OnDelta func(string) `json:"-"`
+
+	singleAttempt bool // ProfileProvider owns retries and the budget for these calls.
 }
 
 // Provider completes one model call and returns domain items only.
