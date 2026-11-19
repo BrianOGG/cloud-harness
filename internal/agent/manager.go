@@ -28,6 +28,7 @@ type Manager struct {
 	InitialBudget domain.Budget
 	UseBudget     bool
 	System        string
+	Model         string // Empty uses the provider's default model.
 	ToolDigest    string
 	Broker        *tools.Broker
 	Workspace     string
@@ -45,8 +46,12 @@ type Manager struct {
 	Summarizer provider.Provider
 	// Depth is zero for a root run. A child run is 1 and cannot delegate.
 	Depth int
-	// AllowedTools limits grants when Depth > 0. Empty means the root defaults.
+	// AllowedTools limits grants when Depth > 0. Empty uses the default child grants
+	// unless a definition supplied an explicit tool limit.
 	AllowedTools []string
+
+	definitionToolLimit bool
+	failOnToolBudget    bool
 
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc

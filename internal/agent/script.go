@@ -31,6 +31,9 @@ func (m *Manager) executePoll(ctx context.Context, args json.RawMessage) (json.R
 	if runID == "" {
 		return nil, domain.E(domain.CodeToolError, "poll has no run")
 	}
+	if excludedByChildToolLimit(ctx, body.TargetTool) {
+		return nil, domain.E(domain.CodeAuthDenied, "poll target is outside the child tool allowlist")
+	}
 	res, err := tools.Poll(ctx, m.Broker, tools.PollRequest{
 		RunID: runID, SessionID: sessionID, TargetTool: body.TargetTool, TargetArgs: body.TargetArgs,
 		Until: body.Until, Interval: time.Duration(body.IntervalSeconds * float64(time.Second)),
@@ -142,6 +145,9 @@ func (m *Manager) authorizeScript(ctx context.Context, runID, sessionID string, 
 	}
 	var facts []program.ToolFact
 	for _, name := range allow {
+		if excludedByChildToolLimit(ctx, name) {
+			return nil, domain.E(domain.CodeScriptPolicy, "tool "+name+" is outside the child tool allowlist")
+		}
 		fact, ok := m.Broker.Lookup(name)
 		if !ok {
 			return nil, domain.E(domain.CodeScriptPolicy, "allowlist names an unknown tool "+name)

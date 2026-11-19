@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/cloud-harness/cloud-harness/internal/agents"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
@@ -35,6 +37,9 @@ func isChildBaselineReadTool(name string) bool {
 }
 
 func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Grant {
+	if m.definitionToolLimit && len(m.AllowedTools) == 0 {
+		return nil
+	}
 	hasAllowed := len(m.AllowedTools) > 0
 	allowed := map[string]bool{}
 	for _, name := range m.AllowedTools {
@@ -137,12 +142,40 @@ func (m *Manager) isKnownChildTool(name string) bool {
 	return m.Broker.Has(name)
 }
 
+func (m *Manager) delegateDefinition(name string) (agents.Definition, error) {
+	if name == "" {
+		return agents.Definition{}, nil
+	}
+	registry, err := agents.Load(m.Workspace)
+	if err != nil {
+		return agents.Definition{}, domain.E(domain.CodeToolError, err.Error())
+	}
+	if def, ok := registry.Get(name); ok {
+		return def, nil
+	}
+	var names []string
+	for _, def := range registry.List() {
+		names = append(names, def.Name)
+	}
+	return agents.Definition{}, domain.E(domain.CodeToolError, fmt.Sprintf("agents: unknown agent %q; available agents: %s", name, strings.Join(names, ", ")))
+}
+
+type childToolLimitKey struct{}
+
+// The child shares the broker with its parent. Use the call context to apply
+// the child's limit to direct calls and to targets of poll_tool and execute_program.
+func excludedByChildToolLimit(ctx context.Context, tool string) bool {
+	allowed, limited := ctx.Value(childToolLimitKey{}).([]string)
+	return limited && !slices.Contains(allowed, tool)
+}
+
 func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	if m.Depth > 0 {
 		return nil, domain.E(domain.CodeScriptPolicy, "a child run cannot delegate")
 	}
 	var body struct {
 		Goal            string   `json:"goal"`
+		Agent           string   `json:"agent"`
 		RelevantContext string   `json:"relevant_context"`
 		SuccessCriteria string   `json:"success_criteria"`
 		OutputContract  string   `json:"output_contract"`
@@ -153,9 +186,22 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	if err := json.Unmarshal(args, &body); err != nil || body.Goal == "" {
 		return nil, domain.E(domain.CodeInvalidArgument, "delegate_task requires a goal")
 	}
+	def, err := m.delegateDefinition(body.Agent)
+	if err != nil {
+		return nil, err
+	}
 	knownTools, ignoredTools := m.partitionAllowedTools(body.AllowedTools)
 	if len(body.AllowedTools) > 0 && len(knownTools) == 0 {
 		return nil, domain.E(domain.CodeInvalidArgument, "allowed_tools contains no known tools: "+strings.Join(ignoredTools, ", "))
+	}
+	if def.Tools != nil {
+		if body.AllowedTools == nil {
+			knownTools = def.Tools
+		} else {
+			knownTools = slices.DeleteFunc(knownTools, func(tool string) bool {
+				return !slices.Contains(def.Tools, tool)
+			})
+		}
 	}
 	parentID, _ := ctx.Value(runKey).(string)
 	if parentID == "" {
@@ -174,6 +220,12 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		return nil, err
 	}
 	childBudget := nestedBudget(parent.Budget, body.MaxModelCalls, body.MaxToolCalls)
+	if def.MaxModelCalls > 0 {
+		childBudget.MaxModelCalls = min(childBudget.MaxModelCalls, def.MaxModelCalls)
+	}
+	if def.MaxToolCalls > 0 {
+		childBudget.MaxToolCalls = min(childBudget.MaxToolCalls, def.MaxToolCalls)
+	}
 	childRun := storage.Run{
 		ID: domain.NewID("run_"), ParentRunID: parent.ID, SessionID: parent.SessionID, TurnID: turn.ID,
 		Status: domain.RunRunning, Budget: childBudget, Version: 1, CreatedAt: now, UpdatedAt: now,
@@ -188,7 +240,11 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	if _, err := m.setStatus(ctx, parent.ID, domain.EventWaitChild); err != nil {
 		return nil, err
 	}
-	if err := m.event(ctx, parent.ID, "child.started", map[string]string{"child_run_id": childRun.ID}); err != nil {
+	childEvent := map[string]any{"child_run_id": childRun.ID}
+	if def.Name != "" {
+		childEvent["agent"] = def.Name
+	}
+	if err := m.event(ctx, parent.ID, "child.started", childEvent); err != nil {
 		return nil, err
 	}
 	childCtx, cancel := context.WithCancel(ctx)
@@ -197,19 +253,29 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		cancel()
 		m.untrackCancel(childRun.ID)
 	}()
+	if def.Tools != nil {
+		childCtx = context.WithValue(childCtx, childToolLimitKey{}, knownTools)
+	}
+	model := def.Model
+	if model == "" {
+		model = m.Model
+	}
 	childMgr := &Manager{
-		Store:            m.Store,
-		Provider:         m.Provider,
-		OwnerID:          m.owner(),
-		Now:              m.Now,
-		LeaseFor:         m.LeaseFor,
-		System:           childSystemPrompt(body.SuccessCriteria, body.OutputContract),
-		Broker:           m.Broker,
-		Workspace:        m.Workspace,
-		DisableSnapshots: m.DisableSnapshots,
-		Depth:            m.Depth + 1,
-		AllowedTools:     knownTools,
-		SkipPlanner:      true,
+		Store:               m.Store,
+		Provider:            m.Provider,
+		OwnerID:             m.owner(),
+		Now:                 m.Now,
+		LeaseFor:            m.LeaseFor,
+		System:              childSystemPrompt(def.System, body.SuccessCriteria, body.OutputContract),
+		Model:               model,
+		Broker:              m.Broker,
+		Workspace:           m.Workspace,
+		DisableSnapshots:    m.DisableSnapshots,
+		Depth:               m.Depth + 1,
+		AllowedTools:        knownTools,
+		definitionToolLimit: def.Tools != nil,
+		failOnToolBudget:    def.MaxToolCalls > 0,
+		SkipPlanner:         true,
 	}
 	message := childUserMessage(body.Goal, body.RelevantContext, body.SuccessCriteria, body.OutputContract)
 	finished, runErr := childMgr.runPrepared(childCtx, childRun, message)
@@ -235,14 +301,12 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		if runErr == nil {
 			runErr = waitErr
 		}
-		_ = m.event(ctx, parent.ID, "child.finished", map[string]any{
-			"child_run_id": childRun.ID,
-			"status":       string(finished.Status),
-			"wait_reason":  string(waitReason),
-			"success":      false,
-			"unmet":        waitErr.Message,
-			"error":        waitErr.Error(),
-		})
+		childEvent["status"] = string(finished.Status)
+		childEvent["wait_reason"] = string(waitReason)
+		childEvent["success"] = false
+		childEvent["unmet"] = waitErr.Message
+		childEvent["error"] = waitErr.Error()
+		_ = m.event(ctx, parent.ID, "child.finished", childEvent)
 		waitOut := map[string]any{
 			"child_run_id": childRun.ID,
 			"status":       finished.Status,
@@ -258,12 +322,10 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		return json.Marshal(waitOut)
 	}
 	success, unmet := judgeChildOutcome(finished, runErr, body.SuccessCriteria, body.OutputContract)
-	_ = m.event(ctx, parent.ID, "child.finished", map[string]any{
-		"child_run_id": childRun.ID,
-		"status":       string(finished.Status),
-		"success":      success,
-		"unmet":        unmet,
-	})
+	childEvent["status"] = string(finished.Status)
+	childEvent["success"] = success
+	childEvent["unmet"] = unmet
+	_ = m.event(ctx, parent.ID, "child.finished", childEvent)
 	out := map[string]any{
 		"child_run_id": childRun.ID,
 		"status":       finished.Status,
@@ -280,10 +342,13 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	return json.Marshal(out)
 }
 
-func childSystemPrompt(successCriteria, outputContract string) string {
+func childSystemPrompt(definitionSystem, successCriteria, outputContract string) string {
 	criteria := strings.TrimSpace(successCriteria)
 	contract := strings.TrimSpace(outputContract)
 	sys := childBaseSystem
+	if definitionSystem != "" {
+		sys += "\n\n" + definitionSystem
+	}
 	if criteria != "" {
 		sys += "\nSuccess criteria (what counts as done): " + criteria +
 			"\nSelf-assess your result against the success criteria before finishing. If any condition is not met, report \"UNMET: <reason>\" (or set \"unmet\" in JSON output)."

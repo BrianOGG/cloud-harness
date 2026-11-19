@@ -128,9 +128,9 @@ func (m *Manager) ensureTools() {
 	}
 	if !m.Broker.Has(domain.ToolDelegateTask) {
 		m.Broker.Register(tools.Spec{
-			Name: domain.ToolDelegateTask, Description: "Run a child task with its own trace, checkpoint, and budget.",
+			Name: domain.ToolDelegateTask, Description: "Run a child task with its own trace, checkpoint, and budget. Optionally select an agent: built-in explorer or reviewer, or a workspace definition in .agents/agents/*.md.",
 			Required: []string{"goal"}, Readonly: true, Idempotent: false, SideEffectClass: "none",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"relevant_context":{"type":"string"},"success_criteria":{"type":"string","description":"Natural-language conditions for the subtask to count as done."},"output_contract":{"type":"string","description":"Expected output shape or format."},"allowed_tools":{"type":"array","items":{"type":"string"}},"max_model_calls":{"type":"number"},"max_tool_calls":{"type":"number"}},"required":["goal"],"additionalProperties":false}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"agent":{"type":"string","description":"Optional child-agent definition name."},"relevant_context":{"type":"string"},"success_criteria":{"type":"string","description":"Natural-language conditions for the subtask to count as done."},"output_contract":{"type":"string","description":"Expected output shape or format."},"allowed_tools":{"type":"array","items":{"type":"string"}},"max_model_calls":{"type":"number"},"max_tool_calls":{"type":"number"}},"required":["goal"],"additionalProperties":false}`),
 			Execute:    m.executeDelegate,
 		})
 	}
@@ -261,6 +261,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		}
 		started := time.Now()
 		resp, err := m.Provider.Complete(ctx, provider.Request{
+			Model:                m.Model,
 			Messages:             messages,
 			Prefix:               prefix,
 			Tools:                m.toolDefs(),
@@ -384,6 +385,14 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		}
 		messages = append(messages, assistantMessage(resp))
 		messages = append(messages, toolResultMessages(batch)...)
+		if m.failOnToolBudget {
+			for _, inv := range batch.Invocations {
+				if inv.Result != nil && inv.Result.Error != nil && inv.Result.Error.Code == domain.CodeBudget {
+					_ = m.saveCheckpoint(ctx, run, messages, resp.Items, resp.Provider, st)
+					return m.finish(ctx, run, domain.EventBudgetExhausted, "", inv.Result.Error)
+				}
+			}
+		}
 		continuation = resp.Items
 		contProvider = resp.Provider
 	}
@@ -455,6 +464,9 @@ func (m *Manager) commitAnswer(ctx context.Context, run storage.Run, resp domain
 
 func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func(domain.Invocation) domain.GateDecision {
 	return func(inv domain.Invocation) domain.GateDecision {
+		if excludedByChildToolLimit(ctx, inv.Name) {
+			return domain.GateDeny
+		}
 		if inv.Name == "run_command" {
 			if !tools.ValidCwd(m.Workspace, jsonString(inv.Arguments, "cwd")) {
 				return domain.GateDeny
@@ -733,7 +745,7 @@ func (m *Manager) toolDefs() []provider.ToolDefinition {
 		return nil
 	}
 	m.ensureTools()
-	hasAllowed := m.Depth > 0 && len(m.AllowedTools) > 0
+	hasAllowed := m.Depth > 0 && (m.definitionToolLimit || len(m.AllowedTools) > 0)
 	allowed := map[string]bool{}
 	for _, name := range m.AllowedTools {
 		allowed[name] = true

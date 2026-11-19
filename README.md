@@ -2,7 +2,9 @@
 
 Cloud Harness is a standalone Go agent runtime. One run manager, one tool broker, and one permission check sit in front of one SQLite record of what happened.
 
-This tree is milestone M5. It runs the tool loop, resumes a waiting run, retrieves history, polls, runs a pre-authorized Starlark worker, and delegates a child run. The default model is a mock and needs no API key.
+This tree runs the tool loop, resumes a waiting run, retrieves history, polls, runs a pre-authorized Starlark worker, and delegates child runs. The default model is a mock and needs no API key.
+
+Set `agent` in a `delegate_task` call to select `explorer`, `reviewer`, or a definition from `.agents/agents/*.md`. The definition can narrow the child's tools, cap its budget, and set its model and system instructions. [Child agent reference](docs/cli.md#select-an-agent-with-delegate_task)
 
 ## Requirements
 

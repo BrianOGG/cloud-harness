@@ -14,9 +14,8 @@ cloud-harness agents show explorer --workspace ./project --json
 `agents` reads declarative child-agent definitions from the workspace and lists
 them in ascending name order. `--workspace` defaults to `.` (as for `review`).
 The command only reads definitions: it does not load runtime configuration,
-open a database, write files, start a process, or call a provider. These
-definitions are a definition layer only in M10.2-1; `delegate_task` does not
-consume them yet, and its tools, prompts, model, and budget behavior are unchanged.
+open a database, write files, start a process, or call a provider. The model
+can select one of these definitions by name when it calls `delegate_task`.
 
 The human list includes name, source (`builtin` or `file`), an explicit
 `OVERRIDES_BUILTIN` boolean, description, tools, and model. Tools display as
@@ -58,9 +57,9 @@ keys and unknown fields are errors rather than silent overrides.
 | --- | --- | --- |
 | `description` | Yes | Nonempty, single-line description; whitespace-only and quoted empty strings are rejected. |
 | `tools` | No | Comma-separated names or a bracketed comma-separated list. Omitted means `nil` (no additional restriction); `[]` means an explicit empty set. Empty values, empty list items, unknown names, `ask_user`, and `delegate_task` are errors. |
-| `model` | No | Single-line string, stored and displayed only in this milestone. |
-| `max_model_calls` | No | Integer greater than zero, stored and displayed only; zero, negative, nonnumeric, fractional, and overflowing values are errors. |
-| `max_tool_calls` | No | Same positive-integer rule; stored and displayed only. |
+| `model` | No | Single-line string that overrides the model for the child run. An empty value inherits the parent's model. |
+| `max_model_calls` | No | Upper bound on child model calls. Must be a positive integer. |
+| `max_tool_calls` | No | Upper bound on child tool calls. Must be a positive integer. |
 | `name` | No | Must exactly match the filename stem, including case. The filename always determines the registry key. |
 
 These tool forms are equivalent (tool names are unquoted):
@@ -82,9 +81,8 @@ configuration errors even though the harness knows those tools. MCP servers
 are not started or consulted to discover additional names.
 
 The text after the first closing frontmatter delimiter, with leading and
-trailing whitespace trimmed, becomes `System`: a supplement to the child's
-system prompt for future integration. It may be empty. Internal newlines,
-indentation, and later `---` lines are retained as body text.
+trailing whitespace trimmed, becomes `System`. It may be empty. Internal
+newlines, indentation, and later `---` lines are retained as body text.
 
 Example `.agents/agents/code-reader.md`:
 
@@ -137,6 +135,47 @@ max_model_calls: 0
 # A file without the opening --- line:
 -> agents: …/.agents/agents/code-reader.md: missing frontmatter: file must start with a --- line
 ```
+
+### Select an agent with `delegate_task`
+
+Pass the optional string `agent` along with the required `goal`. The runtime
+looks up the exact name in the parent run's workspace, and the child uses that
+same workspace. An omitted or empty `agent` uses ordinary delegation. An
+unknown name returns a tool error with the sorted list of available names.
+Document workspace agent names in `AGENTS.md` for the model to use.
+
+- The child's grants come from the parent's authorization and the effective
+  tool list. When both the definition's `tools` and the caller's `allowed_tools`
+  are declared, the effective list is their intersection. If the caller omits
+  `allowed_tools`, the definition's list applies. If the definition omits
+  `tools`, normal delegation rules apply. An empty intersection or `tools: []`
+  leaves the child with `finish_turn` and no workspace grants. Children cannot
+  request user input or delegate again.
+- Each declared `max_model_calls` or `max_tool_calls` caps the child budget
+  at the lower of that value and the budget already derived from the parent's
+  remaining budget and the caller's limits. A child that exhausts a cap fails
+  through the budget exhaustion path.
+- A nonempty `model` selects a model for the child on the same provider. If it
+  is empty, the child uses the parent's model selection or the provider default.
+  The definition's `System` text follows the base child system prompt and
+  precedes the task's success criteria and output contract.
+
+For the `code-reader` definition above, this tool call gives the child only
+`grep` and `read_file` and caps it at four model calls and twenty tool calls
+if the parent has sufficient budget.
+
+```json
+{
+  "goal": "Find the code that loads workspace configuration and cite the relevant files.",
+  "agent": "code-reader",
+  "allowed_tools": ["grep", "read_file"],
+  "max_model_calls": 4,
+  "max_tool_calls": 30
+}
+```
+
+The parent's `child.started` and `child.finished` events include `agent` when
+the caller names a definition.
 
 ## Images in chat and run (`@image:<path>`)
 

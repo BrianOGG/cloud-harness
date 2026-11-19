@@ -24,7 +24,9 @@ Every local tool resolves paths through `resolveInside`, which evaluates symlink
 
 `execute_program` runs only after the allowlist is granted. A side-effect tool must be listed in `confirm_side_effects` or the script does not start. During the script, a tool outside the allowlist returns `auth_denied`. The worker cannot open files, load modules, or open the network. See [worker-starlark.md](worker-starlark.md).
 
-`delegate_task` starts a child run for `goal` (required), with optional `relevant_context`, `success_criteria`, `output_contract`, `allowed_tools`, `max_model_calls`, and `max_tool_calls`. `success_criteria` states the natural-language conditions for the subtask to count as done, and `output_contract` states the expected output shape; both are injected into the child run prompt so the child model knows what counts as done and what format to return. On completion, the parent side judges the result against `success_criteria` (child self-assessment plus parent review of the summary) and returns `{child_run_id, status, summary, success, unmet}` (plus `error` on failure) without changing the child or parent terminal state when criteria are unmet. The child gets only `allowed_tools`. It cannot call `delegate_task`. Its trace and checkpoint are its own. Cancelling the parent cancels the child.
+`delegate_task` starts a child run for `goal` (required), with optional `agent`, `relevant_context`, `success_criteria`, `output_contract`, `allowed_tools`, `max_model_calls`, and `max_tool_calls`. The named agent can narrow `allowed_tools`, cap the child's budget, override its model, and add system instructions. See the [child agent reference](cli.md#select-an-agent-with-delegate_task).
+
+`success_criteria` tells the child what counts as done, and `output_contract` gives the expected output shape. The parent checks the child's summary and self-assessment against the criteria. It returns `{child_run_id, status, summary, success, unmet}` and adds `error` on failure. Unmet criteria set `success` to `false` in the result. The child has its own trace and checkpoint, and cancelling the parent cancels the child.
 
 ## MCP
 
