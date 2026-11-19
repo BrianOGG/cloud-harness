@@ -87,6 +87,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdExport(args[1:], stdout, stderr)
 	case "review":
 		return cmdReview(args[1:], stdout, stderr)
+	case "agents":
+		return cmdAgents(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -113,6 +115,7 @@ const usage = `Cloud Harness M5
   cloud-harness stats [--days N] [--by day|model|run] [--db path] [--json]
   cloud-harness export RUN_ID [--out path] [--sanitize|--raw] [--force] [--json] [--db path]
   cloud-harness review [--workspace dir] [--json] [--diff]
+  cloud-harness agents [show NAME] [--workspace dir] [--json]
   cloud-harness isolation
   cloud-harness program check
 

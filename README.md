@@ -19,6 +19,7 @@ go build -o cloud-harness ./cmd/cloud-harness
 ./cloud-harness eval suite
 ./cloud-harness isolation
 ./cloud-harness program check
+./cloud-harness agents --workspace .
 ```
 
 `serve` listens on `127.0.0.1:19421`. A non-loopback address is refused unless `CLOUD_HARNESS_ALLOW_EXTERNAL=1`.

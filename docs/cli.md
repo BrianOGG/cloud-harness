@@ -1,5 +1,143 @@
 # CLI command reference
 
+## agents / agents show
+
+```bash
+cloud-harness agents [--workspace dir] [--json]
+cloud-harness agents list [--workspace dir] [--json]   # explicit list alias
+cloud-harness agents show <name> [--workspace dir] [--json]
+
+cloud-harness agents --workspace ./project
+cloud-harness agents show explorer --workspace ./project --json
+```
+
+`agents` reads declarative child-agent definitions from the workspace and lists
+them in ascending name order. `--workspace` defaults to `.` (as for `review`).
+The command only reads definitions: it does not load runtime configuration,
+open a database, write files, start a process, or call a provider. These
+definitions are a definition layer only in M10.2-1; `delegate_task` does not
+consume them yet, and its tools, prompts, model, and budget behavior are unchanged.
+
+The human list includes name, source (`builtin` or `file`), an explicit
+`OVERRIDES_BUILTIN` boolean, description, tools, and model. Tools display as
+`inherit` when undeclared, `none` for an explicit empty set, or a list of tool
+names. An undeclared model displays as `—`. `show` prints every definition
+field, including the complete System body and optional budgets (shown as `—`
+when absent). An unknown name exits with code 1 and prints the sorted available
+names to stderr. Invalid arguments exit with code 2.
+
+`--json` emits an array of complete definitions for the list, or one definition
+object for `show`. All objects contain `name`, `description`, `tools`, `model`,
+`max_model_calls`, `max_tool_calls`, `system`, `source`, and `overrides_builtin`.
+Undeclared tools are JSON `null`; an explicit empty set is `[]`. Undeclared
+model and budgets are respectively `""` and `0`; a declared budget must be
+strictly positive.
+
+### Definition files and fields
+
+Place each definition at `<workspace>/.agents/agents/<name>.md`. The filename
+stem is the name and must match `[a-z0-9][a-z0-9-_]*`: lowercase ASCII letters,
+digits, `_`, and `-`, starting with a letter or digit. For example,
+`code-reader.md` and `review_2.md` are valid; `CodeReader.md` and `_reader.md`
+are errors. Only regular files with the exact `.md` extension in that directory
+are considered. Other extensions and subdirectories are ignored. Symbolic
+links, including symlinked definition directories, are skipped without reading
+their targets. A missing definitions directory or an empty workspace passed
+to the Go `agents.Load` API yields only the two built-ins.
+
+A file must begin with a line containing exactly `---`; the next such line
+closes its frontmatter. LF and CRLF line endings are accepted. Only single-line
+`key: value` entries are supported, with optional blank lines. This is a small
+handwritten format, not a YAML parser: no nested mappings, multiline values,
+anchors, escape expansion, or inline comments. String values may optionally
+have matching outer single or double quotes; those outer quotes are removed
+and their contents remain literal. Unquoted values are trimmed. Duplicate
+keys and unknown fields are errors rather than silent overrides.
+
+| Field | Required | Meaning and validation |
+| --- | --- | --- |
+| `description` | Yes | Nonempty, single-line description; whitespace-only and quoted empty strings are rejected. |
+| `tools` | No | Comma-separated names or a bracketed comma-separated list. Omitted means `nil` (no additional restriction); `[]` means an explicit empty set. Empty values, empty list items, unknown names, `ask_user`, and `delegate_task` are errors. |
+| `model` | No | Single-line string, stored and displayed only in this milestone. |
+| `max_model_calls` | No | Integer greater than zero, stored and displayed only; zero, negative, nonnumeric, fractional, and overflowing values are errors. |
+| `max_tool_calls` | No | Same positive-integer rule; stored and displayed only. |
+| `name` | No | Must exactly match the filename stem, including case. The filename always determines the registry key. |
+
+These tool forms are equivalent (tool names are unquoted):
+
+```text
+tools: read_file, grep
+tools: [read_file, grep]
+```
+
+Omitting `tools` means no *additional* restriction, rather than unrestricted
+authority: a definition never grants permissions by itself. `tools: []`
+declares no tools. An empty `tools:` is rejected to keep these meanings
+distinct. Known names are the workspace catalog (`read_file`, `write_file`,
+`edit_file`, `list_files`, `grep`, `git_status`, `git_diff`, `git_log`,
+`run_command`) plus eligible built-ins (`finish_turn`, `update_plan`,
+`retrieve_history`, `retrieve_resource`, `execute_program`, `poll_tool`).
+`ask_user` and `delegate_task` are always forbidden for child agents and are
+configuration errors even though the harness knows those tools. MCP servers
+are not started or consulted to discover additional names.
+
+The text after the first closing frontmatter delimiter, with leading and
+trailing whitespace trimmed, becomes `System`: a supplement to the child's
+system prompt for future integration. It may be empty. Internal newlines,
+indentation, and later `---` lines are retained as body text.
+
+Example `.agents/agents/code-reader.md`:
+
+```markdown
+---
+name: code-reader
+description: Read-only code exploration and location
+tools: [read_file, list_files, grep, git_status, git_diff, git_log]
+model: example-model
+max_model_calls: 8
+max_tool_calls: 20
+---
+Locate the implementation relevant to the task and cite file paths.
+
+---
+Explain any gaps in the available evidence.
+```
+
+### Built-ins, overrides, and errors
+
+Two definitions are built into the code: `explorer` for read-only code
+exploration/location and `reviewer` for read-only code review. Each declares
+exactly `read_file`, `list_files`, `grep`, `git_status`, `git_diff`, and
+`git_log`. Both have `source: "builtin"` and `overrides_builtin: false`.
+
+A workspace file with the same name replaces the **entire** built-in
+definition and is shown with `source: "file"` and `overrides_builtin: true`.
+Fields are not merged: an `explorer.md` that omits `tools` gets `nil`/`inherit`,
+not the built-in read-only list. Other workspace definitions have
+`overrides_builtin: false`. Loading and list ordering are deterministic;
+files are visited in filename order, and loading stops at the first error.
+Invalid definitions cause both list and show to exit with code 1, including
+the file path and the specific reason in stderr; no partial list is emitted.
+
+Examples of invalid definitions and their diagnostics:
+
+```text
+# .agents/agents/code-reader.md frontmatter:
+toolz: read_file
+-> agents: …/.agents/agents/code-reader.md: line …: unknown field "toolz"
+
+# .agents/agents/code-reader.md frontmatter:
+tools: [read_file, ask_user]
+-> agents: …/.agents/agents/code-reader.md: line …: tools: tool "ask_user" is forbidden for child agents
+
+# .agents/agents/code-reader.md frontmatter:
+max_model_calls: 0
+-> agents: …/.agents/agents/code-reader.md: line …: max_model_calls: must be an integer > 0, got "0"
+
+# A file without the opening --- line:
+-> agents: …/.agents/agents/code-reader.md: missing frontmatter: file must start with a --- line
+```
+
 ## Images in chat and run (`@image:<path>`)
 
 Attach local images by putting `@image:<path>` in a user message. `run
