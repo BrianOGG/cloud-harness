@@ -277,6 +277,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		childModelOverride:  def.Model != "",
 		Broker:              m.Broker,
 		Workspace:           m.Workspace,
+		DisableRepoMap:      m.DisableRepoMap,
 		DisableSnapshots:    m.DisableSnapshots,
 		Depth:               m.Depth + 1,
 		AllowedTools:        knownTools,

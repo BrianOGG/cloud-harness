@@ -10,6 +10,7 @@ import (
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
+	"github.com/cloud-harness/cloud-harness/internal/repomap"
 	"github.com/cloud-harness/cloud-harness/internal/rules"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 )
@@ -17,7 +18,38 @@ import (
 const (
 	defaultContextTokens = 12000
 	plannerCatalogLimit  = 20
+	repoMapMaxBytes      = 8 << 10
 )
+
+// withRepoMap builds an ephemeral view for one model request. The underlying
+// messages remain map-free so checkpoints do not freeze a stale workspace map.
+func (m *Manager) withRepoMap(ctx context.Context, run storage.Run, messages []provider.Message, prefixN int) []provider.Message {
+	if m.DisableRepoMap || m.Workspace == "" || prefixN < 0 || prefixN > len(messages) {
+		return messages
+	}
+	mapped, err := repomap.Scan(m.Workspace)
+	if err != nil {
+		_ = m.event(ctx, run.ID, "repomap.skipped", map[string]string{"error": err.Error()})
+		return messages
+	}
+	if len(mapped.Diagnostics) > 0 {
+		_ = m.event(ctx, run.ID, "repomap.diagnostics", map[string]any{"diagnostics": mapped.Diagnostics})
+	}
+	rendered := mapped.Render(repoMapMaxBytes)
+	if rendered.Text == "" {
+		return messages
+	}
+	assembly := contextpkg.Assembly{
+		StaticPrefix:  toContext(messages[:prefixN]),
+		DynamicSuffix: toContext(messages[prefixN:]),
+	}
+	assembly = contextpkg.WithRepoMap(assembly, rendered.Text)
+	requestMessages := fromContext(append(append([]contextpkg.Message(nil), assembly.StaticPrefix...), assembly.DynamicSuffix...))
+	for i := prefixN; i < len(messages); i++ {
+		requestMessages[i+1].Images = messages[i].Images
+	}
+	return requestMessages
+}
 
 // injectProjectRules runs only for a newly created run, before its first model
 // loop. Resumes use the messages and prefix count in the existing checkpoint.

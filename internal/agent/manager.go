@@ -47,6 +47,8 @@ type Manager struct {
 	// Worktree isolates each new root run at its dispatch HEAD. The store stays
 	// in the caller's workspace; child runs inherit the execution workspace.
 	Worktree bool
+	// DisableRepoMap opts out of per-model-request workspace maps.
+	DisableRepoMap bool
 	// DisableSnapshots opts out of automatic workspace snapshots (on by default).
 	DisableSnapshots bool
 	Grants           []domain.Grant

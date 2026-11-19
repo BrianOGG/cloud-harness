@@ -1,5 +1,16 @@
 # CLI command reference
 
+## run
+
+```bash
+cloud-harness run --message TEXT [--workspace dir] [--no-repomap]
+```
+
+Each model request includes a Repo-Map when the workspace contains parseable
+source files. The map follows project rules and is regenerated from the workspace
+for each request, with an 8 KiB output limit. Use `--no-repomap` to disable it
+for a run; project rules and the remaining context are assembled as usual.
+
 ## serve
 
 ```bash

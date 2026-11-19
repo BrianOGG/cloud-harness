@@ -49,6 +49,29 @@ func TestProjectRulesBetweenStaticPrefixAndHistory(t *testing.T) {
 	}
 }
 
+func TestRepoMapStartsDynamicSuffixAfterRules(t *testing.T) {
+	base := Assemble("system", "tools", "memory", []Message{{Role: "assistant", Content: "earlier"}}, "user")
+	base = WithProjectRules(base, "project rules")
+	withMap := WithRepoMap(base, "src/main.go\tlines=3\n")
+	if len(withMap.StaticPrefix) != 3 || withMap.StaticPrefix[2].Content != "project rules" {
+		t.Fatalf("repo map changed the static prefix: %+v", withMap.StaticPrefix)
+	}
+	if len(withMap.DynamicSuffix) != 4 || withMap.DynamicSuffix[0].Content != "Repo-Map:\nsrc/main.go\tlines=3\n" || withMap.DynamicSuffix[1].Content != "memory" {
+		t.Fatalf("repo map is not before dynamic context: %+v", withMap.DynamicSuffix)
+	}
+	if len(base.DynamicSuffix) != 3 || base.DynamicSuffix[0].Content != "memory" {
+		t.Fatalf("repo map mutated the source assembly: %+v", base.DynamicSuffix)
+	}
+}
+
+func TestEmptyRepoMapLeavesAssemblyUnchanged(t *testing.T) {
+	base := Assemble("system", "tools", "memory", nil, "user")
+	got := WithRepoMap(base, "")
+	if !reflect.DeepEqual(got, base) {
+		t.Fatalf("empty repo map changed assembly: got=%+v want=%+v", got, base)
+	}
+}
+
 func TestNoProjectRulesByteForByteRegression(t *testing.T) {
 	// Literal pre-M11-3 wire shape: a missing rules file must add no section,
 	// whitespace, or metadata, including when memory and history are populated.

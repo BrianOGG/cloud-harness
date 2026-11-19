@@ -51,6 +51,20 @@ func WithProjectRules(a Assembly, rules string) Assembly {
 	return a
 }
 
+// WithRepoMap places a workspace map at the start of the dynamic suffix. The
+// caller can rebuild it for each model request without changing the stable
+// prefix or persisting a stale map in a run checkpoint.
+func WithRepoMap(a Assembly, repoMap string) Assembly {
+	if repoMap == "" {
+		return a
+	}
+	suffix := make([]Message, 0, len(a.DynamicSuffix)+1)
+	suffix = append(suffix, Message{Role: "system", Content: "Repo-Map:\n" + repoMap})
+	suffix = append(suffix, a.DynamicSuffix...)
+	a.DynamicSuffix = suffix
+	return a
+}
+
 // PrefixBytes is the canonical encoding of the stable prefix.
 func PrefixBytes(a Assembly) ([]byte, error) {
 	return json.Marshal(a.StaticPrefix)

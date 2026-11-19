@@ -109,7 +109,7 @@ const usage = `Cloud Harness M5
 
   cloud-harness version
   cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness run --message TEXT [--plan] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
   cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
@@ -368,6 +368,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	message := fs.String("message", "", "user message")
 	useWorktree := fs.Bool("worktree", false, "run in a retained Git worktree isolated from the workspace")
 	planMode := fs.Bool("plan", false, "run in read-only plan mode")
+	disableRepoMap := fs.Bool("no-repomap", false, "disable per-request workspace Repo-Map context")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -388,6 +389,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	mgr.DisableRepoMap = *disableRepoMap
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

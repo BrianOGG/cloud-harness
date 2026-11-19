@@ -295,10 +295,11 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 				contProvider = ""
 			}
 		}
+		requestMessages := m.withRepoMap(ctx, run, messages, st.prefixN)
 		started := time.Now()
 		resp, err := model.Complete(ctx, provider.Request{
 			Model:                m.Model,
-			Messages:             messages,
+			Messages:             requestMessages,
 			Prefix:               prefix,
 			Tools:                m.toolDefsFor(st.planTools),
 			Continuation:         continuation,
