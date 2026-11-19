@@ -52,6 +52,35 @@ func TestConfigFileCannotCarryAPIKey(t *testing.T) {
 	}
 }
 
+func TestOpenAIDisableImagesConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"openai_disable_images":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, func(string) string { return "" })
+	if err != nil || !cfg.OpenAIDisableImages {
+		t.Fatalf("file config=%+v err=%v", cfg, err)
+	}
+	cfg, err = Load(path, func(key string) string {
+		if key == "OPENAI_DISABLE_IMAGES" {
+			return "false"
+		}
+		return ""
+	})
+	if err != nil || cfg.OpenAIDisableImages {
+		t.Fatalf("environment override=%+v err=%v", cfg, err)
+	}
+	_, err = Load("", func(key string) string {
+		if key == "OPENAI_DISABLE_IMAGES" {
+			return "invalid"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "OPENAI_DISABLE_IMAGES") {
+		t.Fatalf("invalid boolean error=%v", err)
+	}
+}
+
 func TestListenLoopback(t *testing.T) {
 	if err := ValidateListen("127.0.0.1:19421", false); err != nil {
 		t.Fatal(err)

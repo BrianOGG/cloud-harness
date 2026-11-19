@@ -392,6 +392,7 @@ func build(cfg config.Config) (provider.Provider, error) {
 			Model:                 cfg.OpenAIModel,
 			ReasoningReplay:       cfg.OpenAIReasoningReplay,
 			PrivatePassthrough:    cfg.OpenAIPrivatePassthrough,
+			DisableImages:         cfg.OpenAIDisableImages,
 			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
 			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
 			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,

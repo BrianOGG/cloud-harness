@@ -100,6 +100,20 @@ func (m *Manager) CreateSession(ctx context.Context) (storage.Session, error) {
 
 // RunMessage creates a turn and run, calls the provider once, and persists the outcome.
 func (m *Manager) RunMessage(ctx context.Context, sessionID, message string) (storage.Run, error) {
+	return m.RunMessageWithImages(ctx, sessionID, message, nil)
+}
+
+// RunMessageWithImages creates one turn with transient image payloads. Stored
+// checkpoints contain only image references and metadata.
+func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message string, images []provider.Image) (storage.Run, error) {
+	if len(images) > 0 {
+		if !provider.SupportsImages(m.Provider) {
+			return storage.Run{}, domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input")
+		}
+		if err := provider.ValidateImages(images); err != nil {
+			return storage.Run{}, err
+		}
+	}
 	if _, err := m.Store.GetSession(ctx, sessionID); err != nil {
 		return storage.Run{}, err
 	}
@@ -126,11 +140,15 @@ func (m *Manager) RunMessage(ctx context.Context, sessionID, message string) (st
 	if err := m.event(ctx, run.ID, "run.created", map[string]string{"session_id": sessionID}); err != nil {
 		return storage.Run{}, err
 	}
-	return m.runPrepared(ctx, run, message)
+	return m.runPreparedWithImages(ctx, run, message, images)
 }
 
 // runPrepared executes an existing run. Child runs use it so they keep their own id.
 func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message string) (storage.Run, error) {
+	return m.runPreparedWithImages(ctx, run, message, nil)
+}
+
+func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, message string, images []provider.Image) (storage.Run, error) {
 	defer m.releaseRunSnapshotter(ctx, run.ID)
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
@@ -194,6 +212,9 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 	messages := fromContext(append(append([]contextpkg.Message{}, asm.StaticPrefix...), asm.DynamicSuffix...))
 	prefixN := len(asm.StaticPrefix)
 	userAt := len(messages) - 1
+	if len(images) > 0 {
+		messages[userAt].Images = cloneImages(images)
+	}
 	plan, why := contextpkg.ShouldPlan(contextpkg.PlanInput{
 		PriorTurns: prior, UserText: message,
 		SuffixTokens: contextpkg.Estimate(asm.DynamicSuffix), TokenLimit: m.tokenLimit(),
@@ -211,6 +232,14 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 		_ = m.event(ctx, run.ID, "planner.selected", map[string]string{"reason": why})
 	}
 	return m.loopFrom(ctx, run, lease.LeaseVersion, messages, nil, "", st)
+}
+
+func cloneImages(images []provider.Image) []provider.Image {
+	out := append([]provider.Image(nil), images...)
+	for i := range out {
+		out[i].Data = append([]byte(nil), images[i].Data...)
+	}
+	return out
 }
 
 func (m *Manager) finish(ctx context.Context, run storage.Run, event domain.RunEvent, answer string, cause *domain.Error) (storage.Run, error) {

@@ -38,6 +38,7 @@ Settings load from an optional JSON file and then from the environment. The envi
 | `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | model id sent on that one call |
+| `OPENAI_DISABLE_IMAGES` | `false` | Reject image input locally for a text-only compatible endpoint/model; JSON field `openai_disable_images` |
 
 ## Model prices
 

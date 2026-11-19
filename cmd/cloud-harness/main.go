@@ -20,6 +20,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/eval"
+	"github.com/cloud-harness/cloud-harness/internal/imageinput"
 	"github.com/cloud-harness/cloud-harness/internal/program"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
@@ -270,6 +271,7 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 			Model:                 cfg.OpenAIModel,
 			ReasoningReplay:       cfg.OpenAIReasoningReplay,
 			PrivatePassthrough:    cfg.OpenAIPrivatePassthrough,
+			DisableImages:         cfg.OpenAIDisableImages,
 			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
 			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
 			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
@@ -359,12 +361,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	ses, err := mgr.CreateSession(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	run, err := mgr.RunMessage(ctx, ses.ID, *message)
+	run, err := mgr.RunMessageWithImages(ctx, ses.ID, userText, images)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -883,7 +890,12 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 }
 
 func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message string, reader *bufio.Reader, stdout, stderr io.Writer) (storage.Run, int, bool) {
-	run, err := mgr.RunMessage(ctx, sessionID, message)
+	userText, images, err := imageinput.ParseAndLoad(message, mgr.Workspace)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return storage.Run{}, 1, false
+	}
+	run, err := mgr.RunMessageWithImages(ctx, sessionID, userText, images)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return run, 1, false
@@ -936,7 +948,12 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 					return run, 0, true
 				}
 			}
-			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Answer: answer})
+			answerText, answerImages, err := imageinput.ParseAndLoad(answer, mgr.Workspace)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return run, 1, false
+			}
+			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Answer: answerText, Images: answerImages})
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return run, 1, false

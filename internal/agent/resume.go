@@ -155,6 +155,7 @@ func SummarizeArgs(_ string, args json.RawMessage) string {
 type ResumeInput struct {
 	Decision        string
 	Answer          string
+	Images          []provider.Image
 	ExtraModelCalls int
 }
 
@@ -167,6 +168,33 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 	}
 	if run.Status != domain.RunWaiting {
 		return run, domain.E(domain.CodeNotWaiting, "run is not waiting").WithRef(runID)
+	}
+	if len(in.Images) > 0 {
+		if run.WaitReason != domain.WaitUser {
+			return run, domain.E(domain.CodeInvalidArgument, "images may only accompany an ask_user answer")
+		}
+		if !provider.SupportsImages(m.Provider) {
+			return run, domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input")
+		}
+		if err := provider.ValidateImages(in.Images); err != nil {
+			return run, err
+		}
+		snap, err := m.loadCheckpoint(ctx, runID)
+		if err != nil {
+			return run, err
+		}
+		var total int
+		for _, message := range snap.Messages {
+			for _, image := range message.Images {
+				total += image.SizeBytes
+			}
+		}
+		for _, image := range in.Images {
+			total += len(image.Data)
+		}
+		if total > provider.MaxImagesTotalBytes {
+			return run, domain.E(domain.CodeInvalidArgument, "images exceed the 20 MB per-turn limit")
+		}
 	}
 	defer m.releaseRunSnapshotter(ctx, run.ID)
 	now := m.now()
@@ -195,7 +223,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 			return run, domain.E(domain.CodeInvalidArgument, "approval resume requires decision approve or deny").WithRef(run.ID)
 		}
 	case domain.WaitUser:
-		if in.Answer == "" {
+		if in.Answer == "" && len(in.Images) == 0 {
 			return run, domain.E(domain.CodeInvalidArgument, "ask_user resume requires an answer").WithRef(run.ID)
 		}
 	case domain.WaitReconciliation:
@@ -232,7 +260,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 	case domain.WaitApproval:
 		return m.resumeApproval(ctx, running, lease.LeaseVersion, snap, st, in.Decision)
 	case domain.WaitUser:
-		return m.resumeUser(ctx, running, lease.LeaseVersion, snap, st, in.Answer)
+		return m.resumeUser(ctx, running, lease.LeaseVersion, snap, st, in.Answer, in.Images)
 	case domain.WaitBudget, domain.WaitChild:
 		return m.loopFrom(ctx, running, lease.LeaseVersion, snap.Messages, snap.Continuation, snap.ContProvider, st)
 	case domain.WaitReconciliation:
@@ -242,7 +270,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 	}
 }
 
-func (m *Manager) resumeUser(ctx context.Context, run storage.Run, leaseVersion int64, snap snapshot, st *loopState, answer string) (storage.Run, error) {
+func (m *Manager) resumeUser(ctx context.Context, run storage.Run, leaseVersion int64, snap snapshot, st *loopState, answer string, images []provider.Image) (storage.Run, error) {
 	batches, err := m.Store.LoadBatches(ctx, run.ID)
 	if err != nil {
 		return storage.Run{}, err
@@ -274,7 +302,12 @@ func (m *Manager) resumeUser(ctx context.Context, run storage.Run, leaseVersion 
 	messages := append([]provider.Message(nil), snap.Messages...)
 	messages = append(messages, assistantFromBatch(batch))
 	messages = append(messages, toolResultMessages(batch)...)
-	messages = append(messages, provider.Message{Role: "user", Content: "User reply: " + answer})
+	messages = append(messages, provider.Message{Role: "user", Content: "User reply: " + answer, Images: cloneImages(images)})
+	if len(images) > 0 {
+		if err := m.saveCheckpoint(ctx, run, messages, snap.Continuation, snap.ContProvider, st); err != nil {
+			return storage.Run{}, err
+		}
+	}
 	return m.loopFrom(ctx, run, leaseVersion, messages, snap.Continuation, snap.ContProvider, st)
 }
 

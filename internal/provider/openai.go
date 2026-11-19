@@ -45,9 +45,29 @@ type OpenAICompatible struct {
 	IdleTimeout           time.Duration
 	RetryBaseDelay        time.Duration
 	MaxRetries            int
+	// DisableImages declares a text-only compatible endpoint or model.
+	DisableImages bool
 }
 
 func (p *OpenAICompatible) Name() string { return "openai" }
+
+func (p *OpenAICompatible) SupportsImages() bool { return p.supportsModelImages(p.Model) }
+
+func (p *OpenAICompatible) supportsModelImages(model string) bool {
+	if p.DisableImages {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	// Compatible APIs do not expose a standard modality-discovery endpoint.
+	// Reject established text-only OpenAI families locally; other models must
+	// accept the image blocks or return a provider error, never a text fallback.
+	for _, family := range []string{"gpt-3.5", "gpt-4", "gpt-4-32k", "gpt-4-0314", "gpt-4-0613", "gpt-4-32k-0314", "gpt-4-32k-0613", "gpt-4-1106-preview", "gpt-4-0125-preview", "gpt-4-turbo-preview", "o1-mini", "o1-preview", "o3-mini"} {
+		if model == family {
+			return false
+		}
+	}
+	return !strings.HasPrefix(model, "gpt-3.5-") && !strings.HasPrefix(model, "o1-mini-") && !strings.HasPrefix(model, "o1-preview-") && !strings.HasPrefix(model, "o3-mini-")
+}
 
 // Probe performs the lightest provider connectivity check used by doctor. It
 // deliberately calls GET /models instead of a completion, and all returned
@@ -82,6 +102,13 @@ func (p *OpenAICompatible) Probe(ctx context.Context) error {
 }
 
 func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.ModelResponse, error) {
+	var images []Image
+	for _, msg := range req.Messages {
+		images = append(images, msg.Images...)
+	}
+	if err := ValidateImages(images); err != nil {
+		return domain.ModelResponse{}, err
+	}
 	if strings.TrimSpace(p.APIKey) == "" {
 		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "OPENAI_API_KEY is not set; the mock provider needs no key")
 	}
@@ -92,6 +119,9 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 	if model == "" {
 		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "OPENAI_MODEL is empty")
 	}
+	if len(images) > 0 && !p.supportsModelImages(model) {
+		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input")
+	}
 	replayMode := strings.ToLower(strings.TrimSpace(p.ReasoningReplay))
 	if replayMode == "" {
 		replayMode = ReasoningReplayMessage
@@ -101,7 +131,26 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 	}
 	body := chatRequest{Model: model, Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
 	for _, msg := range req.Messages {
-		cm := chatMessage{Role: msg.Role, Content: msg.Content, ToolCallID: msg.ToolCallID}
+		cm := chatMessage{Role: msg.Role, ToolCallID: msg.ToolCallID}
+		if msg.Content != "" {
+			cm.Content = msg.Content
+		}
+		if len(msg.Images) > 0 {
+			content := make([]chatContentBlock, 0, len(msg.Images)+1)
+			if msg.Content != "" {
+				content = append(content, chatContentBlock{Type: "text", Text: msg.Content})
+			}
+			for _, image := range msg.Images {
+				content = append(content, chatContentBlock{
+					Type: "image_url",
+					ImageURL: &chatImageURL{
+						URL:    "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data),
+						Detail: "auto",
+					},
+				})
+			}
+			cm.Content = content
+		}
 		for _, call := range msg.ToolCalls {
 			args := string(call.Arguments)
 			cm.ToolCalls = append(cm.ToolCalls, chatToolCall{
@@ -251,7 +300,15 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 			respBody, _ := io.ReadAll(io.LimitReader(bodyReader, 4<<20))
 			_ = res.Body.Close()
 			cancelAttempt()
-			lastErr = domain.E(domain.CodeProviderHTTP, scrub(truncate(string(respBody), 400), p.APIKey))
+			message := string(respBody)
+			if len(images) > 0 {
+				message = imageDataURLRE.ReplaceAllString(message, "[image data omitted]")
+			}
+			message = scrub(truncate(message, 400), p.APIKey)
+			if len(images) > 0 {
+				message = "provider/model rejected image input: " + message
+			}
+			lastErr = domain.E(domain.CodeProviderHTTP, message)
 			if isRetryableStatus(res.StatusCode) && attempt < maxRetries && ctx.Err() == nil {
 				continue
 			}
@@ -261,7 +318,12 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 		defer cancelAttempt()
 		defer res.Body.Close()
 		bodyReader := &idleTimeoutReader{r: res.Body, timeout: idleTimeout, cancel: cancelAttempt}
-		scrubber := func(s string) string { return scrub(s, p.APIKey) }
+		scrubber := func(s string) string {
+			if len(images) > 0 {
+				s = imageDataURLRE.ReplaceAllString(s, "[image data omitted]")
+			}
+			return scrub(s, p.APIKey)
+		}
 		ctype := res.Header.Get("Content-Type")
 		if strings.Contains(ctype, "text/event-stream") {
 			return parseSSE(bodyReader, scrubber, onDelta)
@@ -399,6 +461,8 @@ func scrub(s, key string) string {
 
 var bearerRE = regexp.MustCompile(`(?i)Bearer\s+\S+`)
 
+var imageDataURLRE = regexp.MustCompile(`(?i)data:image/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=]*`)
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -455,8 +519,19 @@ type chatFn struct {
 
 type chatMessage struct {
 	Role             string         `json:"role"`
-	Content          string         `json:"content,omitempty"`
+	Content          any            `json:"content,omitempty"`
 	ReasoningContent string         `json:"reasoning_content,omitempty"`
 	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
+}
+
+type chatContentBlock struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }

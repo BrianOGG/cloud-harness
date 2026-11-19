@@ -10,6 +10,7 @@ import (
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/imageinput"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
@@ -203,6 +204,23 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	if st == nil {
 		st = &loopState{}
 	}
+	if hasImages(messages) {
+		if !provider.SupportsImages(m.Provider) {
+			return m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input"))
+		}
+		for i := range messages {
+			for j := range messages[i].Images {
+				if len(messages[i].Images[j].Data) > 0 {
+					continue
+				}
+				images, err := imageinput.Reload([]provider.Image{messages[i].Images[j]})
+				if err != nil {
+					return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+				}
+				messages[i].Images[j] = images[0]
+			}
+		}
+	}
 	stopHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
 	defer stopHeartbeat()
 	corrections := 0
@@ -369,6 +387,15 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		continuation = resp.Items
 		contProvider = resp.Provider
 	}
+}
+
+func hasImages(messages []provider.Message) bool {
+	for _, message := range messages {
+		if len(message.Images) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) commitAnswer(ctx context.Context, run storage.Run, resp domain.ModelResponse, batch domain.Batch) (storage.Run, error) {

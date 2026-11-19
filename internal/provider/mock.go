@@ -18,9 +18,18 @@ type Mock struct {
 
 func (m *Mock) Name() string { return "mock" }
 
+func (m *Mock) SupportsImages() bool { return true }
+
 func (m *Mock) Complete(_ context.Context, req Request) (domain.ModelResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var images []Image
+	for _, msg := range req.Messages {
+		images = append(images, msg.Images...)
+	}
+	if err := ValidateImages(images); err != nil {
+		return domain.ModelResponse{}, err
+	}
 	m.Requests = append(m.Requests, cloneReq(req))
 	if m.Err != nil {
 		return domain.ModelResponse{}, m.Err
@@ -55,8 +64,20 @@ func (m *Mock) Complete(_ context.Context, req Request) (domain.ModelResponse, e
 
 func cloneReq(req Request) Request {
 	out := req
-	out.Messages = append([]Message(nil), req.Messages...)
-	out.Prefix = append([]Message(nil), req.Prefix...)
+	out.Messages = cloneMessages(req.Messages)
+	out.Prefix = cloneMessages(req.Prefix)
 	out.Continuation = domain.CloneItems(req.Continuation)
+	return out
+}
+
+func cloneMessages(messages []Message) []Message {
+	out := append([]Message(nil), messages...)
+	for i := range out {
+		out[i].Images = append([]Image(nil), messages[i].Images...)
+		for j := range out[i].Images {
+			out[i].Images[j].SizeBytes = len(messages[i].Images[j].Data)
+			out[i].Images[j].Data = nil
+		}
+	}
 	return out
 }

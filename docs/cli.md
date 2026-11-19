@@ -1,5 +1,90 @@
 # CLI command reference
 
+## Images in chat and run (`@image:<path>`)
+
+Attach local images by putting `@image:<path>` in a user message. `run
+--message`, `chat --message`, and interactive chat input support the same
+syntax. An answer to an `ask_user` question in chat can also contain images.
+
+```bash
+cloud-harness run --workspace ./project --provider openai \
+  --message 'Explain this error @image:errors.png'
+cloud-harness chat --workspace ./project --provider openai \
+  --message 'Compare these screens @image:"my shot.png" @image:/tmp/after.webp'
+
+# At the interactive chat prompt, type the message itself (no outer shell quotes):
+Explain the UI @image:"screenshots/my shot.png"
+```
+
+Paths resolve from `--workspace` (the current directory when omitted), or can
+be absolute. Tokens may occur anywhere outside the code forms below. An
+unquoted path ends at Unicode whitespace; use double quotes immediately after
+the colon to include spaces. Within a quoted path, `\"` means a literal quote
+and `\\` means a literal backslash. Other backslashes stay literal; unquoted
+paths also keep their backslashes. A closing double quote ends the path.
+Paths are not shell-expanded: `~`, `$VARIABLE`, and globs are literal. When
+using `--message`, quote the whole argument for your shell as in the examples
+so the inner double quotes reach the CLI.
+
+The parser removes attachment tokens from the text and preserves image order.
+Multiple tokens attach multiple images, including repeated references to the
+same file. Text alone may be empty when there are images. To discuss token
+syntax literally, write `\@image:example.png`; the backslash is removed and
+the literal token is sent as text. Matched inline backtick spans and fenced
+code blocks are copied verbatim without parsing tokens or escapes. Fences
+use at least three backticks or tildes at the beginning of a line with up to
+three leading spaces; their closing fence uses the same character and at
+least the opening length. An unclosed fence protects the rest of the input.
+An unmatched inline backtick and indented code without a fence do not protect
+tokens. This lets fenced error logs include `@image:` without opening files.
+Use `--message` for multiline messages; interactive chat still reads one line
+per message.
+
+Supported formats are PNG, JPG/JPEG, WebP, and GIF. Format and MIME type come
+from file-header magic, not the filename extension. Image headers must also
+provide valid dimensions. Limits apply to the original file bytes, before
+base64 encoding: **10 MB (10 × 1,024 × 1,024 bytes) per image** and **20 MB
+per turn**, inclusive. Repeated attachments each count toward the total;
+images added to `ask_user` answers count with the same turn's earlier images.
+Empty files, directories, unsupported signatures, unreadable paths, and
+oversized inputs are rejected before a model request. A bad initial message
+does not create a turn or run; a bad answer does not resume the waiting run.
+
+Example diagnostics (printed to stderr with exit code 1):
+
+```text
+@image:                     -> invalid_argument: @image: requires a non-empty path
+@image:""                   -> invalid_argument: @image: requires a non-empty path
+@image:"unclosed.png        -> invalid_argument: @image: has an unterminated quoted path
+@image:missing.png          -> invalid_argument: image "…/missing.png" cannot be read: …
+@image:notes.txt            -> invalid_argument: image "…/notes.txt" has an unsupported or invalid file signature …
+@image:large.png            -> invalid_argument: image "…/large.png" exceeds the 10 MB per-image limit
+# Multiple valid files over 20 MB in total:
+                            -> invalid_argument: images exceed the 20 MB per-turn limit
+```
+
+OpenAI-compatible requests send the remaining text as a `text` content block
+and each image as an `image_url` block containing an inline base64 data URL.
+The wire structure follows the [official OpenAI vision guide](https://developers.openai.com/api/docs/guides/images-vision).
+Text-only messages retain the existing string content representation. The
+mock provider makes no network request and records only image references,
+count, byte sizes, dimensions, MIME types, and hashes for test assertions.
+Providers must explicitly support image input; otherwise the turn fails
+before execution. Established text-only OpenAI models (such as `gpt-3.5-turbo`,
+the original `gpt-4`, and `o3-mini`) are rejected locally. For a text-only
+compatible endpoint or custom model, set `OPENAI_DISABLE_IMAGES=true` or
+`"openai_disable_images": true` in the config file to reject attachments
+locally. Other compatible model names receive image blocks; if the server
+rejects them, the error explicitly says `provider/model rejected image input`
+and no text-only fallback is attempted.
+
+Image bytes and data URLs are transient and are not written to SQLite.
+Checkpoints keep only the absolute local path, MIME type, byte size,
+dimensions, and SHA-256 hash. Resuming a waiting run re-reads those references
+and fails before the next model request if a file is missing or changed.
+Files must therefore remain available for the lifetime of a waiting run.
+Storage tables, workspace snapshot behavior, retain, and rewind are unchanged.
+
 ## doctor
 
 ```bash

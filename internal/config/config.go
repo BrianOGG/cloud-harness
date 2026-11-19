@@ -81,6 +81,7 @@ type Config struct {
 	OpenAIAPIKey             string `json:"-"`
 	OpenAIReasoningReplay    string `json:"openai_reasoning_replay"`
 	OpenAIPrivatePassthrough bool   `json:"openai_private_passthrough"`
+	OpenAIDisableImages      bool   `json:"openai_disable_images"`
 	OpenAIHeaderTimeoutMS    int    `json:"openai_header_timeout_ms"`
 	OpenAIIdleTimeoutMS      int    `json:"openai_idle_timeout_ms"`
 	OpenAIRetryBaseMS        int    `json:"openai_retry_base_ms"`
@@ -154,6 +155,13 @@ func Load(path string, env func(string) string) (Config, error) {
 	}
 	if v := env("OPENAI_PRIVATE_PASSTHROUGH"); v != "" {
 		cfg.OpenAIPrivatePassthrough = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := env("OPENAI_DISABLE_IMAGES"); v != "" {
+		disabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, domain.E(domain.CodeInvalidArgument, "OPENAI_DISABLE_IMAGES must be a boolean")
+		}
+		cfg.OpenAIDisableImages = disabled
 	}
 	if v := env("OPENAI_HEADER_TIMEOUT_MS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -324,6 +332,7 @@ func (c Config) Redacted() map[string]any {
 		"provider":                c.Provider,
 		"openai_base_url":         c.OpenAIBaseURL,
 		"openai_model":            c.OpenAIModel,
+		"openai_disable_images":   c.OpenAIDisableImages,
 		"openai_reasoning_replay": c.OpenAIReasoningReplay,
 		"openai_api_key":          key,
 		"http_token":              token,

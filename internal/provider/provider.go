@@ -20,10 +20,28 @@ type ToolDefinition struct {
 type Message struct {
 	Role       string            `json:"role"`
 	Content    string            `json:"content"`
+	Images     []Image           `json:"images,omitempty"`
 	ToolCalls  []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
 	Ref        string            `json:"ref,omitempty"`
 }
+
+// Image is an image attached to one user message. Data is transient: checkpoints
+// retain the path and metadata but never serialize the image bytes.
+type Image struct {
+	Path      string `json:"path,omitempty"`
+	MediaType string `json:"media_type"`
+	SizeBytes int    `json:"size_bytes"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	SHA256    string `json:"sha256,omitempty"`
+	Data      []byte `json:"-"`
+}
+
+const (
+	MaxImageBytes       = 10 << 20
+	MaxImagesTotalBytes = 20 << 20
+)
 
 // Request is one completion. Continuation is the previous response items in order,
 // including opaque bytes that must be replayed unchanged for the same provider.
@@ -43,4 +61,15 @@ type Request struct {
 type Provider interface {
 	Name() string
 	Complete(ctx context.Context, req Request) (domain.ModelResponse, error)
+}
+
+// ImageInputProvider marks providers that can accept image content blocks.
+type ImageInputProvider interface {
+	SupportsImages() bool
+}
+
+// SupportsImages reports whether p explicitly supports image input.
+func SupportsImages(p Provider) bool {
+	capable, ok := p.(ImageInputProvider)
+	return ok && capable.SupportsImages()
 }

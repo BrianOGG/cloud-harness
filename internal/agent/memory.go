@@ -235,9 +235,13 @@ func maybeCompact(messages []provider.Message, prefixN, userAt, limit int, refs 
 	if contextpkg.Estimate(view) <= limit {
 		return messages
 	}
-	return fromContext(contextpkg.Compact(view, contextpkg.CompactOptions{
+	compacted := fromContext(contextpkg.Compact(view, contextpkg.CompactOptions{
 		PrefixCount: prefixN, KeepIndex: userAt, TokenLimit: limit, Refs: refs,
 	}))
+	for i := range compacted {
+		compacted[i].Images = messages[i].Images
+	}
+	return compacted
 }
 
 func toContext(in []provider.Message) []contextpkg.Message {
