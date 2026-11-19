@@ -115,7 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/budget", s.budget)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return withUI(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" && r.URL.Path != "/approval" {
 			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)
@@ -129,7 +129,7 @@ func (s *Server) Handler() http.Handler {
 			r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes())
 		}
 		mux.ServeHTTP(w, r)
-	})
+	}))
 }
 
 func checkBearerToken(header, expected string) bool {

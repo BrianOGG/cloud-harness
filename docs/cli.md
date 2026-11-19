@@ -18,12 +18,17 @@ Errors never echo the token. The legacy `--http-allow-insecure`,
 
 When a token is set, `/v1/` endpoints require `Authorization: Bearer <token>`.
 Missing or incorrect tokens return HTTP 401 with a `WWW-Authenticate: Bearer`
-challenge. `/healthz` and the static `/approval` page are accessible without
-a token. Paste the configured token once in the browser to see the pending
-queue, approve or deny a run, or answer an `ask_user` question. The browser
-keeps the token in `localStorage` for this origin. `GET /v1/approvals` lists
-pending items across sessions, oldest wait first. See the
+challenge. `/healthz`, the static `/approval` page, and `/ui` and its assets
+are accessible without a token. Paste the configured token once on `/approval`
+to see the pending queue, approve or deny a run, or answer an `ask_user`
+question. The browser keeps the token in `localStorage` for this origin.
+`GET /v1/approvals` lists pending items across sessions, oldest wait first. See the
 [HTTP API reference](api.md#get-approval).
+
+Open `/ui` to send messages and inspect runs. It uses the token saved by
+`/approval` on the same origin for its API calls. See the
+[Web UI build and usage reference](api.md#get-ui).
+
 The authenticated `GET /v1/sessions` and
 `GET /v1/sessions/{id}/runs` endpoints list sessions with run aggregates and
 the runs in one session; see the [session API reference](api.md#get-v1-sessions).

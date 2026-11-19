@@ -10,6 +10,7 @@ Set `agent` in a `delegate_task` call to select `explorer`, `reviewer`, or a def
 
 - Go 1.27.3, pinned by the `go 1.27.3` line in `go.mod`. `go mod tidy` on this release deletes a redundant `toolchain go1.27.3` line, and `go test` then refuses the file until that line is gone. The `go` line is the pin that stays tidy.
 - No C compiler. SQLite is the pure-Go driver `modernc.org/sqlite` v1.62.0 (SQLite 3.54.1, FTS5 enabled).
+- Node.js 22 (22.12 or later) and npm to rebuild the Web UI. Go builds use the checked-in output in `web/dist/`.
 
 ## Run
 
@@ -35,10 +36,12 @@ A non-loopback address requires `--http-token TOKEN`, `CLOUD_HARNESS_HTTP_TOKEN`
 or JSON `http_token` (at least 16 characters), checked before binding a port.
 Legacy insecure/allow-external settings cannot bypass this requirement.
 With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
-`/healthz` and the static `/approval` page are public. Open `/approval` on desktop
-or mobile and paste the configured token once to view the pending queue, make
-an approval decision, or answer a question. See the
-[approval page reference](docs/api.md#get-approval).
+`/healthz` and the static pages at `/approval` and `/ui` are public. Open
+`/approval` on desktop or mobile to view the pending queue, make an approval
+decision, or answer a question. Open `/ui` to start sessions, send messages,
+and inspect runs. Paste the configured token once on `/approval`; both pages
+share it on the same origin. See the [Web UI reference](docs/api.md#get-ui)
+and [approval page reference](docs/api.md#get-approval).
 Optional webhook, Bark, and ntfy notifications report approval waits, user
 questions, completion, and failure or cancellation. Set `notify.approval_base_url`
 to include a direct link to the waiting run. See
@@ -120,6 +123,15 @@ internal/transport         HTTP API
 migrations                 schema scripts
 tests/architecture         import-boundary test
 docs                       reports, config, tools, errors, eval tasks
+web                        Web UI source and embedded Vite output
+```
+
+Rebuild the Web UI after changing its source, and include the updated
+`web/dist/` in the change. The Go build embeds those assets into the executable.
+
+```bash
+(cd web && npm ci && npm run build)
+go build -o cloud-harness ./cmd/cloud-harness
 ```
 
 ## Tests

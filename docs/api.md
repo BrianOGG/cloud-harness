@@ -12,8 +12,8 @@ Configure an HTTP bearer token with `serve --http-token TOKEN`, the
 configuration file. A configured token must contain at least 16 characters.
 Every `/v1/` route, including `/v1/sessions`, `/v1/approvals`,
 `/v1/runs/{id}`, and its `/events` stream, uses the same authentication middleware and constant-time
-token comparison. `/healthz` and the static `/approval` page are available
-without authentication.
+token comparison. `/healthz`, the static `/approval` page, and `/ui` and its
+static resources are available without authentication.
 
 When a token is configured, supply `Authorization: Bearer <token>`. A missing
 or incorrect token returns HTTP 401 with
@@ -66,6 +66,25 @@ and the API error. Clear the site's browser data to remove the stored token.
 3. `POST /v1/runs/{id}/responses` sends `{"decision":"approve"}` or
    `{"decision":"deny"}`. `POST /v1/runs/{id}/answer` sends `{"answer":"..."}`
    for `ask_user`.
+
+## GET /ui
+
+Open `http://127.0.0.1:19421/ui` on the default `serve` listener to start
+sessions, send messages, and inspect runs, events, and traces. The page and
+its assets under `/ui/` are public and contain no run data. Navigation to an
+app route under `/ui/` returns the same `index.html` with `Cache-Control: no-store`.
+
+The browser calls the real `/v1/` API on the same origin. If the server
+requires a token, paste it on `/approval` on that origin. The Web UI reads
+`cloud-harness.http-token` from `localStorage` and sends `Authorization: Bearer <token>`
+with API requests, including the event stream. Without a token, the page still
+opens and protected API requests return 401. A reverse proxy serving the Web UI
+should forward `/ui`, `/ui/`, and `/v1/` on the same origin.
+
+To rebuild the assets, run `(cd web && npm ci && npm run build)` with Node.js
+22 (22.12 or later). This writes `web/dist/`, which is checked in so a Go build
+can embed the UI into the executable. Rebuild the Go binary to serve updated
+assets.
 
 ## GET /v1/sessions
 

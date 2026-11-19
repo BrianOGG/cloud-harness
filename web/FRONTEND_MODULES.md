@@ -1,0 +1,121 @@
+# Cloud Harness 前端 Web 模块清单
+
+> 依据：cloud-harness 现有代码与 HTTP API（2026-11-12 核对）。给 coding agent 做 demo 时的规格说明。
+> 一句话背景：harness 是一个 agent 运行时——用户发一句话，后端开一个 **run**，run 内部是「模型响应 → 工具批次 → 模型响应…」的循环，带权限审批、预算、等待/恢复、子任务。前端的本质是把一个 run 的生命周期可视化并提供干预入口。
+
+## 后端接口总览（全部接口，仅此 9 个）
+
+| 接口 | 用途 |
+|---|---|
+| `GET /healthz` | 健康检查，返回 `{status, provider}` |
+| `POST /v1/sessions` | 新建会话，返回 `{id}` |
+| `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图 |
+| `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, status, wait_reason, budget{...}, final_answer, error, version}` |
+| `GET /v1/runs/{id}/events` | SSE 格式一次性倒出该 run 的持久事件；带 `Last-Event-ID` 请求头可增量拉取（倒完即断开，需客户端重连/轮询） |
+| `GET /v1/runs/{id}/trace` | 执行轨迹：`{session_id, run:{status, wait_reason, steps[], children[]}}`；step = 一次模型响应 `{id, action, batches[]}`；batch = 一批工具调用 `{id, status, action, calls[]}`；call = `{id, name, status, ordinal, provider_call_id}` |
+| `POST /v1/runs/{id}/responses` | 恢复等待中的 run，body 可带 `{decision}` / `{answer}` / `{extra_model_calls}` |
+| `POST /v1/runs/{id}/budget` | 补预算，body `{extra_model_calls}` |
+| `POST /v1/runs/{id}/cancel` | 取消 run |
+
+## 全局硬约束（先读，否则会假设错接口）
+
+1. **没有列表接口**：不能列会话、不能列某会话的 runs。前端必须自己记住创建过的 session/run id（localStorage 即可），靠 id 逐个回查状态。
+2. **API 无 CORS 头**：前端不能跨域直连，开发时用 Vite 代理或同源部署（参考本目录现成 demo 的 `vite.config.ts`）。
+3. **没有真正的 token 流式输出**：`stream.delta` 事件不落盘；实时感只能靠轮询 run 视图 + 用 `Last-Event-ID` 增量拉事件实现。
+4. **模型的原始思维链不可见（设计如此）**：推理内容是 opaque continuation，只回放给同一 provider，不落盘、不经 API 透出。前端能展示的"思考过程"是**编排层行踪**：每一步模型响应的意图、规划器决策、工具批次、用量（见模块 6）。
+5. **一轮对话 = 一个 run**：会话里每发一条消息就开一个新 run；消息列表与 run 一一对应。
+6. **演示数据注意**：默认 mock 模型只会一步直达 ANSWER 并复读用户输入。工具调用、审批、等待等状态不会自然出现，demo 要用脚本化 provider / eval 场景造数据，或直接对着状态枚举做 mock 渲染。
+
+## 枚举速查
+
+- run 状态：`RUNNING` / `WAITING` / `COMPLETED` / `FAILED` / `CANCELLED`
+- 等待原因（wait_reason）：`USER`（等回答）/ `APPROVAL`（等审批）/ `CHILD`（等子任务）/ `BUDGET`（等补预算）/ `RECONCILIATION`（等对账）
+- 模型响应意图（action）：`ANSWER` 回答 / `RETRIEVE` 检索历史 / `EXECUTE` 执行工具 / `PLAN` 规划 / `ASK_USER` 向用户提问
+- 预算四组计数：`model_calls` / `tool_calls` / `script_calls` / `child_runs`，各有 used/max
+- 主要事件类型：`run.created` `run.resumed` `run.completed` `run.cancelled` `model.completed`（带 action、input/output tokens、latency_ms、provider）`planner.selected` `planner.completed` `planner.failed` `tool.batch`（带 batch 状态与 calls 概要）`tool.probed` `tool.succeeded` `child.started` `child.finished` `turn.summary`
+
+---
+
+## A. 基础层
+
+### 1. 连接状态模块
+- 职责：显示后端是否可达、当前 provider 名；断线时明确提示。
+- 数据：`GET /healthz`（页面加载时查一次即可）。
+
+### 2. 会话管理模块
+- 职责：新建会话、会话列表、切换会话；每个会话下挂它的 run 列表（标题取用户首句、状态点）。
+- 数据：`POST /v1/sessions` + 前端自记 id（约束 1）；run 状态靠逐个 `GET /v1/runs/{id}` 回查。
+
+### 3. 布局壳
+- 职责：三栏——左会话列表 / 中对话 / 右过程面板（事件流与轨迹切换）。纯前端，无数据。
+
+## B. 对话层
+
+### 4. 对话框模块（消息列表 + 输入框）
+- 职责：消息气泡列表（用户消息右、assistant 左，最终回答 Markdown 渲染）；底部输入框（回车发送、发送中禁用）；空状态引导。
+- 数据：发送 `POST /v1/sessions/{id}/runs {message}`；assistant 侧内容取 run 的 `final_answer`；run 未完成时气泡显示状态占位（运行中/等待某事）。
+- 注意：发送后要清输入框；同一会话可连续发多条（= 多个 run 顺序排列）。
+
+### 5. 运行状态与预算条
+- 职责：顶部呈现当前 run 的状态徽标 + wait_reason + 四组预算计数（used/max）；RUNNING/WAITING 时轮询刷新（约 1 秒）；提供「取消运行」按钮。
+- 数据：`GET /v1/runs/{id}` 轮询；取消 `POST /v1/runs/{id}/cancel`。
+
+## C. 过程可视化层（核心）
+
+### 6. 思考过程模块（步骤时间线）
+- 职责：把一个 run 的内部推进画成时间线：每一步 = 一次模型响应，显示其**意图**（五种 action 语义，用人话翻译：如"决定先查历史""决定执行工具""向用户提问"）、该步的 token 用量与延迟；规划器介入时插入"规划：选了哪些资料、精度如何"的节点。
+- 数据：`GET /v1/runs/{id}/trace` 的 steps（action）+ 事件 `model.completed`（tokens/latency）+ `planner.*` 事件。
+- 边界：原始思维链不可见（约束 4），文案上就叫"执行步骤/决策过程"，不要承诺展示模型内心独白。每步的**可见文本**在后端存储里有（VisibleItem），但 trace 接口暂未透出——要展示每步文本需后端给 trace 加字段。
+
+### 7. 工具调用模块
+- 职责：按批次展示工具调用：批次状态（顺序执行）、每次调用的名称、序号、状态（待审批/已派发/运行中/成功/失败/结果未知）；点开看参数与返回结果。
+- 数据：trace 的 batches/calls 给名称与状态骨架；事件 `tool.batch` 给批次概要。
+- 边界：调用的**参数与结果**后端存储里都有（Invocation.Arguments / Result{ok,data,error}），但 trace 接口目前只透出 name/status/ordinal——demo 若要展示参数/结果详情，需后端给 trace 的 call 节点补 `arguments` 与 `result` 字段（小改动），或先用假数据占位并标注。
+
+### 8. 事件流模块（调试面板）
+- 职责：按序号滚动展示 run 的全部持久事件（类型 + 时间 + payload 摘要），支持按类型筛选、自动跟随最新。
+- 数据：`GET /v1/runs/{id}/events` + `Last-Event-ID` 增量拉取（约束 3）。
+
+### 9. 子任务模块
+- 职责：展示父 run 派出的子 run（children 树）：各自状态、等待原因、完成后的摘要；父 run 在 `WAITING(CHILD)` 时有明确提示。
+- 数据：trace 的 `children[]` + 事件 `child.started` / `child.finished`；子 run 本身可再用其 id 查 trace（递归一层即可，深度上限 1）。
+
+## D. 人机协同层（等待态处理，全部走 responses/budget 接口）
+
+### 10. 审批模块
+- 触发：run `WAITING` + `APPROVAL`。
+- 职责：展示待审批的工具调用（哪个工具、参数摘要、为什么危险）+「同意 / 拒绝」按钮；操作后 run 自动继续，前端恢复轮询。
+- 数据：`POST /v1/runs/{id}/responses {decision: "approve"|"deny"}`。待审批调用的详情同样受模块 7 的字段透出限制。
+
+### 11. 回答提问模块
+- 触发：`WAITING` + `USER`（模型用了 ASK_USER）。
+- 职责：展示问题 + 回答输入框 + 提交。
+- 数据：`POST /v1/runs/{id}/responses {answer}`。
+
+### 12. 补预算模块
+- 触发：`WAITING` + `BUDGET`。
+- 职责：展示已用/上限（模型调用次数），提供「+N 次」补充按钮；说明 run 是暂停不是失败、进度不丢。
+- 数据：`POST /v1/runs/{id}/budget {extra_model_calls}`（或 responses 带 extra_model_calls）。
+
+### 13. 对账模块
+- 触发：`WAITING` + `RECONCILIATION`（某次工具调用结果未知，后端不会自动重放）。
+- 职责：展示结果未知的调用 + 「标记成功 / 标记失败」按钮。
+- 数据：`POST /v1/runs/{id}/responses {decision: "reconcile_success"|"reconcile_failure"}`。
+
+### 14. 取消与恢复感知
+- 职责：取消按钮（模块 5）；页面刷新后能恢复现场——靠自记的 session/run id 回查 run 视图与事件，等待中的 run 要重新弹出对应的协同操作条（模块 10–13）。
+
+## E. 收尾
+
+### 15. 错误与终态呈现
+- 职责：`FAILED` 时展示 run 的 `error{code,message}`；`CANCELLED` 有明确终态样式；接口报错（4xx 的 `{error:{code,message}}`）统一 toast/条幅呈现。
+
+---
+
+## Demo 切分建议
+
+- **Demo 1（对话骨架）**：模块 1、2、3、4、5、15——能建会话、发消息、看状态和预算、取消。mock 模型即可跑通。
+- **Demo 2（过程可视化）**：模块 6、7、8、9——步骤时间线 + 工具调用 + 事件流 + 子任务。需要脚本化场景造数据（多步、带工具调用、带子任务各一条）。
+- **Demo 3（人机协同）**：模块 10、11、12、13、14——四种等待态的操作条与恢复。需要能稳定触发 APPROVAL / USER / BUDGET / RECONCILIATION 的场景各一条。
+
+现成参考：同目录 `src/` 是 Muse 已跑通的一版三栏实现（Lobe UI v6），可直接借结构与接口调用代码；注意其中工具参数/结果、每步文本受上述后端字段限制未做。
