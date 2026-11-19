@@ -170,8 +170,19 @@ break down costs by the models actually called. Oracle estimates use the model
 recorded in each `oracle.asked` event and its input/output token counts. An
 unpriced oracle model contributes zero to the oracle total.
 
+`stats` exposes this same event-sourced ledger as `oracle_consultations`,
+`oracle_estimated_cost_usd`, and `oracle_by_model`. `doctor` includes the
+all-runs oracle summary and counts `oracle.failed` events with `reason:
+"budget"`, which identifies consultations blocked by the cost circuit
+breaker. Text reports render estimated USD to four decimal places; JSON keeps
+the amount numeric. `stats` also exposes `model_usage_by_model`, an all-run
+breakdown of persisted model-response calls and numeric estimated costs; an
+unpriced model contributes zero there as well. No cost rows are persisted: both
+commands recalculate from the existing event history and usage rows, and an
+empty history reports zero and empty model breakdowns.
+
 `oracle_max_cost_usd` is an optional non-negative finite dollar limit per run.
-Zero (the default) disables the amount limit, and
+Zero (the default) means unlimited and disables the amount limit.
 `CLOUD_HARNESS_ORACLE_MAX_COST_USD` overrides the file value. The limit is
 checked before each new consultation request against the accumulated cost from
 that run's `oracle.asked` events, including after resume. Since the completed

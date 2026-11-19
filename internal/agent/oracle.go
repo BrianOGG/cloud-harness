@@ -177,29 +177,83 @@ func (m *Manager) oracleCost(ctx context.Context, runID string, prices map[strin
 	if err != nil {
 		return 0, err
 	}
-	var cost float64
-	for _, event := range events {
-		if event.Type != "oracle.asked" {
-			continue
-		}
-		var asked struct {
-			Model        string `json:"model"`
-			InputTokens  int    `json:"input_tokens"`
-			OutputTokens int    `json:"output_tokens"`
-		}
-		if err := json.Unmarshal(event.Payload, &asked); err != nil {
-			return 0, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from an invalid oracle.asked event")
-		}
-		if asked.InputTokens < 0 || asked.OutputTokens < 0 {
-			return 0, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from negative token usage")
-		}
-		price, ok := prices[asked.Model]
-		if !ok {
-			continue
-		}
-		cost += (float64(asked.InputTokens)*price.Input + float64(asked.OutputTokens)*price.Output) / 1_000_000
+	summary, err := SummarizeOracleEvents(events, prices)
+	if err != nil {
+		return 0, err
 	}
-	return cost, nil
+	return summary.CostUSD, nil
+}
+
+// OracleModelCost is the usage and estimated cost for one model used by
+// ask_oracle. CostUSD is zero when the model has no configured price.
+type OracleModelCost struct {
+	Model      string
+	ModelCalls int
+	CostUSD    float64
+}
+
+// OracleCostSummary is calculated entirely from the existing event stream.
+// It intentionally does not persist a second cost ledger.
+type OracleCostSummary struct {
+	Consultations  int
+	CostUSD        float64
+	ByModel        map[string]OracleModelCost
+	BudgetFailures int
+}
+
+// SummarizeOracleEvents applies the same input/output token pricing used by
+// the oracle cost circuit breaker. Unpriced models still count as
+// consultations and model calls, but contribute zero estimated cost.
+func SummarizeOracleEvents(events []storage.Event, prices map[string]config.ModelPrice) (OracleCostSummary, error) {
+	summary := OracleCostSummary{ByModel: make(map[string]OracleModelCost)}
+	for _, event := range events {
+		switch event.Type {
+		case "oracle.asked":
+			asked, err := parseOracleAskedEvent(event.Payload)
+			if err != nil {
+				return OracleCostSummary{}, err
+			}
+			summary.Consultations++
+			modelCost := summary.ByModel[asked.Model]
+			modelCost.Model = asked.Model
+			modelCost.ModelCalls++
+			if price, ok := prices[asked.Model]; ok {
+				cost := (float64(asked.InputTokens)*price.Input + float64(asked.OutputTokens)*price.Output) / 1_000_000
+				modelCost.CostUSD += cost
+				summary.CostUSD += cost
+			}
+			summary.ByModel[asked.Model] = modelCost
+		case "oracle.failed":
+			var failed struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(event.Payload, &failed); err == nil && failed.Reason == "budget" {
+				summary.BudgetFailures++
+			}
+		}
+	}
+	return summary, nil
+}
+
+type oracleAskedEvent struct {
+	Model        string `json:"model"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+}
+
+func parseOracleAskedEvent(payload json.RawMessage) (oracleAskedEvent, error) {
+	var asked struct {
+		Model        *string `json:"model"`
+		InputTokens  *int    `json:"input_tokens"`
+		OutputTokens *int    `json:"output_tokens"`
+	}
+	if err := json.Unmarshal(payload, &asked); err != nil || asked.Model == nil || asked.InputTokens == nil || asked.OutputTokens == nil || strings.TrimSpace(*asked.Model) == "" {
+		return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from an invalid oracle.asked event")
+	}
+	if *asked.InputTokens < 0 || *asked.OutputTokens < 0 {
+		return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from negative token usage")
+	}
+	return oracleAskedEvent{Model: *asked.Model, InputTokens: *asked.InputTokens, OutputTokens: *asked.OutputTokens}, nil
 }
 
 func formatOracleUSD(amount float64) string {

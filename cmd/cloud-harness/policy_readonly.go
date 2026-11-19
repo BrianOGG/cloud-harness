@@ -14,8 +14,9 @@ import (
 
 // policyAuditReader adapts the existing ListEvents contract for CLI/doctor's
 // read-only connection. The normal sqlite.Open configures WAL and migrates;
-// this adapter runs only SELECTs and reads only IDs and decision events.
-// Keeping it here leaves the storage API, schema and migrations unchanged.
+// this adapter runs only SELECTs and reads the event projections needed by
+// policy and cost diagnostics. Keeping it here leaves the storage API, schema
+// and migrations unchanged.
 type policyAuditReader struct {
 	db *sql.DB
 }
@@ -102,6 +103,34 @@ func (r *policyAuditReader) ListEvents(ctx context.Context, runID string, afterS
 			return nil, err
 		}
 		event.Type, event.Persistent, event.Payload = "policy.decided", true, json.RawMessage(payload)
+		event.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+// ListOracleEvents reads only cost and budget facts from the complete event
+// history. The oracle ledger is per-run and remains cumulative across resume.
+func (r *policyAuditReader) ListOracleEvents(ctx context.Context) ([]storage.Event, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT event_id, run_id, seq, batch_id, invocation_id, type, payload_json, created_at
+		FROM events WHERE type IN ('oracle.asked', 'oracle.failed') ORDER BY run_id, seq`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storage.Event
+	for rows.Next() {
+		var event storage.Event
+		var payload, created string
+		if err := rows.Scan(&event.ID, &event.RunID, &event.Seq, &event.BatchID, &event.InvocationID, &event.Type, &payload, &created); err != nil {
+			return nil, err
+		}
+		event.Payload = json.RawMessage(payload)
+		event.Persistent = true
 		event.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, err

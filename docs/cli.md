@@ -564,6 +564,11 @@ is redacted from diagnostics.
 
 `--json` emits an array of the same objects, including the final `overall`
 object, so scripts can inspect the checks without parsing human text.
+The `oracle` check also reports consultation count, estimated cost in USD, and
+the number of `oracle.failed` events whose reason is `budget`. Its JSON object
+contains an `oracle` summary with stable `consultations`,
+`estimated_cost_usd`, and `budget_failures` fields. These totals cover all
+recorded runs; unpriced models add zero cost.
 
 ## stats
 
@@ -589,6 +594,22 @@ prices expressed per million tokens. When total input exceeds 100,000 tokens
 and the hit rate is below 20%, the report adds a warning about a potentially
 unstable prompt prefix. The 100,000-token threshold is intentionally fixed in
 the command and is included in JSON warnings.
+
+The report also includes an all-run model usage ledger. It groups persisted
+model responses by their attributed model and reports `model_calls` and the
+numeric `estimated_cost_usd` in `model_usage_by_model`; this ledger is useful
+when the time-windowed rows need to be compared with the complete run history.
+An unpriced model contributes zero to this numeric breakdown.
+
+The oracle ledger is reported separately from response usage. It counts
+`oracle.asked` events, groups calls by the exact model recorded in each event,
+and estimates cost from its input/output tokens using `model_prices`. An
+unpriced model contributes zero. This ledger covers all recorded runs and is
+not limited by `--days`, so a run's cumulative estimate matches the history
+used by `oracle_max_cost_usd`. Text output shows USD to four decimal places;
+JSON provides numeric `oracle_estimated_cost_usd` and an `oracle_by_model`
+array with `model`, `model_calls`, and `estimated_cost_usd` fields. Empty
+ledgers return zero totals and an empty model array.
 
 ## export
 

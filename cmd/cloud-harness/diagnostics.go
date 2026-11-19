@@ -16,10 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloud-harness/cloud-harness/internal/agent"
 	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/rules"
 	"github.com/cloud-harness/cloud-harness/internal/snapshot"
+	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/migrations"
 )
@@ -27,10 +29,17 @@ import (
 const cacheWarningInputTokenThreshold = 100_000
 
 type doctorItem struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Detail string `json:"detail"`
-	RunID  string `json:"run_id,omitempty"`
+	Name   string               `json:"name"`
+	Status string               `json:"status"`
+	Detail string               `json:"detail"`
+	RunID  string               `json:"run_id,omitempty"`
+	Oracle *doctorOracleSummary `json:"oracle,omitempty"`
+}
+
+type doctorOracleSummary struct {
+	Consultations    int     `json:"consultations"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+	BudgetFailures   int     `json:"budget_failures"`
 }
 
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
@@ -89,7 +98,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, configErr error) []doctorItem {
 	configOK := configErr == nil
-	items := make([]doctorItem, 0, 9)
+	items := make([]doctorItem, 0, 10)
 	if configErr != nil {
 		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: configErrorDetail(configErr)})
 	} else if cfg.Provider != "mock" && cfg.Provider != "openai" {
@@ -116,6 +125,7 @@ func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, conf
 	}
 
 	items = append(items, checkDatabase(ctx, cfg.DBPath)...)
+	items = append(items, checkOracleCosts(cfg.DBPath, cfg.ModelPrices))
 
 	absWorkspace, wsInfo, wsErr := inspectWorkspace(ws)
 	if wsErr != nil {
@@ -267,6 +277,54 @@ func checkDatabase(ctx context.Context, path string) []doctorItem {
 	return []doctorItem{{Name: "database", Status: status, Detail: detail}}
 }
 
+func checkOracleCosts(path string, prices map[string]config.ModelPrice) doctorItem {
+	item := doctorItem{Name: "oracle", Status: "ok", Oracle: &doctorOracleSummary{}}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		item.Detail = formatDoctorOracleSummary(item.Oracle)
+		return item
+	} else if err != nil {
+		item.Status = "warn"
+		item.Detail = "cannot inspect database for oracle events: " + err.Error()
+		return item
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	events, err := readOracleEvents(ctx, path)
+	if err != nil {
+		item.Status = "warn"
+		item.Detail = "cannot read oracle events: " + err.Error()
+		return item
+	}
+	summary, err := agent.SummarizeOracleEvents(events, prices)
+	if err != nil {
+		item.Status = "fail"
+		item.Detail = "cannot calculate oracle costs: " + err.Error()
+		return item
+	}
+	item.Oracle = &doctorOracleSummary{
+		Consultations:    summary.Consultations,
+		EstimatedCostUSD: summary.CostUSD,
+		BudgetFailures:   summary.BudgetFailures,
+	}
+	item.Detail = formatDoctorOracleSummary(item.Oracle)
+	return item
+}
+
+func formatDoctorOracleSummary(summary *doctorOracleSummary) string {
+	return fmt.Sprintf("consultations=%d estimated_cost_usd=%.4f budget_failures=%d",
+		summary.Consultations, summary.EstimatedCostUSD, summary.BudgetFailures)
+}
+
+func readOracleEvents(ctx context.Context, path string) ([]storage.Event, error) {
+	reader, err := newPolicyAuditReader(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return reader.ListOracleEvents(ctx)
+}
+
 func walState(mode string) string {
 	if strings.EqualFold(mode, "wal") {
 		return "enabled"
@@ -363,12 +421,28 @@ type statsRow struct {
 }
 
 type statsReport struct {
-	By       string     `json:"by"`
-	Days     int        `json:"days"`
-	Since    string     `json:"since"`
-	Results  []statsRow `json:"results"`
-	Totals   statsRow   `json:"totals"`
-	Warnings []string   `json:"warnings"`
+	By                     string             `json:"by"`
+	Days                   int                `json:"days"`
+	Since                  string             `json:"since"`
+	Results                []statsRow         `json:"results"`
+	Totals                 statsRow           `json:"totals"`
+	Warnings               []string           `json:"warnings"`
+	ModelUsageByModel      []modelUsageStats  `json:"model_usage_by_model"`
+	OracleConsultations    int                `json:"oracle_consultations"`
+	OracleEstimatedCostUSD float64            `json:"oracle_estimated_cost_usd"`
+	OracleByModel          []oracleModelStats `json:"oracle_by_model"`
+}
+
+type modelUsageStats struct {
+	Model            string  `json:"model"`
+	ModelCalls       int     `json:"model_calls"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+}
+
+type oracleModelStats struct {
+	Model            string  `json:"model"`
+	ModelCalls       int     `json:"model_calls"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
 }
 
 type statsAccumulator struct {
@@ -412,21 +486,62 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 	since := time.Now().UTC().AddDate(0, 0, -*days)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Keep the existing time-windowed query for the main report. The separate
+	// all-run query feeds the cumulative per-model ledger below.
 	records, err := sqlite.ReadUsage(ctx, cfg.DBPath, since)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	// time.Date(1, January, 1, ...) is Go's zero time and the SQLite helper
+	// substitutes now for zero values, so use the following day as the lower
+	// bound to retain the complete history.
+	allRecords, err := sqlite.ReadUsage(ctx, cfg.DBPath, time.Date(1, time.January, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	report := aggregateStats(records, *by, *days, since, cfg)
+	report.ModelUsageByModel = aggregateModelUsage(allRecords, cfg)
+	oracleEvents, err := readOracleEvents(ctx, cfg.DBPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "read oracle events:", err)
+		return 1
+	}
+	oracleSummary, err := agent.SummarizeOracleEvents(oracleEvents, cfg.ModelPrices)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	setOracleStats(&report, oracleSummary)
 	if *jsonOutput {
 		return writeJSON(stdout, report)
 	}
-	fmt.Fprintf(stdout, "Stats by %s, last %d days (since %s UTC)\n", report.By, report.Days, report.Since)
+	fmt.Fprintf(stdout, "Stats by %s, last %d days (since %s UTC); oracle ledger covers all runs\n", report.By, report.Days, report.Since)
 	fmt.Fprintln(stdout, "GROUP\tMODEL CALLS\tINPUT\tOUTPUT\tCACHED\tCACHE HIT\tCOST")
 	for _, row := range report.Results {
 		fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", row.Group, row.ModelCalls, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheHitRate*100, formatCost(row.Cost))
 	}
 	fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
+	fmt.Fprintf(stdout, "ORACLE CONSULTATIONS\t%d\n", report.OracleConsultations)
+	fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%.4f\n", report.OracleEstimatedCostUSD)
+	fmt.Fprintln(stdout, "MODEL USAGE BY MODEL (ALL RUNS)")
+	fmt.Fprintln(stdout, "MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
+	if len(report.ModelUsageByModel) == 0 {
+		fmt.Fprintln(stdout, "(none)\t0\t0.0000")
+	} else {
+		for _, row := range report.ModelUsageByModel {
+			fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+		}
+	}
+	fmt.Fprintln(stdout, "ORACLE MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
+	if len(report.OracleByModel) == 0 {
+		fmt.Fprintln(stdout, "(none)\t0\t0.0000")
+	} else {
+		for _, row := range report.OracleByModel {
+			fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+		}
+	}
 	for _, warning := range report.Warnings {
 		fmt.Fprintln(stdout, "warn: "+warning)
 	}
@@ -467,7 +582,49 @@ func aggregateStats(records []sqlite.UsageRecord, by string, days int, since tim
 	if total.InputTokens > cacheWarningInputTokenThreshold && total.CacheHitRate < 0.2 {
 		warnings = append(warnings, fmt.Sprintf("cache hit rate %.1f%% is below 20%% with %d input tokens (threshold: >%d); prompt prefix may be unstable", total.CacheHitRate*100, total.InputTokens, cacheWarningInputTokenThreshold))
 	}
-	return statsReport{By: by, Days: days, Since: since.Format("2006-01-02T15:04:05"), Results: rows, Totals: total, Warnings: warnings}
+	return statsReport{By: by, Days: days, Since: since.Format("2006-01-02T15:04:05"), Results: rows, Totals: total, Warnings: warnings, OracleByModel: make([]oracleModelStats, 0)}
+}
+
+func setOracleStats(report *statsReport, summary agent.OracleCostSummary) {
+	report.OracleConsultations = summary.Consultations
+	report.OracleEstimatedCostUSD = summary.CostUSD
+	report.OracleByModel = make([]oracleModelStats, 0, len(summary.ByModel))
+	models := make([]string, 0, len(summary.ByModel))
+	for model := range summary.ByModel {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		row := summary.ByModel[model]
+		report.OracleByModel = append(report.OracleByModel, oracleModelStats{
+			Model: row.Model, ModelCalls: row.ModelCalls, EstimatedCostUSD: row.CostUSD,
+		})
+	}
+}
+
+func aggregateModelUsage(records []sqlite.UsageRecord, cfg config.Config) []modelUsageStats {
+	buckets := make(map[string]*statsAccumulator)
+	for _, record := range records {
+		model := attributedModel(record.Provider, cfg)
+		bucket := buckets[model]
+		if bucket == nil {
+			bucket = &statsAccumulator{row: statsRow{Group: model}, costCovered: true}
+			buckets[model] = bucket
+		}
+		addUsage(bucket, record, model, cfg.ModelPrices)
+	}
+	models := make([]string, 0, len(buckets))
+	for model := range buckets {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	rows := make([]modelUsageStats, 0, len(models))
+	for _, model := range models {
+		row := finishStatsRow(buckets[model])
+		cost, _ := row.Cost.(float64)
+		rows = append(rows, modelUsageStats{Model: model, ModelCalls: row.ModelCalls, EstimatedCostUSD: cost})
+	}
+	return rows
 }
 
 func addUsage(bucket *statsAccumulator, record sqlite.UsageRecord, model string, prices map[string]config.ModelPrice) {
