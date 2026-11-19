@@ -102,7 +102,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /approval", serveApprovalPage)
+	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/runs", s.listSessionRuns)
 	mux.HandleFunc("POST /v1/sessions/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /v1/approvals", s.approvals)
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
@@ -168,6 +170,50 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": ses.ID})
+}
+
+type sessionView struct {
+	ID              string           `json:"id"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	RunCount        int              `json:"run_count"`
+	LatestRunStatus domain.RunStatus `json:"latest_run_status,omitempty"`
+	LatestRunAt     *time.Time       `json:"latest_run_at,omitempty"`
+}
+
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.Manager.Store.ListSessions(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	out := make([]sessionView, 0, len(sessions))
+	for _, session := range sessions {
+		out = append(out, sessionView{
+			ID: session.ID, CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
+			RunCount: session.RunCount, LatestRunStatus: session.LatestRunStatus, LatestRunAt: session.LatestRunAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) listSessionRuns(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sessionID := r.PathValue("id")
+	if _, err := s.Manager.Store.GetSession(ctx, sessionID); err != nil {
+		writeErr(w, err)
+		return
+	}
+	runs, err := s.Manager.Store.ListRuns(ctx, sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	out := make([]view, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, s.runView(ctx, run))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {

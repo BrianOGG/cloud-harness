@@ -17,6 +17,16 @@ type Session struct {
 	UpdatedAt time.Time
 }
 
+// SessionSummary is a session and its run aggregates for read-only listings.
+type SessionSummary struct {
+	ID              string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	RunCount        int
+	LatestRunStatus domain.RunStatus
+	LatestRunAt     *time.Time
+}
+
 // Turn is one user input.
 type Turn struct {
 	ID        string
@@ -182,6 +192,7 @@ type Store interface {
 	Close() error
 	CreateSession(ctx context.Context, s Session) error
 	GetSession(ctx context.Context, id string) (Session, error)
+	ListSessions(ctx context.Context) ([]SessionSummary, error)
 	CreateTurn(ctx context.Context, t Turn) error
 	CreateRun(ctx context.Context, r Run) error
 	GetRun(ctx context.Context, id string) (Run, error)

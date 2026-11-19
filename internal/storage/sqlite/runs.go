@@ -29,6 +29,58 @@ func (db *DB) GetSession(ctx context.Context, id string) (storage.Session, error
 	return s, nil
 }
 
+func (db *DB) ListSessions(ctx context.Context) ([]storage.SessionSummary, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT s.id, s.created_at, s.updated_at, COUNT(r.id), latest.status, latest.created_at
+		FROM sessions s
+		LEFT JOIN runs r ON r.session_id = s.id
+		LEFT JOIN runs latest ON latest.id = (
+			SELECT r2.id FROM runs r2
+			WHERE r2.session_id = s.id
+			ORDER BY r2.created_at DESC, r2.id DESC
+			LIMIT 1
+		)
+		GROUP BY s.id, s.created_at, s.updated_at, latest.status, latest.created_at
+		ORDER BY s.updated_at DESC, s.id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]storage.SessionSummary, 0)
+	for rows.Next() {
+		var session storage.SessionSummary
+		var created, updated string
+		var latestStatus, latestAt sql.NullString
+		if err := rows.Scan(&session.ID, &created, &updated, &session.RunCount, &latestStatus, &latestAt); err != nil {
+			return nil, err
+		}
+		session.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		session.UpdatedAt, err = parseTime(updated)
+		if err != nil {
+			return nil, err
+		}
+		if latestStatus.Valid {
+			session.LatestRunStatus = domain.RunStatus(latestStatus.String)
+		}
+		if latestAt.Valid {
+			t, err := parseTime(latestAt.String)
+			if err != nil {
+				return nil, err
+			}
+			session.LatestRunAt = &t
+		}
+		out = append(out, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (db *DB) CreateTurn(ctx context.Context, t storage.Turn) error {
 	_, err := db.sql.ExecContext(ctx, `INSERT INTO turns(id, session_id, user_input, status, created_at) VALUES(?, ?, ?, ?, ?)`,
 		t.ID, t.SessionID, t.UserInput, t.Status, formatTime(t.CreatedAt))
@@ -67,7 +119,7 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 	if sessionID == "" {
 		rows, err = db.sql.QueryContext(ctx, q+` ORDER BY created_at ASC LIMIT 200`)
 	} else {
-		rows, err = db.sql.QueryContext(ctx, q+` WHERE session_id = ? ORDER BY created_at ASC LIMIT 200`, sessionID)
+		rows, err = db.sql.QueryContext(ctx, q+` WHERE session_id = ? ORDER BY created_at ASC, id ASC`, sessionID)
 	}
 	if err != nil {
 		return nil, err

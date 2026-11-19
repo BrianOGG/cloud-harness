@@ -94,6 +94,10 @@ export OPENAI_MODEL=gpt-4.1-mini
 
 `cloud-harness trace RUN_ID` and `GET /v1/runs/{id}/trace` return Session → Run → Step → tool batch, plus child runs. `GET /v1/runs/{id}/events` replays persistent events after `Last-Event-ID`. A `stream.delta` has no id and is not stored. Reconnecting does not execute tools again.
 
+The authenticated `GET /v1/sessions` and `GET /v1/sessions/{id}/runs` API
+routes list sessions with run aggregates and each session's runs. See the
+[HTTP API reference](docs/api.md#get-v1-sessions).
+
 `cloud-harness retain --days 30` deletes history-index rows older than 30 days. Run rows stay.
 
 ## Layout

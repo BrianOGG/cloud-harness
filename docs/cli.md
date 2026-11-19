@@ -24,6 +24,9 @@ queue, approve or deny a run, or answer an `ask_user` question. The browser
 keeps the token in `localStorage` for this origin. `GET /v1/approvals` lists
 pending items across sessions, oldest wait first. See the
 [HTTP API reference](api.md#get-approval).
+The authenticated `GET /v1/sessions` and
+`GET /v1/sessions/{id}/runs` endpoints list sessions with run aggregates and
+the runs in one session; see the [session API reference](api.md#get-v1-sessions).
 
 ## Run notifications
 
