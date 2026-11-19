@@ -1,5 +1,56 @@
 # CLI command reference
 
+## doctor
+
+```bash
+cloud-harness doctor [--db path] [--workspace dir] [--provider mock|openai]
+cloud-harness doctor --json
+```
+
+`doctor` runs read-only checks for configuration, SQLite, Git and the
+workspace, provider connectivity, and MCP configuration. Each line reports a
+`name`, `status` (`ok`, `warn`, or `fail`), and `detail`; the final `overall`
+line is `fail` when any check failed. A missing database is reported as
+`warn: 尚未创建` and is not created. A nonzero exit code is returned only when
+there is a failure, so warnings remain usable in a fresh workspace.
+
+The database check opens SQLite with `mode=ro`, reads the migration version,
+journal mode (WAL), and `PRAGMA foreign_key_check`, and never runs migrations,
+checkpoints, or writes. Git checks only executable discovery and, when a
+snapshot shadow repository already exists, readability of its `HEAD`; it does
+not run `gc` or `fsck`. MCP entries are syntax/field checked and no server
+process is started. With `--provider openai`, a configured key gets one short
+`GET /models` probe; a missing `OPENAI_API_KEY` is a warning. API key material
+is redacted from diagnostics.
+
+`--json` emits an array of the same objects, including the final `overall`
+object, so scripts can inspect the checks without parsing human text.
+
+## stats
+
+```bash
+cloud-harness stats [--days N] [--by day|model|run] [--db path]
+cloud-harness stats --days 30 --by model --json
+```
+
+`stats` defaults to the last 30 days and groups by UTC day. It reads the
+already persisted `model_responses.usage_json` rows (one row per model call)
+through a read-only SQLite connection. It reports model calls, input, output,
+cached input tokens, `cached/input` hit rate, and an optional cost estimate.
+`--by run` uses the run id; `--by model` uses the configured OpenAI model for
+OpenAI rows and the existing provider value for other rows. The current schema
+does not persist a model id, so this model attribution is a documented proxy;
+no new persistence is introduced by this command. Calls that fail before a
+response with persisted usage exists are not included in these totals.
+
+Costs are shown only when `model_prices` contains a matching model. Without a
+matching price, the cost column is `—`. The estimate uses
+`(input-cached)*input_price + cached*cached_price + output*output_price`, with
+prices expressed per million tokens. When total input exceeds 100,000 tokens
+and the hit rate is below 20%, the report adds a warning about a potentially
+unstable prompt prefix. The 100,000-token threshold is intentionally fixed in
+the command and is included in JSON warnings.
+
 ## retain
 
 ```bash

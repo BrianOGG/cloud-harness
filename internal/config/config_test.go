@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,34 @@ func TestCommandEnvAllowConfig(t *testing.T) {
 	}
 	if len(cfg.CommandEnvAllow) != 2 || cfg.CommandEnvAllow[0] != "FOO" || cfg.CommandEnvAllow[1] != "BAR" {
 		t.Fatalf("command_env_allow = %v, want [FOO BAR]", cfg.CommandEnvAllow)
+	}
+}
+
+func TestModelPricesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.json")
+	if err := os.WriteFile(path, []byte(`{"model_prices":{"gpt-test":{"input":1.25,"output":2,"cached":0.5}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	price := cfg.ModelPrices["gpt-test"]
+	if price.Input != 1.25 || price.Output != 2 || price.Cached != 0.5 {
+		t.Fatalf("model price: %+v", price)
+	}
+	if err := os.WriteFile(path, []byte(`{"model_prices":{"gpt-test":{"input":-1,"output":2,"cached":0.5}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "model_prices.gpt-test.input") {
+		t.Fatalf("negative model price error: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"model_prices":{"gpt-test":{"input":1,"output":2}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "model_prices.gpt-test.cached is required") {
+		t.Fatalf("incomplete model price error: %v", err)
 	}
 }
 

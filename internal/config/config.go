@@ -3,9 +3,13 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,6 +31,44 @@ type MCPServerConfig struct {
 	Command  string   `json:"command"`
 	Args     []string `json:"args"`
 	Readonly bool     `json:"readonly"`
+}
+
+// ModelPrice contains prices in currency units per one million tokens. Input
+// is the non-cached input price; cached is the price for the cached subset.
+type ModelPrice struct {
+	Input  float64 `json:"input"`
+	Output float64 `json:"output"`
+	Cached float64 `json:"cached"`
+
+	fromJSON  bool
+	inputSet  bool
+	outputSet bool
+	cachedSet bool
+}
+
+func (p *ModelPrice) UnmarshalJSON(data []byte) error {
+	type wirePrice struct {
+		Input  *float64 `json:"input"`
+		Output *float64 `json:"output"`
+		Cached *float64 `json:"cached"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var wire wirePrice
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	*p = ModelPrice{fromJSON: true, inputSet: wire.Input != nil, outputSet: wire.Output != nil, cachedSet: wire.Cached != nil}
+	if wire.Input != nil {
+		p.Input = *wire.Input
+	}
+	if wire.Output != nil {
+		p.Output = *wire.Output
+	}
+	if wire.Cached != nil {
+		p.Cached = *wire.Cached
+	}
+	return nil
 }
 
 // Config is the process configuration.
@@ -56,6 +98,8 @@ type Config struct {
 	Servers []MCPServerConfig `json:"servers,omitempty"`
 	// MCPServers is an alias for Servers in config files.
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	// ModelPrices optionally maps a model name to per-million-token prices.
+	ModelPrices map[string]ModelPrice `json:"model_prices,omitempty"`
 }
 
 // Load reads an optional JSON file and applies environment overrides.
@@ -174,6 +218,9 @@ func Load(path string, env func(string) string) (Config, error) {
 	if cfg.OpenAIReasoningReplay != "message" && cfg.OpenAIReasoningReplay != "omit" {
 		return Config{}, domain.E(domain.CodeInvalidArgument, "openai_reasoning_replay must be message or omit")
 	}
+	if err := ValidateModelPrices(cfg.ModelPrices); err != nil {
+		return Config{}, err
+	}
 	if len(cfg.Servers) == 0 && len(cfg.MCPServers) > 0 {
 		cfg.Servers = cfg.MCPServers
 	} else if len(cfg.MCPServers) == 0 && len(cfg.Servers) > 0 {
@@ -183,6 +230,36 @@ func Load(path string, env func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// ValidateModelPrices rejects malformed or negative prices before they can be
+// used for a cost estimate. A missing map is valid and means costs are shown
+// as unavailable.
+func ValidateModelPrices(prices map[string]ModelPrice) error {
+	names := make([]string, 0, len(prices))
+	for name := range prices {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		price := prices[name]
+		if strings.TrimSpace(name) == "" {
+			return domain.E(domain.CodeInvalidArgument, "model_prices contains an empty model name")
+		}
+		for _, field := range []struct {
+			name  string
+			set   bool
+			value float64
+		}{{"input", price.inputSet, price.Input}, {"output", price.outputSet, price.Output}, {"cached", price.cachedSet, price.Cached}} {
+			if price.fromJSON && !field.set {
+				return domain.E(domain.CodeInvalidArgument, fmt.Sprintf("model_prices.%s.%s is required", name, field.name))
+			}
+			if math.IsNaN(field.value) || math.IsInf(field.value, 0) || field.value < 0 {
+				return domain.E(domain.CodeInvalidArgument, fmt.Sprintf("model_prices.%s.%s must be a non-negative finite number", name, field.name))
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateHTTPToken checks that a non-empty bearer token meets the minimum length.

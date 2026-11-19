@@ -49,6 +49,38 @@ type OpenAICompatible struct {
 
 func (p *OpenAICompatible) Name() string { return "openai" }
 
+// Probe performs the lightest provider connectivity check used by doctor. It
+// deliberately calls GET /models instead of a completion, and all returned
+// errors are scrubbed so the API key cannot appear in diagnostics.
+func (p *OpenAICompatible) Probe(ctx context.Context) error {
+	if strings.TrimSpace(p.APIKey) == "" {
+		return domain.E(domain.CodeProviderConfig, "OPENAI_API_KEY is not set")
+	}
+	base := strings.TrimRight(p.BaseURL, "/")
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return domain.E(domain.CodeProviderHTTP, scrub(err.Error(), p.APIKey))
+	}
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	client := p.Client
+	if client == nil {
+		client = &http.Client{}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return domain.E(domain.CodeProviderHTTP, scrub(err.Error(), p.APIKey))
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return domain.E(domain.CodeProviderHTTP, scrub("GET /models returned "+res.Status+": "+truncate(string(body), 400), p.APIKey))
+	}
+	return nil
+}
+
 func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.ModelResponse, error) {
 	if strings.TrimSpace(p.APIKey) == "" {
 		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "OPENAI_API_KEY is not set; the mock provider needs no key")

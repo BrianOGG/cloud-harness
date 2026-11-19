@@ -13,6 +13,7 @@ Settings load from an optional JSON file and then from the environment. The envi
   "provider": "mock",
   "openai_base_url": "https://api.openai.com/v1",
   "openai_model": "gpt-4.1-mini",
+  "model_prices": {},
   "http_token": "",
   "http_allow_insecure": false,
   "disable_snapshots": false,
@@ -37,6 +38,23 @@ Settings load from an optional JSON file and then from the environment. The envi
 | `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | model id sent on that one call |
+
+## Model prices
+
+`model_prices` is optional JSON configuration used only by
+`cloud-harness stats` for cost estimates. Keys are model names and each value
+contains `input`, `output`, and `cached` prices per one million tokens. Prices
+must be finite and non-negative. The cached price applies to the cached subset
+of input tokens; the estimate charges the remaining input tokens at `input`.
+No default prices are supplied, so an unpriced model is reported with cost
+`—` rather than an invented amount. The current database schema does not store
+the model id on each response; stats therefore maps OpenAI rows to the current
+`openai_model` and uses the persisted provider value for other rows. Keep the
+matching key aligned with that attribution when enabling estimates.
+
+Each model entry contains numeric `input`, `output`, and `cached` fields. Use
+the exact model name as the key, and fill the values from the provider's
+current pricing; the example configuration leaves this map empty by default.
 
 CLI flags `--addr`, `--db`, `--provider`, `--http-token`, and `--http-allow-insecure` override the environment for that process.
 

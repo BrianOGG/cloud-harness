@@ -78,6 +78,10 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdRetain(args[1:], stdout, stderr)
 	case "rewind":
 		return cmdRewind(args[1:], stdin, stdout, stderr)
+	case "doctor":
+		return cmdDoctor(args[1:], stdout, stderr)
+	case "stats":
+		return cmdStats(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -100,6 +104,8 @@ const usage = `Cloud Harness M5
   cloud-harness trace RUN_ID
   cloud-harness retain [--days N] [--prune-runs-days N] [--dry-run] [--db path]
   cloud-harness rewind RUN_ID --to SNAPSHOT_ID [--all|--code-only|--chat-only] [--yes] [--db path] [--workspace dir]
+  cloud-harness doctor [--db path] [--workspace dir] [--provider mock|openai] [--json]
+  cloud-harness stats [--days N] [--by day|model|run] [--db path] [--json]
   cloud-harness isolation
   cloud-harness program check
 

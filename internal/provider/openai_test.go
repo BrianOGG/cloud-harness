@@ -58,6 +58,27 @@ func TestOpenAIKeyRequired(t *testing.T) {
 	}
 }
 
+func TestOpenAIProbeUsesModelsEndpoint(t *testing.T) {
+	const key = "sk-probe-test"
+	var gotMethod, gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := &OpenAICompatible{BaseURL: srv.URL, APIKey: key, Client: srv.Client()}
+	if err := p.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/models" || gotAuth != "Bearer "+key {
+		t.Fatalf("request %s %s auth=%q", gotMethod, gotPath, gotAuth)
+	}
+
+	if err := (&OpenAICompatible{BaseURL: srv.URL}).Probe(context.Background()); !domain.IsCode(err, domain.CodeProviderConfig) {
+		t.Fatalf("missing key error %v", err)
+	}
+}
+
 func TestOpenAIErrorScrubsKey(t *testing.T) {
 	const key = "sk-live-secret-value"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
