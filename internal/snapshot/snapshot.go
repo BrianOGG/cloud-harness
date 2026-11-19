@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
@@ -63,7 +64,12 @@ type Snapshotter struct {
 	gitBin      string
 	gitErr      error
 	store       RecordStore
+	mu          *sync.Mutex
 }
+
+// All handles for the same shadow repository share a lock, including Open's
+// initialization. Git's index lock alone cannot protect a multi-command capture.
+var workspaceLocks sync.Map
 
 // Open binds a snapshotter to an existing workspace directory. When Git is
 // unavailable it still returns a snapshotter so callers can report Status;
@@ -85,15 +91,20 @@ func Open(workspace string, store RecordStore) (*Snapshotter, error) {
 		return nil, fmt.Errorf("workspace is not a directory: %s", abs)
 	}
 	workspaceID := workspaceIDFor(abs)
+	shadowDir := filepath.Join(abs, ".cloud-harness", "snapshots", workspaceID)
+	mu, _ := workspaceLocks.LoadOrStore(shadowDir, &sync.Mutex{})
 	gitBin, gitErr := exec.LookPath("git")
 	snapshotter := &Snapshotter{
 		workspace:   abs,
 		workspaceID: workspaceID,
-		shadowDir:   filepath.Join(abs, ".cloud-harness", "snapshots", workspaceID),
+		shadowDir:   shadowDir,
 		gitBin:      gitBin,
 		gitErr:      gitErr,
 		store:       store,
+		mu:          mu.(*sync.Mutex),
 	}
+	snapshotter.mu.Lock()
+	defer snapshotter.mu.Unlock()
 	if gitErr == nil {
 		if err := snapshotter.ensureGit(context.Background()); err != nil {
 			return nil, err
@@ -116,6 +127,8 @@ func (s *Snapshotter) Status() Status {
 // Snapshot stages the current worktree in the shadow index, writes its tree,
 // and persists the resulting record.
 func (s *Snapshotter) Snapshot(ctx context.Context, label string) (storage.WorkspaceSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureGit(ctx); err != nil {
 		return storage.WorkspaceSnapshot{}, err
 	}
@@ -173,6 +186,8 @@ func (s *Snapshotter) List(ctx context.Context) ([]storage.WorkspaceSnapshot, er
 // deletes only paths present in persisted snapshots but absent from the
 // target. Paths that have never appeared in a snapshot are preserved.
 func (s *Snapshotter) Restore(ctx context.Context, target storage.WorkspaceSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureGit(ctx); err != nil {
 		return err
 	}
@@ -251,6 +266,8 @@ type DiffSummary struct {
 
 // Diff compares the immutable trees using only the shadow repository.
 func (s *Snapshotter) Diff(ctx context.Context, a, b storage.WorkspaceSnapshot) (DiffSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.requireGit(); err != nil {
 		return DiffSummary{}, err
 	}

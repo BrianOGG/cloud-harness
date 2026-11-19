@@ -165,6 +165,7 @@ type loopState struct {
 	toolRefs  map[string]string
 	prefixN   int
 	userAt    int
+	snapshots workspaceSnapshotState
 }
 
 func (st *loopState) setToolRef(providerCallID, invID string) {
@@ -321,7 +322,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			_ = m.saveCheckpoint(ctx, run, messages, resp.Items, resp.Provider, st)
 			return m.finish(ctx, run, domain.EventAskUser, "", nil)
 		}
-		driveErr := domain.Drive(&batch, m.gate(ctx, run, st), m.execute(ctx, run, st))
+		driveErr := m.driveBatch(ctx, run, &batch, st)
 		persist := ctx
 		if ctx.Err() != nil {
 			persist = context.WithoutCancel(ctx)
@@ -493,6 +494,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),
 		})
+		m.recordSnapshotDispatch(ctx, inv, res)
 		if err != nil {
 			return nil, err
 		}

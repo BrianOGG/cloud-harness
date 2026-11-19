@@ -11,15 +11,16 @@ import (
 )
 
 type snapshot struct {
-	Messages      []provider.Message    `json:"messages"`
-	Continuation  []domain.ResponseItem `json:"continuation,omitempty"`
-	ContProvider  string                `json:"cont_provider,omitempty"`
-	Observations  []runtime.Observation `json:"observations,omitempty"`
-	ToolRefs      map[string]string     `json:"tool_refs,omitempty"`
-	SensitiveRead bool                  `json:"sensitive_read,omitempty"`
-	Reminded      bool                  `json:"reminded,omitempty"`
-	PrefixN       int                   `json:"prefix_n,omitempty"`
-	UserAt        int                   `json:"user_at,omitempty"`
+	Messages           []provider.Message     `json:"messages"`
+	Continuation       []domain.ResponseItem  `json:"continuation,omitempty"`
+	ContProvider       string                 `json:"cont_provider,omitempty"`
+	Observations       []runtime.Observation  `json:"observations,omitempty"`
+	ToolRefs           map[string]string      `json:"tool_refs,omitempty"`
+	SensitiveRead      bool                   `json:"sensitive_read,omitempty"`
+	Reminded           bool                   `json:"reminded,omitempty"`
+	PrefixN            int                    `json:"prefix_n,omitempty"`
+	UserAt             int                    `json:"user_at,omitempty"`
+	WorkspaceSnapshots workspaceSnapshotState `json:"workspace_snapshots,omitempty"`
 }
 
 func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState) error {
@@ -36,6 +37,7 @@ func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages 
 		snap.Reminded = st.reminded
 		snap.PrefixN = st.prefixN
 		snap.UserAt = st.userAt
+		snap.WorkspaceSnapshots = st.snapshots
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {

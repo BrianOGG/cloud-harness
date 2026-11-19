@@ -197,17 +197,18 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		m.untrackCancel(childRun.ID)
 	}()
 	childMgr := &Manager{
-		Store:        m.Store,
-		Provider:     m.Provider,
-		OwnerID:      m.owner(),
-		Now:          m.Now,
-		LeaseFor:     m.LeaseFor,
-		System:       childSystemPrompt(body.SuccessCriteria, body.OutputContract),
-		Broker:       m.Broker,
-		Workspace:    m.Workspace,
-		Depth:        m.Depth + 1,
-		AllowedTools: knownTools,
-		SkipPlanner:  true,
+		Store:            m.Store,
+		Provider:         m.Provider,
+		OwnerID:          m.owner(),
+		Now:              m.Now,
+		LeaseFor:         m.LeaseFor,
+		System:           childSystemPrompt(body.SuccessCriteria, body.OutputContract),
+		Broker:           m.Broker,
+		Workspace:        m.Workspace,
+		DisableSnapshots: m.DisableSnapshots,
+		Depth:            m.Depth + 1,
+		AllowedTools:     knownTools,
+		SkipPlanner:      true,
 	}
 	message := childUserMessage(body.Goal, body.RelevantContext, body.SuccessCriteria, body.OutputContract)
 	finished, runErr := childMgr.runPrepared(childCtx, childRun, message)

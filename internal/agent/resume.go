@@ -168,6 +168,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 	if run.Status != domain.RunWaiting {
 		return run, domain.E(domain.CodeNotWaiting, "run is not waiting").WithRef(runID)
 	}
+	defer m.releaseRunSnapshotter(ctx, run.ID)
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
 	if err != nil {
@@ -223,6 +224,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (sto
 		toolRefs:  snap.ToolRefs,
 		prefixN:   snap.PrefixN,
 		userAt:    snap.UserAt,
+		snapshots: snap.WorkspaceSnapshots,
 	}
 	ctx = context.WithValue(ctx, sessionKey, running.SessionID)
 	ctx = context.WithValue(ctx, runKey, running.ID)
@@ -328,7 +330,7 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 		if err := batch.Approve(waiting.ID); err != nil {
 			return storage.Run{}, err
 		}
-		if err := domain.Drive(&batch, m.gate(ctx, run, st), m.execute(ctx, run, st)); err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
+		if err := m.driveBatch(ctx, run, &batch, st); err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
 			return storage.Run{}, err
 		}
 	}

@@ -30,7 +30,9 @@ type Manager struct {
 	ToolDigest    string
 	Broker        *tools.Broker
 	Workspace     string
-	Grants        []domain.Grant
+	// DisableSnapshots opts out of automatic workspace snapshots (on by default).
+	DisableSnapshots bool
+	Grants           []domain.Grant
 	// CrashOnTool simulates a process death the moment that tool is dispatched.
 	// The tool function is not called. Recovery must not replay it.
 	CrashOnTool string
@@ -47,6 +49,9 @@ type Manager struct {
 
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc
+
+	snapshotMu   sync.Mutex
+	snapshotters map[string]*runSnapshotter
 }
 
 const (
@@ -118,6 +123,7 @@ func (m *Manager) RunMessage(ctx context.Context, sessionID, message string) (st
 
 // runPrepared executes an existing run. Child runs use it so they keep their own id.
 func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message string) (storage.Run, error) {
+	defer m.releaseRunSnapshotter(ctx, run.ID)
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
 	if err != nil {

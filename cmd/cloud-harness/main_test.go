@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
+	"github.com/cloud-harness/cloud-harness/internal/config"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/eval"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
@@ -21,6 +22,22 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
+
+func TestOpenManagerSnapshotConfig(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		cfg := config.Config{Provider: "mock", DBPath: filepath.Join(t.TempDir(), "h.db"), DisableSnapshots: disabled}
+		mgr, db, err := openManager(context.Background(), cfg, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if mgr.DisableSnapshots != disabled {
+			t.Fatalf("manager DisableSnapshots=%t, want %t", mgr.DisableSnapshots, disabled)
+		}
+	}
+}
 
 func TestVersionAndMockRun(t *testing.T) {
 	var out, err bytes.Buffer

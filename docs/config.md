@@ -15,6 +15,7 @@ Settings load from an optional JSON file and then from the environment. The envi
   "openai_model": "gpt-4.1-mini",
   "http_token": "",
   "http_allow_insecure": false,
+  "disable_snapshots": false,
   "command_env_allow": []
 }
 ```
@@ -32,6 +33,7 @@ Settings load from an optional JSON file and then from the environment. The envi
 | `CLOUD_HARNESS_OWNER` | `local` | lease owner id |
 | `CLOUD_HARNESS_RETENTION_DAYS` | `0` | history-index age limit; `0` keeps every row |
 | `CLOUD_HARNESS_CONFIG` | unset | optional JSON file |
+| `CLOUD_HARNESS_DISABLE_SNAPSHOTS` | `false` | Disable automatic workspace snapshots (`1` or `true`); the default captures pre/post snapshots around batches with side effects |
 | `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | model id sent on that one call |
@@ -56,6 +58,16 @@ cloud-harness runs resume --decision deny RUN_ID
 `cloud-harness runs resume RUN_ID --decision deny` stops at `RUN_ID` and returns `run id required`.
 
 Logs use a redacted view. The key is printed as `set` or `unset`, never as the secret.
+
+Workspace snapshots use a separate Git repository under `.cloud-harness/snapshots/`.
+Snapshot labels contain the run ID and batch number; `event_seq` refers to the
+latest persisted event in that run when the record is created, or is null when
+the event sequence cannot be read. Approval resume reuses the batch's pre
+snapshot. A post snapshot is captured after each execution segment that actually
+dispatched a side-effecting tool, including a segment ending in an approval wait.
+Snapshot failures only add a `snapshot_skipped` event and never fail the run.
+Unavailable Git is reported at most once per run. Setting `disable_snapshots`
+to `true` also suppresses snapshot initialization and diagnostics.
 
 ## One real call
 

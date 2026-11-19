@@ -198,7 +198,8 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB, use
 	for _, arm := range arms {
 		mgr := &agent.Manager{
 			Store: base.Store, OwnerID: base.OwnerID, Broker: base.Broker, Workspace: base.Workspace,
-			System: base.System, ToolDigest: base.ToolDigest, Grants: base.Grants,
+			DisableSnapshots: base.DisableSnapshots,
+			System:           base.System, ToolDigest: base.ToolDigest, Grants: base.Grants,
 			ForcePlanner: arm.force, SkipPlanner: arm.skip,
 		}
 		ses, err := mgr.CreateSession(ctx)

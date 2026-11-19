@@ -50,6 +50,8 @@ type Config struct {
 	RetentionDays int `json:"retention_days"`
 	// CommandEnvAllow lists extra environment variable names passed to run_command subprocesses.
 	CommandEnvAllow []string `json:"command_env_allow"`
+	// DisableSnapshots opts out of automatic pre/post workspace snapshots.
+	DisableSnapshots bool `json:"disable_snapshots"`
 	// Servers declares local stdio MCP servers.
 	Servers []MCPServerConfig `json:"servers,omitempty"`
 	// MCPServers is an alias for Servers in config files.
@@ -136,6 +138,9 @@ func Load(path string, env func(string) string) (Config, error) {
 	}
 	if v := env("CLOUD_HARNESS_HTTP_ALLOW_INSECURE"); v != "" {
 		cfg.HTTPAllowInsecure = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := env("CLOUD_HARNESS_DISABLE_SNAPSHOTS"); v != "" {
+		cfg.DisableSnapshots = v == "1" || strings.EqualFold(v, "true")
 	}
 	cfg.AllowExternal = env("CLOUD_HARNESS_ALLOW_EXTERNAL") == "1"
 	if v := env("CLOUD_HARNESS_RETENTION_DAYS"); v != "" {
@@ -248,5 +253,6 @@ func (c Config) Redacted() map[string]any {
 		"http_allow_insecure":     c.HTTPAllowInsecure,
 		"allow_external":          c.AllowExternal,
 		"owner":                   c.OwnerID,
+		"disable_snapshots":       c.DisableSnapshots,
 	}
 }

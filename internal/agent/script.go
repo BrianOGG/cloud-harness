@@ -93,6 +93,7 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 		res, callErr := m.Broker.Invoke(callCtx, tools.Request{
 			RunID: runID, SessionID: sessionID, Tool: tool, Args: toolArgs, Now: m.now(),
 		})
+		m.recordSnapshotDispatch(callCtx, domain.Invocation{Name: tool, Arguments: toolArgs}, res)
 		if callErr != nil {
 			return false, nil, asDomain(callErr)
 		}

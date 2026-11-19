@@ -177,7 +177,7 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		_ = db.Close()
 		return nil, nil, err
 	}
-	return &agent.Manager{Store: db, Provider: prov, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs}, db, nil
+	return &agent.Manager{Store: db, Provider: prov, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots}, db, nil
 }
 
 func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {

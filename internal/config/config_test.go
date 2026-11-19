@@ -195,3 +195,35 @@ func TestMCPServersConfig(t *testing.T) {
 		t.Fatalf("unexpected server[1]: %+v", cfg.Servers[1])
 	}
 }
+
+func TestDisableSnapshotsConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		file string
+		env  string
+		want bool
+	}{
+		{name: "default", file: `{}`},
+		{name: "file-disabled", file: `{"disable_snapshots":true}`, want: true},
+		{name: "file-enabled", file: `{"disable_snapshots":false}`},
+		{name: "env-disabled", file: `{}`, env: "1", want: true},
+		{name: "env-true", file: `{}`, env: "TRUE", want: true},
+		{name: "env-overrides-file", file: `{"disable_snapshots":true}`, env: "false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tt.file), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path, func(k string) string {
+				if k == "CLOUD_HARNESS_DISABLE_SNAPSHOTS" {
+					return tt.env
+				}
+				return ""
+			})
+			if err != nil || cfg.DisableSnapshots != tt.want || cfg.Redacted()["disable_snapshots"] != tt.want {
+				t.Fatalf("config: %+v, %v, want disabled=%t", cfg, err, tt.want)
+			}
+		})
+	}
+}
