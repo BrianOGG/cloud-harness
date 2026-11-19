@@ -57,6 +57,7 @@ type Request struct {
 	OnDelta func(string) `json:"-"`
 
 	singleAttempt bool // ProfileProvider owns retries and the budget for these calls.
+	oracle        bool // Keep consultation text out of the main model's delta callback.
 }
 
 // Provider completes one model call and returns domain items only.

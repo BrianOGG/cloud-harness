@@ -103,6 +103,8 @@ type Config struct {
 	ModelRouting
 	// ModelPrices optionally maps a model name to per-million-token prices.
 	ModelPrices map[string]ModelPrice `json:"model_prices,omitempty"`
+	// OracleMaxCostUSD limits estimated ask_oracle cost per run. Zero is unlimited.
+	OracleMaxCostUSD float64 `json:"oracle_max_cost_usd,omitempty"`
 	// Notify configures optional run lifecycle notifications.
 	Notify notify.Config `json:"notify,omitempty"`
 }
@@ -231,6 +233,13 @@ func Load(path string, env func(string) string) (Config, error) {
 		}
 		cfg.CommandEnvAllow = allow
 	}
+	if v := env("CLOUD_HARNESS_ORACLE_MAX_COST_USD"); v != "" {
+		limit, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 {
+			return Config{}, domain.E(domain.CodeInvalidArgument, "CLOUD_HARNESS_ORACLE_MAX_COST_USD must be a non-negative finite number")
+		}
+		cfg.OracleMaxCostUSD = limit
+	}
 	if cfg.Provider == "" {
 		cfg.Provider = "mock"
 	}
@@ -246,6 +255,9 @@ func Load(path string, env func(string) string) (Config, error) {
 	if err := ValidateModelPrices(cfg.ModelPrices); err != nil {
 		return Config{}, err
 	}
+	if err := ValidateOracleMaxCostUSD(cfg.OracleMaxCostUSD); err != nil {
+		return Config{}, err
+	}
 	if len(cfg.Servers) == 0 && len(cfg.MCPServers) > 0 {
 		cfg.Servers = cfg.MCPServers
 	} else if len(cfg.MCPServers) == 0 && len(cfg.Servers) > 0 {
@@ -255,6 +267,15 @@ func Load(path string, env func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// ValidateOracleMaxCostUSD accepts zero as unlimited and otherwise requires a
+// finite, non-negative per-run amount.
+func ValidateOracleMaxCostUSD(limit float64) error {
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 {
+		return domain.E(domain.CodeInvalidArgument, "oracle_max_cost_usd must be a non-negative finite number")
+	}
+	return nil
 }
 
 func loadFile(path string, env func(string) string, cfg *Config) error {
@@ -267,6 +288,12 @@ func loadFile(path string, env func(string) string, cfg *Config) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return err
+	}
+	var rawConfig map[string]json.RawMessage
+	if json.Unmarshal(body, &rawConfig) == nil {
+		if value, ok := rawConfig["oracle_max_cost_usd"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return domain.E(domain.CodeInvalidArgument, "oracle_max_cost_usd must be a non-negative finite number")
+		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

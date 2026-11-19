@@ -35,6 +35,44 @@ The workspace file and command tools below resolve paths through `resolveInside`
 
 `success_criteria` tells the child what counts as done, and `output_contract` gives the expected output shape. The parent checks the child's summary and self-assessment against the criteria. It returns `{child_run_id, status, summary, success, unmet}` and adds `error` on failure. Unmet criteria set `success` to `false` in the result. The child has its own trace and checkpoint, and cancelling the parent cancels the child.
 
+## Expert consultation
+
+The main model can call `ask_oracle` to get a second opinion on a difficult
+question. Supply a nonempty `question` and optionally a selected `code` snippet
+and additional `context`. Code and context are limited to 8 KiB and 4 KiB,
+respectively. Oversized fields carry a truncation notice within the limit. The
+tool masks common credentials in the supplied text before forwarding it, using
+text patterns from `export --sanitize` such as API keys, bearer tokens, and
+credential assignments.
+
+The consultation uses the `planner` [model profile](config.md#model-profiles)
+or the default model if `planner` is unset. It returns `{ "answer": "…" }` as
+untrusted advice for the main model. The consultation receives no tool
+definitions. `delegate_task` excludes `ask_oracle` from child tool sets.
+
+A run can start up to three consultations, even after resuming or rewinding
+the same run. Each provider attempt uses one of the run's `model_calls`, including
+429 and 5xx retries and the planner's fallback attempt. A call limit returns
+`budget_exhausted` before sending another request. Reported token usage
+contributes to the same `stats` estimates as other model responses.
+
+`oracle_max_cost_usd` optionally sets a per-run estimated cost limit. Before a
+new consultation request is sent, the run's existing `oracle.asked` events are
+recounted using each event's model and input/output token counts, with prices
+from `model_prices`. When that accumulated cost is at or above the limit, the
+request is denied with `budget_exhausted`, and `oracle.failed` records
+`reason: "budget"`. Zero or an omitted limit disables this cost check. Since a
+consultation's token usage is unknown until its response arrives, one
+consultation can put the run over the limit; that cost is recorded and the next
+consultation is blocked before its request is sent. Models without an entry in
+`model_prices` add zero to the oracle total and are governed only by the
+three-consultation limit.
+
+`oracle.asked` records the question length in characters, the code bytes sent,
+the last model called, reported token counts, and elapsed milliseconds. A
+failed consultation records `oracle.failed` with `budget_exhausted`, `budget`,
+`upstream_error`, or `timeout`. These event payloads contain no prompt text.
+
 ## MCP
 
 `ToMCPTool` maps a spec to `{name, description, inputSchema}`. `MCPErrorResult` maps a denial to an MCP tool result with `isError` and the domain code. `StaticMCP.Discover` returns the specs it was given. It does not open a socket. There is no MCP transport in this build.

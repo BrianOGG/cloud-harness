@@ -54,6 +54,9 @@ func (m *Manager) ensureTools() {
 	} else if !m.Broker.Has("edit_file") || !m.Broker.Has("list_files") || !m.Broker.Has("grep") || !m.Broker.Has("git_status") || !m.Broker.Has("git_diff") || !m.Broker.Has("git_log") {
 		_ = tools.EnsureLocal(m.Broker, ".")
 	}
+	if !m.Broker.Has(tools.ToolAskOracle) {
+		m.Broker.Register(tools.AskOracleSpec())
+	}
 	if !m.Broker.Has("update_plan") {
 		m.Broker.Register(tools.Spec{
 			Name: "update_plan", Description: "Replace the current run plan (non-empty string, max 32 KiB).",
@@ -224,16 +227,10 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
 	}
 	model := m.Provider
-	profiled, err := m.profiledModel(ctx, run.ID, leaseVersion, config.RoleExecutor)
-	if err != nil {
-		if ctx.Err() != nil {
-			return m.Cancel(context.WithoutCancel(ctx), run.ID)
-		}
-		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
-	}
-	if profiled != nil {
-		model = profiled
-	}
+	var profiled *provider.ProfileProvider
+	reloadExecutor := true
+	// A consultation can switch the planner and executor's shared profile.
+	ctx = m.withOracle(ctx, run.ID, leaseVersion, func() { reloadExecutor = true })
 	// New runs start at version 1; every resume has already committed a state
 	// transition and restores its frozen rules from the checkpoint instead.
 	if run.Version == 1 {
@@ -270,6 +267,19 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		}
 		if err := m.Store.HeartbeatLease(ctx, run.ID, m.owner(), leaseVersion, m.now(), m.now().Add(m.leaseFor())); err != nil {
 			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		}
+		if reloadExecutor {
+			profiled, err = m.profiledModel(ctx, run.ID, leaseVersion, config.RoleExecutor)
+			if err != nil {
+				if ctx.Err() != nil {
+					return m.Cancel(context.WithoutCancel(ctx), run.ID)
+				}
+				return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+			}
+			if profiled != nil {
+				model = profiled
+			}
+			reloadExecutor = false
 		}
 		if runtime.NeedsRepeatReminder(st.obs) && !st.reminded {
 			messages = append(messages, provider.Message{Role: "user", Content: runtime.RepeatReminder})
@@ -513,7 +523,7 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		if st.planTools.unknown(inv.Name) != nil {
 			return domain.GateDeny
 		}
-		if excludedByChildToolLimit(ctx, inv.Name) {
+		if excludedByChildToolLimit(ctx, inv.Name) || m.Depth > 0 && inv.Name == tools.ToolAskOracle {
 			return domain.GateDeny
 		}
 		policy, err := m.decidePolicy(ctx, run, st, inv)
@@ -548,6 +558,7 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		}
 		res, err := m.Broker.Authorize(ctx, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
+			DefaultAllow:     m.oracleDefaultAllow(inv.Name),
 			ApprovalPossible: policyApprovalPossible(inv.Name),
 			SensitiveSeen:    st != nil && st.sensitive,
 			Egress:           isEgressTool(m.Broker, inv.Name),
@@ -606,6 +617,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 		res, err := m.invokeHooked(ctx, run, st, inv, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
+			DefaultAllow:     m.oracleDefaultAllow(inv.Name),
 			ApprovalPossible: false,
 			SensitiveSeen:    st.sensitive,
 			Egress:           isEgressTool(m.Broker, inv.Name),
@@ -619,6 +631,9 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			return nil, domain.E(domain.CodeAuthDenied, "approval required")
 		}
 		if res.Error != nil {
+			if inv.Name == tools.ToolAskOracle && !res.Dispatched && res.Error.Code == domain.CodeBudget {
+				return nil, m.oracleFailure(ctx, run.ID, res.Error)
+			}
 			return nil, res.Error
 		}
 		data := res.Data
@@ -669,7 +684,7 @@ func (m *Manager) commitInv(ctx context.Context, runID string, inv domain.Invoca
 
 func isOrdinaryTool(name string) bool {
 	switch name {
-	case domain.ToolFinishTurn, domain.ToolAskUser, domain.ToolUpdatePlan, domain.ToolPoll, domain.ToolExecuteProgram, domain.ToolDelegateTask:
+	case domain.ToolFinishTurn, domain.ToolAskUser, domain.ToolUpdatePlan, domain.ToolPoll, domain.ToolExecuteProgram, domain.ToolDelegateTask, tools.ToolAskOracle:
 		return false
 	default:
 		return true
@@ -838,7 +853,7 @@ func (m *Manager) toolDefsFor(planTools planToolRegistry) []provider.ToolDefinit
 		if planTools.unknown(spec.Name) != nil {
 			continue
 		}
-		if m.Depth > 0 && (spec.Name == domain.ToolAskUser || spec.Name == domain.ToolDelegateTask) {
+		if m.Depth > 0 && rootOnlyTool(spec.Name) {
 			continue
 		}
 		if hasAllowed && spec.Name != domain.ToolFinishTurn && !allowed[spec.Name] {
@@ -926,7 +941,7 @@ func jsonField(raw json.RawMessage, key string) json.RawMessage {
 }
 
 func isEgressTool(b *tools.Broker, name string) bool {
-	if name == "run_command" || name == "http_fetch" {
+	if name == "run_command" || name == "http_fetch" || name == tools.ToolAskOracle {
 		return true
 	}
 	if strings.HasPrefix(name, "mcp.") && b != nil {

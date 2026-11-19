@@ -1,0 +1,51 @@
+$ go build ./...
+exit_code=0
+
+$ go vet ./...
+exit_code=0
+
+$ gofmt -l .
+exit_code=0
+
+$ go test -p 1 ./...
+ok  	github.com/cloud-harness/cloud-harness/cmd/cloud-harness	13.906s
+ok  	github.com/cloud-harness/cloud-harness/internal/agent	18.131s
+ok  	github.com/cloud-harness/cloud-harness/internal/agents	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/config	0.023s
+ok  	github.com/cloud-harness/cloud-harness/internal/context	0.014s
+ok  	github.com/cloud-harness/cloud-harness/internal/domain	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/eval	7.065s
+ok  	github.com/cloud-harness/cloud-harness/internal/history	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/hooks	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/imageinput	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/notify	0.411s
+ok  	github.com/cloud-harness/cloud-harness/internal/program	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/provider	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/repomap	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/rules	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/runtime	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/security	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/snapshot	(cached)
+?   	github.com/cloud-harness/cloud-harness/internal/storage	[no test files]
+ok  	github.com/cloud-harness/cloud-harness/internal/storage/sqlite	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/subagent	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/tools	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/trace	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/transport	0.730s
+ok  	github.com/cloud-harness/cloud-harness/internal/worktree	(cached)
+?   	github.com/cloud-harness/cloud-harness/migrations	[no test files]
+ok  	github.com/cloud-harness/cloud-harness/tests/architecture	0.008s
+ok  	github.com/cloud-harness/cloud-harness/web	0.017s
+exit_code=0
+
+$ env CGO_ENABLED=1 go test -race ./internal/agent/ ./internal/snapshot/ ./internal/agents/ ./internal/worktree/ ./internal/notify/ ./internal/transport/ ./internal/storage/sqlite/
+ok  	github.com/cloud-harness/cloud-harness/internal/agent	99.614s
+ok  	github.com/cloud-harness/cloud-harness/internal/snapshot	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/agents	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/worktree	(cached)
+ok  	github.com/cloud-harness/cloud-harness/internal/notify	1.812s
+ok  	github.com/cloud-harness/cloud-harness/internal/transport	7.500s
+ok  	github.com/cloud-harness/cloud-harness/internal/storage/sqlite	(cached)
+exit_code=0
+
+overall_exit_code=0
