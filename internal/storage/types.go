@@ -130,6 +130,18 @@ type TurnSummary struct {
 	CreatedAt  time.Time
 }
 
+// WorkspaceSnapshot records one Git tree captured for a workspace.
+type WorkspaceSnapshot struct {
+	ID          string
+	WorkspaceID string
+	TreeOID     string
+	Label       string
+	EventSeq    *int64
+	FileCount   int64
+	TotalBytes  int64
+	CreatedAt   time.Time
+}
+
 // HistoryCatalogEntry is a lightweight summary of one session history record.
 type HistoryCatalogEntry struct {
 	SourceID  string    `json:"source_id"`

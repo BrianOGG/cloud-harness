@@ -6,7 +6,7 @@ import (
 )
 
 // NewID returns prefix plus 32 hex characters from crypto/rand.
-// Prefixes used by the harness: ses_, trn_, run_, stp_, rsp_, bat_, inv_, evt_.
+// Prefixes used by the harness include ses_, trn_, run_, stp_, rsp_, snap_, bat_, inv_, evt_.
 func NewID(prefix string) string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
