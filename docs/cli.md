@@ -1,5 +1,25 @@
 # CLI command reference
 
+## Run notifications
+
+`run`, `chat`, and `serve` use the same Manager notification hooks. Configure
+`notify.channels` in the harness JSON file to enable delivery; without it,
+nothing is sent. Channels support `webhook`, `bark`, and `ntfy`, with per-channel
+`type`, HTTP(S) `url`, optional `events`, and `timeout_ms` (default five seconds).
+See [notify configuration](config.md#run-notifications) for a complete JSON
+example and the one-based credential variables
+`CLOUD_HARNESS_NOTIFY_CHANNEL_N_WEBHOOK_BEARER`,
+`CLOUD_HARNESS_NOTIFY_CHANNEL_N_BARK_KEY`, and
+`CLOUD_HARNESS_NOTIFY_CHANNEL_N_NTFY_TOKEN`.
+
+Event filters are `approval`, `ask_user`, `completion`, and `failure` (which
+also includes cancellation). Omitting `events` subscribes to all four. Each
+channel is sent asynchronously and concurrently with its own timeout. Failures
+are logged and recorded as `notify.failed`; they are not retried and do not
+change run status. Set `approval_base_url` to include an approval link in
+waiting notifications: `<approval_base_url>/approval?run=<run-id>`. If unset,
+notifications omit the link.
+
 ## agents / agents show
 
 ```bash

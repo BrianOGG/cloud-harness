@@ -17,9 +17,49 @@ Settings load from an optional JSON file and then from the environment. The envi
   "http_token": "",
   "http_allow_insecure": false,
   "disable_snapshots": false,
-  "command_env_allow": []
+  "command_env_allow": [],
+  "notify": {
+    "approval_base_url": "https://harness.example",
+    "channels": [
+      {"type": "webhook", "url": "https://hooks.example/harness", "events": ["approval", "completion"], "timeout_ms": 5000},
+      {"type": "bark", "url": "https://bark.example", "events": ["approval"]},
+      {"type": "ntfy", "url": "https://ntfy.sh/my-topic"}
+    ]
+  }
 }
 ```
+
+## Run notifications
+
+Notifications are disabled when `notify` is absent or its `channels` list is
+empty. Each channel has a required `type` and HTTP(S) `url`, optional `events`
+filter, and optional `timeout_ms` (default 5000). The supported types are:
+
+| Type | `url` | Credential environment variable |
+| --- | --- | --- |
+| `webhook` | Destination that receives a JSON `POST` | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_WEBHOOK_BEARER` (optional bearer token) |
+| `bark` | Bark server base URL; the device key is added as the final path component | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_BARK_KEY` (required device key) |
+| `ntfy` | Full ntfy topic URL, such as `https://ntfy.sh/my-topic` | `CLOUD_HARNESS_NOTIFY_CHANNEL_N_NTFY_TOKEN` (optional bearer token) |
+
+`N` is the one-based position of that channel in `notify.channels`. Secret
+fields are rejected in JSON; credentials are loaded only from these
+environment variables and are omitted from redacted configuration logs.
+Targets must use HTTP or HTTPS and cannot contain URL credentials, query
+strings, or fragments; inject secrets through the listed environment
+variables. Logs show only each target's host and path.
+
+The valid event names are `approval`, `ask_user`, `completion`, and `failure`.
+The `failure` event also covers cancellation. Omit `events` or use an empty
+list to receive every lifecycle event; an explicitly listed filter receives
+only those events.
+Channels post concurrently. A channel's timeout is independent, defaults to
+five seconds, and failures are not retried. Delivery errors add a `notify.failed`
+run event and a log entry without changing the run result.
+
+Set `approval_base_url` to the externally reachable approval page origin or
+base path. Waiting notifications then carry
+`<approval_base_url>/approval?run=<run-id>` as `approval_url`. When it is
+omitted, the notification contains no approval link.
 
 ## Environment
 

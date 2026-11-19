@@ -21,6 +21,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/eval"
 	"github.com/cloud-harness/cloud-harness/internal/imageinput"
+	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/program"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
@@ -187,6 +188,11 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		_ = db.Close()
 		return nil, nil, err
 	}
+	notifier, err := notify.New(cfg.Notify)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
 	if workspace == "" {
 		workspace = "."
 	}
@@ -201,7 +207,7 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		_ = db.Close()
 		return nil, nil, err
 	}
-	return &agent.Manager{Store: db, Provider: prov, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots}, db, nil
+	return &agent.Manager{Store: db, Provider: prov, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots}, db, nil
 }
 
 func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {

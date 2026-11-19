@@ -32,6 +32,7 @@ func (m *Manager) worktreeManager(run storage.Run) (*Manager, error) {
 	}
 	scoped := &Manager{
 		Store: m.Store, Provider: m.Provider, OwnerID: m.OwnerID, Now: m.Now,
+		Notifier: m.Notifier, ApprovalBaseURL: m.ApprovalBaseURL,
 		LeaseFor: m.LeaseFor, InitialBudget: m.InitialBudget, UseBudget: m.UseBudget,
 		System: m.System, Model: m.Model, ToolDigest: m.ToolDigest,
 		Workspace: run.WorktreePath, DisableSnapshots: m.DisableSnapshots,

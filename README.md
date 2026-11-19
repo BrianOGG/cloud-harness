@@ -31,6 +31,9 @@ go build -o cloud-harness ./cmd/cloud-harness
 ```
 
 `serve` listens on `127.0.0.1:19421`. A non-loopback address is refused unless `CLOUD_HARNESS_ALLOW_EXTERNAL=1`.
+Optional webhook, Bark, and ntfy notifications can report approval waits,
+user questions, completion, and failure/cancellation. See [notification
+configuration](docs/config.md#run-notifications).
 
 `run`, `chat`, and `serve` optionally accept `--worktree` in a Git workspace. Each run
 starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under

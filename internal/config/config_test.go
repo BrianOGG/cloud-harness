@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,46 @@ func TestConfigFileCannotCarryAPIKey(t *testing.T) {
 	_, err := Load(path, func(string) string { return "" })
 	if err == nil {
 		t.Fatal("file api key was accepted")
+	}
+}
+
+func TestNotifyConfigValidationAndCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	load := func(body string, env map[string]string) (Config, error) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path, func(key string) string { return env[key] })
+	}
+	if _, err := load(`{"notify":{"channels":[{"type":"unknown","url":"https://example.com"}]}}`, nil); err == nil {
+		t.Fatal("unknown notification channel was accepted")
+	}
+	if _, err := load(`{"notify":{"channels":[{"type":"bark","url":"https://bark.example","key":"file-secret"}]}}`, nil); err == nil {
+		t.Fatal("credential field in config file was accepted")
+	}
+	cfg, err := load(`{"notify":{"approval_base_url":"https://approve.example/root","channels":[{"type":"webhook","url":"https://notify.example/hook"},{"type":"bark","url":"https://bark.example"},{"type":"ntfy","url":"https://ntfy.sh/topic"}]}}`, map[string]string{
+		"CLOUD_HARNESS_NOTIFY_CHANNEL_1_WEBHOOK_BEARER": "webhook-secret",
+		"CLOUD_HARNESS_NOTIFY_CHANNEL_2_BARK_KEY":       "bark-secret",
+		"CLOUD_HARNESS_NOTIFY_CHANNEL_3_NTFY_TOKEN":     "ntfy-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Channels[0].Credential != "webhook-secret" || cfg.Notify.Channels[1].Credential != "bark-secret" || cfg.Notify.Channels[2].Credential != "ntfy-secret" {
+		t.Fatalf("environment credentials were not injected: %+v", cfg.Notify.Channels)
+	}
+	redacted, err := json.Marshal(cfg.Redacted())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"webhook-secret", "bark-secret", "ntfy-secret"} {
+		if strings.Contains(string(redacted), secret) {
+			t.Fatalf("redacted config contains a credential %q: %s", secret, redacted)
+		}
+	}
+	if strings.Contains(string(redacted), "https://notify.example") || strings.Contains(string(redacted), "https://approve.example") {
+		t.Fatalf("redacted config contains a full URL: %s", redacted)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/notify"
 )
 
 const (
@@ -101,6 +102,8 @@ type Config struct {
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
 	// ModelPrices optionally maps a model name to per-million-token prices.
 	ModelPrices map[string]ModelPrice `json:"model_prices,omitempty"`
+	// Notify configures optional run lifecycle notifications.
+	Notify notify.Config `json:"notify,omitempty"`
 }
 
 // Load reads an optional JSON file and applies environment overrides.
@@ -131,6 +134,20 @@ func Load(path string, env func(string) string) (Config, error) {
 		if err := dec.Decode(&cfg); err != nil {
 			return Config{}, domain.E(domain.CodeInvalidArgument, "config file: "+err.Error())
 		}
+	}
+	for i := range cfg.Notify.Channels {
+		ch := &cfg.Notify.Channels[i]
+		switch strings.ToLower(strings.TrimSpace(ch.Type)) {
+		case "webhook":
+			ch.Credential = env(fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_WEBHOOK_BEARER", i+1))
+		case "bark":
+			ch.Credential = env(fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_BARK_KEY", i+1))
+		case "ntfy":
+			ch.Credential = env(fmt.Sprintf("CLOUD_HARNESS_NOTIFY_CHANNEL_%d_NTFY_TOKEN", i+1))
+		}
+	}
+	if _, err := notify.New(cfg.Notify); err != nil {
+		return Config{}, domain.E(domain.CodeInvalidArgument, "notify config: "+err.Error())
 	}
 	if v := env("CLOUD_HARNESS_ADDR"); v != "" {
 		cfg.ListenAddr = v
@@ -326,7 +343,18 @@ func (c Config) Redacted() map[string]any {
 	if c.HTTPToken != "" {
 		token = "set"
 	}
-	return map[string]any{
+	notifyChannels := make([]map[string]any, 0, len(c.Notify.Channels))
+	for _, ch := range c.Notify.Channels {
+		credential := "unset"
+		if ch.Credential != "" {
+			credential = "set"
+		}
+		notifyChannels = append(notifyChannels, map[string]any{
+			"type": ch.Type, "target": notify.SafeTarget(ch.URL), "events": ch.Events,
+			"timeout_ms": ch.TimeoutMS, "credential": credential,
+		})
+	}
+	redacted := map[string]any{
 		"listen":                  c.ListenAddr,
 		"db":                      c.DBPath,
 		"provider":                c.Provider,
@@ -341,4 +369,8 @@ func (c Config) Redacted() map[string]any {
 		"owner":                   c.OwnerID,
 		"disable_snapshots":       c.DisableSnapshots,
 	}
+	if len(c.Notify.Channels) > 0 || c.Notify.ApprovalBaseURL != "" {
+		redacted["notify"] = map[string]any{"channels": notifyChannels, "approval_base_url": notify.SafeTarget(c.Notify.ApprovalBaseURL)}
+	}
+	return redacted
 }

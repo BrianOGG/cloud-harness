@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,11 +15,81 @@ import (
 
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
+
+func TestRunLifecycleNotificationsIncludeApprovalLink(t *testing.T) {
+	requests := make(chan notify.Event, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var event notify.Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("decode notification: %v", err)
+		}
+		requests <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"path":"output.txt","content":"private file data"}`)}),
+		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemText, Text: "done"}}},
+	}}
+	m, _, _ := testManager(t, mock)
+	notifier, err := notify.New(notify.Config{Channels: []notify.ChannelConfig{
+		{Type: "webhook", URL: server.URL},
+		{Type: "webhook", URL: server.URL},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Notifier = notifier
+	m.ApprovalBaseURL = "https://approval.example/root/"
+	session, err := m.CreateSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(context.Background(), session.ID, "write a file")
+	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
+		t.Fatalf("waiting run=%+v err=%v", run, err)
+	}
+	for range 2 {
+		waiting := receiveNotifyEvent(t, requests)
+		if waiting.RunID != run.ID || waiting.EventType != notify.EventWaitingApproval || waiting.Status != string(domain.RunWaiting) {
+			t.Fatalf("waiting notification=%+v", waiting)
+		}
+		if waiting.ApprovalURL != "https://approval.example/root/approval?run="+run.ID {
+			t.Fatalf("approval URL=%q", waiting.ApprovalURL)
+		}
+		if waiting.Summary != "Waiting for approval: write_file" || strings.Contains(waiting.Summary, "private file data") {
+			t.Fatalf("unsafe or unexpected approval summary=%q", waiting.Summary)
+		}
+	}
+	completed, err := m.Resume(context.Background(), run.ID, ResumeInput{Decision: "deny"})
+	if err != nil || completed.Status != domain.RunCompleted {
+		t.Fatalf("completed run=%+v err=%v", completed, err)
+	}
+	for range 2 {
+		done := receiveNotifyEvent(t, requests)
+		if done.RunID != run.ID || done.EventType != notify.EventCompleted || done.Status != string(domain.RunCompleted) {
+			t.Fatalf("completion notification=%+v", done)
+		}
+	}
+}
+
+func receiveNotifyEvent(t *testing.T, requests <-chan notify.Event) notify.Event {
+	t.Helper()
+	select {
+	case event := <-requests:
+		return event
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification was not delivered")
+		return notify.Event{}
+	}
+}
 
 func TestApprovalDenyPairsTheWholeBatch(t *testing.T) {
 	ctx := context.Background()

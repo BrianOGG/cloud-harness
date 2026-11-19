@@ -4,12 +4,17 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"log"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
 	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
@@ -20,18 +25,20 @@ import (
 
 // Manager runs one user message to a terminal or waiting state.
 type Manager struct {
-	Store         storage.Store
-	Provider      provider.Provider
-	OwnerID       string
-	Now           func() time.Time
-	LeaseFor      time.Duration
-	InitialBudget domain.Budget
-	UseBudget     bool
-	System        string
-	Model         string // Empty uses the provider's default model.
-	ToolDigest    string
-	Broker        *tools.Broker
-	Workspace     string
+	Store           storage.Store
+	Provider        provider.Provider
+	Notifier        notify.Notifier
+	ApprovalBaseURL string
+	OwnerID         string
+	Now             func() time.Time
+	LeaseFor        time.Duration
+	InitialBudget   domain.Budget
+	UseBudget       bool
+	System          string
+	Model           string // Empty uses the provider's default model.
+	ToolDigest      string
+	Broker          *tools.Broker
+	Workspace       string
 	// Worktree isolates each new root run at its dispatch HEAD. The store stays
 	// in the caller's workspace; child runs inherit the execution workspace.
 	Worktree bool
@@ -59,6 +66,10 @@ type Manager struct {
 	cancelMu    sync.Mutex
 	cancels     map[string]context.CancelFunc
 	cancelOwner *Manager
+
+	notifyMu      sync.Mutex
+	notifyCancels map[string]map[uint64]context.CancelFunc
+	notifySeq     atomic.Uint64
 
 	snapshotMu   sync.Mutex
 	snapshotters map[string]*runSnapshotter
@@ -289,7 +300,126 @@ func (m *Manager) finish(ctx context.Context, run storage.Run, event domain.RunE
 	if err := m.Store.CommitRunTransition(ctx, current, expected, ev); err != nil {
 		return storage.Run{}, err
 	}
-	return m.Store.GetRun(ctx, current.ID)
+	finished, err := m.Store.GetRun(ctx, current.ID)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	m.notifyTransition(ctx, finished, cause)
+	return finished, nil
+}
+
+func (m *Manager) notifyTransition(ctx context.Context, run storage.Run, cause *domain.Error) {
+	if m.Notifier == nil {
+		return
+	}
+	eventType := ""
+	summary := ""
+	switch run.Status {
+	case domain.RunWaiting:
+		switch run.WaitReason {
+		case domain.WaitApproval:
+			eventType = notify.EventWaitingApproval
+			if info, err := m.WaitInfo(ctx, run); err == nil && info.PendingInvocation != nil {
+				if info.PendingInvocation.Tool == "run_command" {
+					summary = jsonString(info.PendingInvocation.Arguments, "command")
+				} else {
+					summary = "Waiting for approval: " + info.PendingInvocation.Tool
+				}
+			}
+		case domain.WaitUser:
+			eventType = notify.EventAskUser
+			if info, err := m.WaitInfo(ctx, run); err == nil {
+				summary = info.Question
+			}
+		}
+	case domain.RunCompleted:
+		eventType = notify.EventCompleted
+	case domain.RunFailed, domain.RunCancelled:
+		eventType = notify.EventFailed
+		if run.Status == domain.RunFailed && cause != nil {
+			summary = cause.Code
+		}
+	}
+	if eventType == "" {
+		return
+	}
+	approvalURL := ""
+	if m.ApprovalBaseURL != "" {
+		u, err := url.Parse(strings.TrimRight(m.ApprovalBaseURL, "/") + "/approval")
+		if err == nil {
+			q := u.Query()
+			q.Set("run", run.ID)
+			u.RawQuery = q.Encode()
+			approvalURL = u.String()
+		}
+	}
+	m.dispatchNotification(notify.Event{
+		RunID: run.ID, EventType: eventType, Status: string(run.Status), Summary: summary,
+		ApprovalURL: approvalURL, OccurredAt: m.now(),
+	})
+}
+
+func (m *Manager) dispatchNotification(event notify.Event) {
+	if m.Notifier == nil {
+		return
+	}
+	if m.cancelOwner != nil {
+		m.cancelOwner.dispatchNotification(event)
+		return
+	}
+	if event.Status == string(domain.RunCancelled) {
+		m.cancelNotifications(event.RunID)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	id := m.notifySeq.Add(1)
+	m.notifyMu.Lock()
+	if m.notifyCancels == nil {
+		m.notifyCancels = make(map[string]map[uint64]context.CancelFunc)
+	}
+	if m.notifyCancels[event.RunID] == nil {
+		m.notifyCancels[event.RunID] = make(map[uint64]context.CancelFunc)
+	}
+	m.notifyCancels[event.RunID][id] = cancel
+	m.notifyMu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			m.notifyMu.Lock()
+			delete(m.notifyCancels[event.RunID], id)
+			if len(m.notifyCancels[event.RunID]) == 0 {
+				delete(m.notifyCancels, event.RunID)
+			}
+			m.notifyMu.Unlock()
+		}()
+		for err := range m.Notifier.Notify(ctx, event) {
+			if ctx.Err() != nil {
+				continue
+			}
+			var de notify.DeliveryError
+			if errors.As(err, &de) {
+				log.Printf("notification delivery failed: %s", de.Error())
+				payload := map[string]string{"channel": de.Channel, "target": de.Target, "error": "delivery failed"}
+				pctx, pcancel := context.WithTimeout(context.Background(), time.Second)
+				_ = m.event(pctx, event.RunID, "notify.failed", payload)
+				pcancel()
+			} else {
+				log.Printf("notification delivery failed: %v", err)
+			}
+		}
+	}()
+}
+
+func (m *Manager) cancelNotifications(runID string) {
+	if m.cancelOwner != nil {
+		m.cancelOwner.cancelNotifications(runID)
+		return
+	}
+	m.notifyMu.Lock()
+	defer m.notifyMu.Unlock()
+	for _, cancel := range m.notifyCancels[runID] {
+		cancel()
+	}
+	delete(m.notifyCancels, runID)
 }
 
 func (m *Manager) event(ctx context.Context, runID, typ string, payload any) error {
@@ -365,6 +495,7 @@ func (m *Manager) Cancel(ctx context.Context, runID string) (storage.Run, error)
 	if err := m.event(ctx, run.ID, "run.cancelled", map[string]string{"status": string(domain.RunCancelled)}); err != nil {
 		return storage.Run{}, err
 	}
+	m.notifyTransition(ctx, run, nil)
 	// Active execution emits its summary after its last tool has unwound.
 	if !active {
 		if err := m.summarizeWorktree(ctx, run); err != nil {

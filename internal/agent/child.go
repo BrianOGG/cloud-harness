@@ -263,6 +263,8 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	childMgr := &Manager{
 		Store:               m.Store,
 		Provider:            m.Provider,
+		Notifier:            m.Notifier,
+		ApprovalBaseURL:     m.ApprovalBaseURL,
 		OwnerID:             m.owner(),
 		Now:                 m.Now,
 		LeaseFor:            m.LeaseFor,
@@ -1137,5 +1139,10 @@ func (m *Manager) setStatus(ctx context.Context, runID string, event domain.RunE
 	if err := m.Store.CommitRunTransition(ctx, current, current.Version, ev); err != nil {
 		return storage.Run{}, err
 	}
-	return m.Store.GetRun(ctx, runID)
+	updated, err := m.Store.GetRun(ctx, runID)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	m.notifyTransition(ctx, updated, nil)
+	return updated, nil
 }
