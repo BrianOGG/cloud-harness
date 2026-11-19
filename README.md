@@ -30,7 +30,13 @@ go build -o cloud-harness ./cmd/cloud-harness
 ./cloud-harness agents --workspace .
 ```
 
-`serve` listens on `127.0.0.1:19421`. A non-loopback address is refused unless `CLOUD_HARNESS_ALLOW_EXTERNAL=1`.
+`serve` listens on `127.0.0.1:19421`; loopback addresses can start without a token.
+A non-loopback address requires `--http-token TOKEN`, `CLOUD_HARNESS_HTTP_TOKEN`,
+or JSON `http_token` (at least 16 characters), checked before binding a port.
+Legacy insecure/allow-external settings cannot bypass this requirement.
+With a configured token, `/v1/` routes require `Authorization: Bearer <token>`;
+`/healthz` stays open. `GET /v1/approvals` lists approval and user-question waits
+across sessions, oldest wait first. See the [HTTP API reference](docs/api.md).
 Optional webhook, Bark, and ntfy notifications can report approval waits,
 user questions, completion, and failure/cancellation. See [notification
 configuration](docs/config.md#run-notifications).
@@ -125,6 +131,7 @@ Non-Linux builds compile and refuse programmatic execution. They do not interpre
 
 - [docs/cli.md](docs/cli.md) rewind modes, preview, confirmation, and safety snapshots
 - [docs/config.md](docs/config.md) configuration
+- [docs/api.md](docs/api.md) approval queue and HTTP authentication
 - [docs/tools.md](docs/tools.md) tool, poll, script, and MCP mapping
 - [docs/errors.md](docs/errors.md) error codes
 - [docs/state-machine.md](docs/state-machine.md) run and invocation transitions

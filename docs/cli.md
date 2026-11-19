@@ -1,5 +1,28 @@
 # CLI command reference
 
+## serve
+
+```bash
+cloud-harness serve [--addr 127.0.0.1:19421] [--http-token TOKEN] [--workspace dir] [--db path] [--provider mock|openai] [--worktree]
+CLOUD_HARNESS_HTTP_TOKEN='replace-with-a-long-random-token' cloud-harness serve --addr 0.0.0.0:19421
+```
+
+The default loopback listener can start without a token for local development.
+Non-loopback listeners require an HTTP token of at least 16 characters, set
+with `--http-token`, `CLOUD_HARNESS_HTTP_TOKEN`, or the JSON `http_token` field.
+Without one, serve exits before opening the store or binding a port with
+`non-loopback listen requires an HTTP token` and a token configuration hint.
+Errors never echo the token. The legacy `--http-allow-insecure`,
+`http_allow_insecure`, `CLOUD_HARNESS_HTTP_ALLOW_INSECURE`, and
+`CLOUD_HARNESS_ALLOW_EXTERNAL` settings cannot bypass this requirement.
+
+When a token is set, `/v1/` endpoints require `Authorization: Bearer <token>`;
+missing or incorrect tokens return HTTP 401 with a `WWW-Authenticate: Bearer`
+challenge. `/healthz` remains accessible without a token. The read-only
+`GET /v1/approvals` endpoint lists approval and ask_user waits across sessions,
+oldest wait first. See the [HTTP API reference](api.md) for fields, examples,
+and the existing endpoints for submitting decisions and answers.
+
 ## Run notifications
 
 `run`, `chat`, and `serve` use the same Manager notification hooks. Configure

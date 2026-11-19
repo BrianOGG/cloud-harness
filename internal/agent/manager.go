@@ -319,17 +319,12 @@ func (m *Manager) notifyTransition(ctx context.Context, run storage.Run, cause *
 		switch run.WaitReason {
 		case domain.WaitApproval:
 			eventType = notify.EventWaitingApproval
-			if info, err := m.WaitInfo(ctx, run); err == nil && info.PendingInvocation != nil {
-				if info.PendingInvocation.Tool == "run_command" {
-					summary = jsonString(info.PendingInvocation.Arguments, "command")
-				} else {
-					summary = "Waiting for approval: " + info.PendingInvocation.Tool
-				}
-			}
 		case domain.WaitUser:
 			eventType = notify.EventAskUser
+		}
+		if eventType != "" {
 			if info, err := m.WaitInfo(ctx, run); err == nil {
-				summary = info.Question
+				summary = info.Summary()
 			}
 		}
 	case domain.RunCompleted:
@@ -343,20 +338,24 @@ func (m *Manager) notifyTransition(ctx context.Context, run storage.Run, cause *
 	if eventType == "" {
 		return
 	}
-	approvalURL := ""
+	m.dispatchNotification(notify.Event{
+		RunID: run.ID, EventType: eventType, Status: string(run.Status), Summary: summary,
+		ApprovalURL: m.ApprovalURL(run.ID), OccurredAt: m.now(),
+	})
+}
+
+// ApprovalURL returns the configured approval link, or an empty string when unset.
+func (m *Manager) ApprovalURL(runID string) string {
 	if m.ApprovalBaseURL != "" {
 		u, err := url.Parse(strings.TrimRight(m.ApprovalBaseURL, "/") + "/approval")
 		if err == nil {
 			q := u.Query()
-			q.Set("run", run.ID)
+			q.Set("run", runID)
 			u.RawQuery = q.Encode()
-			approvalURL = u.String()
+			return u.String()
 		}
 	}
-	m.dispatchNotification(notify.Event{
-		RunID: run.ID, EventType: eventType, Status: string(run.Status), Summary: summary,
-		ApprovalURL: approvalURL, OccurredAt: m.now(),
-	})
+	return ""
 }
 
 func (m *Manager) dispatchNotification(event notify.Event) {

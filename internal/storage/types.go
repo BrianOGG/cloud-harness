@@ -186,6 +186,7 @@ type Store interface {
 	CreateRun(ctx context.Context, r Run) error
 	GetRun(ctx context.Context, id string) (Run, error)
 	ListRuns(ctx context.Context, sessionID string) ([]Run, error)
+	ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]Run, error)
 	CompareAndSwapRun(ctx context.Context, next Run, expectedVersion int64) error
 	Charge(ctx context.Context, runID string, kind domain.ChargeKind, n int) error
 	ChargePair(ctx context.Context, parentID, childID string, kind domain.ChargeKind, n int) error

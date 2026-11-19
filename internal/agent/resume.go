@@ -31,6 +31,22 @@ type WaitInfo struct {
 	PendingInvocation *PendingInvocation `json:"pending_invocation,omitempty"`
 }
 
+// Summary returns the same wait summary used by lifecycle notifications.
+func (info WaitInfo) Summary() string {
+	switch info.Kind {
+	case domain.WaitUser:
+		return info.Question
+	case domain.WaitApproval:
+		if inv := info.PendingInvocation; inv != nil {
+			if inv.Tool == "run_command" {
+				return jsonString(inv.Arguments, "command")
+			}
+			return "Waiting for approval: " + inv.Tool
+		}
+	}
+	return ""
+}
+
 // WaitInfo returns the wait kind and pending question or invocation summary for a waiting run.
 func (m *Manager) WaitInfo(ctx context.Context, run storage.Run) (WaitInfo, error) {
 	if run.Status != domain.RunWaiting {

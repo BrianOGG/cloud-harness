@@ -26,7 +26,7 @@ Every failure the harness returns is a `domain.Error`: a stable `code`, a short 
 | `lease_conflict` | Another owner holds a live lease |
 | `not_waiting` | Resume was asked of a run that is not waiting |
 | `not_implemented` | A reserved path that this build refuses |
-| `external_bind_refused` | A non-loopback listen without `CLOUD_HARNESS_ALLOW_EXTERNAL=1` |
+| `external_bind_refused` | A non-loopback listen without an HTTP token; configure `--http-token`, `CLOUD_HARNESS_HTTP_TOKEN`, or `http_token` (at least 16 characters) |
 | `cancelled` | The run context was cancelled |
 
 `stream.delta` events are not errors and are not stored.

@@ -71,15 +71,16 @@ func TestResumeFlagOrder(t *testing.T) {
 }
 
 func TestExternalBindRefused(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
 	var out, err bytes.Buffer
 	code := Main([]string{"serve", "--addr", "0.0.0.0:19421", "--db", t.TempDir() + "/h.db"}, &out, &err)
-	if code == 0 || !strings.Contains(err.String(), "refusing") {
+	if code != 1 || !strings.Contains(err.String(), "non-loopback listen requires an HTTP token") || !strings.Contains(err.String(), "--http-token") {
 		t.Fatalf("serve %d %s %s", code, out.String(), err.String())
 	}
 	out.Reset()
 	err.Reset()
 	code = Main([]string{"serve", "--addr", "127.0.0.1:19421", "--http-token", "short", "--db", t.TempDir() + "/h.db"}, &out, &err)
-	if code == 0 || !strings.Contains(err.String(), "16") {
+	if code != 1 || !strings.Contains(err.String(), "16") || strings.Contains(err.String(), "short") {
 		t.Fatalf("expected short token to fail: %d %s %s", code, out.String(), err.String())
 	}
 }

@@ -421,35 +421,47 @@ func TestHTTPTokenAuthRequired(t *testing.T) {
 
 	h := (&Server{Manager: m, Token: token}).Handler()
 
-	// 1. No Authorization header -> 401 on /v1/ endpoints.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 with no header, got %d %s", rec.Code, rec.Body)
-	}
-
-	// 2. Wrong token -> 401.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
-	req.Header.Set("Authorization", "Bearer wrong-token-value-00000")
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 with wrong token, got %d %s", rec.Code, rec.Body)
-	}
-
-	// 3. Correct token -> 200 on GET /v1/runs/{id}.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/v1/runs/"+run.ID, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 with correct token, got %d %s", rec.Code, rec.Body)
+	for _, path := range []string{"/v1/approvals", "/v1/runs/" + run.ID, "/v1/runs/" + run.ID + "/events"} {
+		for _, tc := range []struct {
+			name   string
+			header string
+			status int
+		}{
+			{"missing", "", http.StatusUnauthorized},
+			{"wrong", "Bearer wrong-token-value-00000", http.StatusUnauthorized},
+			{"correct", "Bearer " + token, http.StatusOK},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				if tc.header != "" {
+					req.Header.Set("Authorization", tc.header)
+				}
+				h.ServeHTTP(rec, req)
+				if rec.Code != tc.status {
+					t.Fatalf("status %d, want %d: %s", rec.Code, tc.status, rec.Body)
+				}
+				if tc.status == http.StatusUnauthorized {
+					if rec.Header().Get("WWW-Authenticate") != `Bearer realm="cloud-harness"` {
+						t.Fatalf("missing Bearer challenge: %v", rec.Header())
+					}
+					var body struct {
+						Error *domain.Error `json:"error"`
+					}
+					if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error == nil || body.Error.Code != domain.CodeAuthDenied || body.Error.Message != "missing or invalid bearer token" {
+						t.Fatalf("auth error envelope: %s (%v)", rec.Body, err)
+					}
+					if strings.Contains(rec.Body.String(), token) || strings.Contains(rec.Body.String(), "wrong-token-value-00000") {
+						t.Fatal("auth error echoed a token")
+					}
+				}
+			})
+		}
 	}
 
 	// 4. /healthz stays open without token.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /healthz without token, got %d %s", rec.Code, rec.Body)
@@ -464,9 +476,9 @@ func TestServeRefusesNonLoopbackWithoutToken(t *testing.T) {
 		t.Fatal("expected error for non-loopback without token or allow flag")
 	}
 
-	// Non-loopback + no token + allow flag -> ok.
-	if err := config.ValidateBind("0.0.0.0:19421", "", true); err != nil {
-		t.Fatalf("expected allow flag to permit non-loopback bind, got %v", err)
+	// The legacy allow flag cannot bypass the token requirement.
+	if err := config.ValidateBind("0.0.0.0:19421", "", true); err == nil {
+		t.Fatal("legacy allow flag permitted non-loopback bind without token")
 	}
 
 	// Non-loopback + valid token + no allow flag -> ok.

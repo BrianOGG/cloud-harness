@@ -84,6 +84,27 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 	return out, rows.Err()
 }
 
+// ListRunsByStatus reads all matching runs across sessions without the interactive
+// ListRuns limit. It does not change run state or acquire leases.
+func (db *DB) ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]storage.Run, error) {
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state
+		FROM runs WHERE status = ? ORDER BY created_at ASC, id ASC`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]storage.Run, 0)
+	for rows.Next() {
+		r, err := scanRun(rows, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) ListExpiredRunningRuns(ctx context.Context, now time.Time) ([]storage.Run, error) {
 	rows, err := db.sql.QueryContext(ctx, `
 		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.workspace_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at, r.worktree_base_sha, r.worktree_branch, r.worktree_path, r.worktree_state

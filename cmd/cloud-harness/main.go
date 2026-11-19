@@ -101,7 +101,7 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 const usage = `Cloud Harness M5
 
   cloud-harness version
-  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness run --message TEXT [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
@@ -143,7 +143,7 @@ func addCommon(fs *flag.FlagSet) *commonFlags {
 	fs.StringVar(&c.addr, "addr", "", "listen address")
 	fs.StringVar(&c.workspace, "workspace", "", "workspace root for file and command tools")
 	fs.StringVar(&c.httpToken, "http-token", "", "bearer token for HTTP API")
-	fs.BoolVar(&c.httpAllowInsecure, "http-allow-insecure", false, "allow non-loopback HTTP bind without http_token")
+	fs.BoolVar(&c.httpAllowInsecure, "http-allow-insecure", false, "deprecated; non-loopback HTTP binds still require --http-token")
 	return c
 }
 
@@ -309,9 +309,6 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	if err := cfg.ValidateBind(); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
-	}
-	if loopback, _ := config.IsLoopback(cfg.ListenAddr); !loopback && cfg.HTTPToken == "" {
-		fmt.Fprintf(stderr, "WARNING: listening on non-loopback address %s without http_token (http_allow_insecure=true); /v1/ endpoints are unauthenticated\n", cfg.ListenAddr)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

@@ -69,8 +69,8 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_DB` | `.cloud-harness/harness.db` | SQLite file |
 | `CLOUD_HARNESS_PROVIDER` | `mock` | `mock` or `openai` |
 | `CLOUD_HARNESS_HTTP_TOKEN` | `""` | Bearer token required on `/v1/` endpoints (minimum 16 characters when set) |
-| `CLOUD_HARNESS_HTTP_ALLOW_INSECURE` | `false` | Allow a non-loopback `serve` bind without `http_token` (logs a warning) |
-| `CLOUD_HARNESS_ALLOW_EXTERNAL` | unset | Legacy alias for `http_allow_insecure` (`1` allows non-loopback bind) |
+| `CLOUD_HARNESS_HTTP_ALLOW_INSECURE` | `false` | Deprecated compatibility setting; non-loopback `serve` still requires `http_token` |
+| `CLOUD_HARNESS_ALLOW_EXTERNAL` | unset | Deprecated legacy compatibility setting; cannot bypass the HTTP token requirement |
 | `CLOUD_HARNESS_OWNER` | `local` | lease owner id |
 | `CLOUD_HARNESS_RETENTION_DAYS` | `0` | history-index age limit; `0` keeps every row |
 | `CLOUD_HARNESS_CONFIG` | unset | optional JSON file |
@@ -97,14 +97,16 @@ Each model entry contains numeric `input`, `output`, and `cached` fields. Use
 the exact model name as the key, and fill the values from the provider's
 current pricing; the example configuration leaves this map empty by default.
 
-CLI flags `--addr`, `--db`, `--provider`, `--http-token`, and `--http-allow-insecure` override the environment for that process.
+CLI flags `--addr`, `--db`, `--provider`, and `--http-token` override the environment for that process. `--http-allow-insecure` remains accepted for compatibility and cannot waive the HTTP token requirement.
 
 ## HTTP authentication and non-loopback rule
 
 - `http_token` (or `CLOUD_HARNESS_HTTP_TOKEN`) defaults to `""`. When set, it must be at least 16 characters long; shorter tokens are rejected at config load time.
 - When `http_token` is set, every `/v1/` endpoint requires `Authorization: Bearer <token>` (verified in constant time); `/healthz` remains open without authentication.
 - Loopback binds (`127.0.0.1`, `localhost`, `::1`) work without `http_token`.
-- When `http_token` is empty and the listen address is non-loopback (for example `0.0.0.0:19421`), `cloud-harness serve` refuses to start unless `http_allow_insecure` is `true` (or `CLOUD_HARNESS_HTTP_ALLOW_INSECURE=1`), in which case it starts and emits a loud warning to stderr.
+- Every non-loopback listen address (for example `0.0.0.0:19421`, `[::]:19421`, or `:19421`) requires a token. Without one, `cloud-harness serve` exits before opening the database or binding the listener with `non-loopback listen requires an HTTP token` and instructions to configure `--http-token`, `CLOUD_HARNESS_HTTP_TOKEN`, or `http_token` (at least 16 characters). The token is never printed in an error.
+- `http_allow_insecure`, `--http-allow-insecure`, `CLOUD_HARNESS_HTTP_ALLOW_INSECURE`, and `CLOUD_HARNESS_ALLOW_EXTERNAL` remain accepted as legacy settings but no longer allow a non-loopback listener without a token.
+- A missing or incorrect bearer token returns HTTP 401 with `WWW-Authenticate: Bearer realm="cloud-harness"`. The [API reference](api.md) includes the error envelope and the read-only `/v1/approvals` queue.
 
 `retention_days` in the JSON file is the same history-index knob as
 `CLOUD_HARNESS_RETENTION_DAYS` (default `0`, which keeps every row).

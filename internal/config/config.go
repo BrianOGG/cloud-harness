@@ -87,8 +87,8 @@ type Config struct {
 	OpenAIIdleTimeoutMS      int    `json:"openai_idle_timeout_ms"`
 	OpenAIRetryBaseMS        int    `json:"openai_retry_base_ms"`
 	HTTPToken                string `json:"http_token"`
-	HTTPAllowInsecure        bool   `json:"http_allow_insecure"`
-	AllowExternal            bool   `json:"-"`
+	HTTPAllowInsecure        bool   `json:"http_allow_insecure"` // Deprecated; cannot bypass HTTP token requirements.
+	AllowExternal            bool   `json:"-"`                   // Deprecated legacy setting, retained for config compatibility.
 	OwnerID                  string `json:"-"`
 	// RetentionDays prunes the history index. Zero keeps every history row.
 	RetentionDays int `json:"retention_days"`
@@ -308,8 +308,9 @@ func IsLoopback(addr string) (bool, error) {
 	return ip != nil && ip.IsLoopback(), nil
 }
 
-// ValidateBind refuses a non-loopback bind when http_token is empty unless allowInsecure is true.
-func ValidateBind(addr, token string, allowInsecure bool) error {
+// ValidateBind requires a token for a non-loopback bind. The legacy insecure
+// argument is retained for caller compatibility and no longer bypasses the rule.
+func ValidateBind(addr, token string, _ bool) error {
 	if err := ValidateHTTPToken(token); err != nil {
 		return err
 	}
@@ -317,18 +318,19 @@ func ValidateBind(addr, token string, allowInsecure bool) error {
 	if err != nil {
 		return err
 	}
-	if loopback || token != "" || allowInsecure {
+	if loopback || token != "" {
 		return nil
 	}
-	return domain.E(domain.CodeExternalBind, "refusing to listen on "+addr+" without http_token; use 127.0.0.1, set http_token (min 16 chars), or set http_allow_insecure=true")
+	return domain.E(domain.CodeExternalBind, "non-loopback listen requires an HTTP token; configure --http-token, CLOUD_HARNESS_HTTP_TOKEN, or http_token (at least 16 characters)")
 }
 
-// ValidateBind checks the config's listen address, token, and insecure allow flag.
+// ValidateBind checks the config's listen address and HTTP token.
 func (c Config) ValidateBind() error {
-	return ValidateBind(c.ListenAddr, c.HTTPToken, c.HTTPAllowInsecure || c.AllowExternal)
+	return ValidateBind(c.ListenAddr, c.HTTPToken, false)
 }
 
-// ValidateListen refuses a non-loopback bind unless allow is set.
+// ValidateListen is a legacy token-free check. Non-loopback binds are refused
+// regardless of allow; callers with a token should use ValidateBind.
 func ValidateListen(addr string, allow bool) error {
 	return ValidateBind(addr, "", allow)
 }
