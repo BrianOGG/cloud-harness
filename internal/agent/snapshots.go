@@ -164,7 +164,7 @@ func (m *Manager) recordSnapshotDispatch(ctx context.Context, inv domain.Invocat
 // execution triggers post: denials, validation errors and cached results do not.
 func (m *Manager) driveBatch(ctx context.Context, run storage.Run, batch *domain.Batch, st *loopState) error {
 	if m.DisableSnapshots || m.Workspace == "" || !batch.Accepted() {
-		return domain.Drive(batch, m.gate(ctx, run, st), m.execute(ctx, run, st))
+		return m.drivePolicyBatch(ctx, run, batch, st)
 	}
 	if st.snapshots.BatchID != batch.ID {
 		st.snapshots.BatchID = batch.ID
@@ -182,5 +182,5 @@ func (m *Manager) driveBatch(ctx context.Context, run storage.Run, batch *domain
 			m.takeWorkspaceSnapshot(context.WithoutCancel(ctx), run, st, "post")
 		}
 	}()
-	return domain.Drive(batch, m.gate(ctx, run, st), m.execute(ctx, run, st))
+	return m.drivePolicyBatch(ctx, run, batch, st)
 }

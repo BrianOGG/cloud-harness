@@ -1,8 +1,9 @@
 // Package security decides whether a tool call is authorized.
-// It does not execute tools. The broker is the only caller that acts on a decision.
+// The agent gate and broker share these decisions; only the broker executes tools.
 package security
 
 import (
+	"encoding/json"
 	"path"
 	"strings"
 	"time"
@@ -32,6 +33,9 @@ type Request struct {
 	SensitiveSeen       bool
 	Egress              bool
 	Now                 time.Time
+	Policy              *PolicyDecision
+	// Children may use policy to refuse calls, but allow cannot add grants.
+	RestrictPolicyAllow bool
 }
 
 // Decision is the permission result. Allow and NeedsApproval are mutually exclusive.
@@ -50,6 +54,9 @@ func Decide(grants []domain.Grant, req Request) Decision {
 	if req.UnresolvedResources {
 		return Decision{Reason: "resource scope could not be resolved"}
 	}
+	if req.Policy != nil && req.Policy.Effect == EffectDeny {
+		return Decision{Reason: req.Policy.Reason()}
+	}
 	if req.SensitiveSeen && req.Egress {
 		for _, g := range grants {
 			if g.State == "active" && g.Tool == req.Tool && g.Op == "egress" && (g.RunID == "" || g.RunID == req.RunID) {
@@ -57,6 +64,9 @@ func Decide(grants []domain.Grant, req Request) Decision {
 			}
 		}
 		return Decision{Reason: "sensitive data cannot be sent externally"}
+	}
+	if req.Policy != nil && req.Policy.Effect == EffectAllow && !req.RestrictPolicyAllow {
+		return Decision{Allow: true, Reason: req.Policy.Reason()}
 	}
 	for _, g := range grants {
 		if !grantMatches(g, req) {
@@ -95,6 +105,18 @@ func grantMatches(g domain.Grant, req Request) bool {
 	if g.InvocationID != "" {
 		if req.InvocationID == "" || g.InvocationID != req.InvocationID || g.RunID == "" {
 			return false
+		}
+		if g.Subject == "policy" && len(req.Resources) > 1 {
+			var scopes []string
+			if json.Unmarshal([]byte(g.ResourceScope), &scopes) != nil || len(scopes) != len(req.Resources) {
+				return false
+			}
+			for i, resource := range req.Resources {
+				if clean(scopes[i]) != clean(resource) {
+					return false
+				}
+			}
+			return true
 		}
 		return exactResourcesAllowed(g.ResourceScope, req.Resources, req.Tool)
 	}

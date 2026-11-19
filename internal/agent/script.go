@@ -34,6 +34,9 @@ func (m *Manager) executePoll(ctx context.Context, args json.RawMessage) (json.R
 	if excludedByChildToolLimit(ctx, body.TargetTool) {
 		return nil, domain.E(domain.CodeAuthDenied, "poll target is outside the child tool allowlist")
 	}
+	if err := m.checkNestedPolicy(ctx, body.TargetTool, body.TargetArgs); err != nil {
+		return nil, err
+	}
 	res, err := tools.Poll(ctx, m.Broker, tools.PollRequest{
 		RunID: runID, SessionID: sessionID, TargetTool: body.TargetTool, TargetArgs: body.TargetArgs,
 		Until: body.Until, Interval: time.Duration(body.IntervalSeconds * float64(time.Second)),
@@ -89,6 +92,9 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 		}
 		if sideEffectTool(fact) && !confirmed[tool] {
 			return false, nil, domain.E(domain.CodeScriptPolicy, "side-effect tool requires confirmation before the script starts")
+		}
+		if err := m.checkNestedPolicy(callCtx, tool, toolArgs); err != nil {
+			return false, nil, asDomain(err)
 		}
 		if err := m.Store.Charge(callCtx, runID, domain.ChargeScript, 1); err != nil {
 			return false, nil, asDomain(err)

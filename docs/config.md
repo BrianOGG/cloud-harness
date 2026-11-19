@@ -2,6 +2,10 @@
 
 Settings load from an optional JSON file and then from the environment. The environment wins. The API key is never read from the file: the JSON decoder rejects unknown fields, so `api_key` in the file is an error.
 
+Tool approval rules are configured separately in global and workspace
+`policy.json` files. See [分层权限策略](policy.md) for locations, precedence,
+baseline denials, examples, and run snapshot behavior.
+
 ## File
 
 `CLOUD_HARNESS_CONFIG` points at the file.

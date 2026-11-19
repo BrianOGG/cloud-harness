@@ -17,6 +17,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/notify"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
+	"github.com/cloud-harness/cloud-harness/internal/security"
 	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
@@ -175,6 +176,11 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, message string, images []provider.Image) (result storage.Run, err error) {
 	defer m.finishWorktreeExecution(ctx, run, &result, &err)
 	defer m.releaseRunSnapshotter(ctx, run.ID)
+	policy, err := security.LoadPolicy(m.Workspace)
+	if err != nil {
+		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
+		return result, errors.Join(err, finishErr)
+	}
 	now := m.now()
 	lease, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor()))
 	if err != nil {
@@ -245,7 +251,7 @@ func (m *Manager) runPreparedWithImages(ctx context.Context, run storage.Run, me
 		SuffixTokens: contextpkg.Estimate(asm.DynamicSuffix), TokenLimit: m.tokenLimit(),
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
-	st := &loopState{prefixN: prefixN, userAt: userAt}
+	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy}
 	if m.Depth > 0 {
 		_ = m.saveCheckpoint(ctx, run, messages, nil, "", st)
 	} else {

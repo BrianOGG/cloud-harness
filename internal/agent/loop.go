@@ -13,6 +13,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/imageinput"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/runtime"
+	"github.com/cloud-harness/cloud-harness/internal/security"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
@@ -159,14 +160,18 @@ func (m *Manager) ensureTools() {
 }
 
 type loopState struct {
-	sensitive bool
-	reminded  bool
-	obs       []runtime.Observation
-	versions  map[string]int
-	toolRefs  map[string]string
-	prefixN   int
-	userAt    int
-	snapshots workspaceSnapshotState
+	sensitive      bool
+	reminded       bool
+	obs            []runtime.Observation
+	versions       map[string]int
+	toolRefs       map[string]string
+	prefixN        int
+	userAt         int
+	snapshots      workspaceSnapshotState
+	policy         *security.Policy
+	policyRecorded map[string]bool
+	policyDenials  map[string]string
+	policyErr      error
 }
 
 func (st *loopState) setToolRef(providerCallID, invID string) {
@@ -472,23 +477,39 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		if excludedByChildToolLimit(ctx, inv.Name) {
 			return domain.GateDeny
 		}
-		if inv.Name == "run_command" {
-			if !tools.ValidCwd(m.Workspace, jsonString(inv.Arguments, "cwd")) {
-				return domain.GateDeny
-			}
-			if tools.Dangerous(jsonString(inv.Arguments, "command"), m.Workspace) {
-				return domain.GateNeedsApproval
-			}
-		}
-		if st != nil && st.sensitive && isEgressTool(m.Broker, inv.Name) {
+		policy, err := m.decidePolicy(ctx, run, st, inv)
+		if err != nil {
+			st.policyErr = err
 			return domain.GateDeny
 		}
-		if m.Broker == nil {
+		if policy.Effect == security.EffectDeny {
+			return st.denyPolicy(inv, policy.Reason())
+		}
+		if inv.Name == "run_command" && !tools.ValidCwd(m.Workspace, jsonString(inv.Arguments, "cwd")) {
+			return domain.GateDeny
+		}
+		if policy.Effect == security.EffectAllow {
+			if m.Broker == nil || st.sensitive && isEgressTool(m.Broker, inv.Name) {
+				return domain.GateDeny
+			}
+			allowed, err := m.allowPolicyInvocation(ctx, run, st, inv, policy)
+			if err != nil {
+				st.policyErr = err
+				return domain.GateDeny
+			}
+			if allowed {
+				return domain.GateAllow
+			}
+		}
+		if inv.Name == "run_command" && tools.Dangerous(jsonString(inv.Arguments, "command"), m.Workspace) {
+			return domain.GateNeedsApproval
+		}
+		if m.Broker == nil || st.sensitive && isEgressTool(m.Broker, inv.Name) {
 			return domain.GateDeny
 		}
 		res, err := m.Broker.Authorize(ctx, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
-			ApprovalPossible: inv.Name == "write_file" || inv.Name == "edit_file" || inv.Name == "run_command" || strings.HasPrefix(inv.Name, "mcp."),
+			ApprovalPossible: policyApprovalPossible(inv.Name),
 			SensitiveSeen:    st != nil && st.sensitive,
 			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),
@@ -511,6 +532,13 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 
 func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) domain.ExecFunc {
 	return func(inv domain.Invocation) (json.RawMessage, error) {
+		policy, err := m.decidePolicy(ctx, run, st, inv)
+		if err != nil {
+			return nil, err
+		}
+		if policy.Effect == security.EffectDeny {
+			return nil, domain.E(domain.CodeAuthDenied, policy.Reason())
+		}
 		fp := runtime.Fingerprint(inv.Name, inv.Arguments)
 		if st != nil && (runtime.Blocked(st.obs, fp) || (runtime.AlternatingNoProgress(st.obs) && fingerprintInTail(st.obs, fp))) {
 			return nil, domain.E("no_progress", "repeated tool calls made no progress; replan and do not repeat this call")

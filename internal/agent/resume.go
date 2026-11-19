@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
+	"github.com/cloud-harness/cloud-harness/internal/security"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
@@ -269,6 +270,13 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if err != nil {
 		return storage.Run{}, err
 	}
+	if snap.Policy == nil {
+		// Checkpoints created before policies existed acquire a snapshot once.
+		snap.Policy, err = security.LoadPolicy(m.Workspace)
+		if err != nil {
+			return storage.Run{}, err
+		}
+	}
 	st := &loopState{
 		sensitive: snap.SensitiveRead,
 		reminded:  snap.Reminded,
@@ -277,6 +285,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		prefixN:   snap.PrefixN,
 		userAt:    snap.UserAt,
 		snapshots: snap.WorkspaceSnapshots,
+		policy:    snap.Policy,
 	}
 	ctx = context.WithValue(ctx, sessionKey, running.SessionID)
 	ctx = context.WithValue(ctx, runKey, running.ID)
