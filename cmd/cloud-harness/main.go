@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/eval"
 	"github.com/cloud-harness/cloud-harness/internal/program"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
+	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
 	"github.com/cloud-harness/cloud-harness/internal/tools"
@@ -96,7 +98,7 @@ const usage = `Cloud Harness M5
   cloud-harness runs recover [RUN_ID | --all-expired] [--db path] [--workspace dir]
   cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] RUN_ID
   cloud-harness trace RUN_ID
-  cloud-harness retain [--days N] [--prune-runs-days N] [--db path]
+  cloud-harness retain [--days N] [--prune-runs-days N] [--dry-run] [--db path]
   cloud-harness rewind RUN_ID --to SNAPSHOT_ID [--all|--code-only|--chat-only] [--yes] [--db path] [--workspace dir]
   cloud-harness isolation
   cloud-harness program check
@@ -538,6 +540,7 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 	c := addCommon(fs)
 	days := fs.Int("days", -1, "delete history index rows older than this many days")
 	pruneRunsDays := fs.Int("prune-runs-days", 0, "delete terminal runs and child rows older than this many days")
+	dryRun := fs.Bool("dry-run", false, "report run and snapshot pruning without changing data")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -564,7 +567,7 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 
 	var prunedHistory int
 	var cutHistory time.Time
-	if n > 0 {
+	if n > 0 && !*dryRun {
 		cutHistory = time.Now().UTC().AddDate(0, 0, -n)
 		pruned, err := db.PruneHistory(ctx, cutHistory)
 		if err != nil {
@@ -572,28 +575,101 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		prunedHistory = pruned
+	} else if n > 0 {
+		cutHistory = time.Now().UTC().AddDate(0, 0, -n)
+		prunedHistory, err = db.PreviewPruneHistory(ctx, cutHistory)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 	}
 
 	if *pruneRunsDays <= 0 {
+		if *dryRun {
+			return writeJSON(stdout, map[string]any{"dry_run": true, "pruned": prunedHistory, "retention_days": n, "before": cutHistory.Format(time.RFC3339)})
+		}
 		return writeJSON(stdout, map[string]any{"pruned": prunedHistory, "retention_days": n, "before": cutHistory.Format(time.RFC3339)})
 	}
 
 	cutRuns := time.Now().UTC().AddDate(0, 0, -*pruneRunsDays)
-	pruneRes, err := db.PruneRuns(ctx, cutRuns)
+	var pruneRes storage.PruneRunsResult
+	if *dryRun {
+		pruneRes, err = db.PreviewPruneRuns(ctx, cutRuns)
+	} else {
+		pruneRes, err = db.PruneRuns(ctx, cutRuns)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 
+	groups := make(map[string][]storage.WorkspaceSnapshot)
+	for _, rec := range pruneRes.Snapshots {
+		groups[rec.WorkspaceID] = append(groups[rec.WorkspaceID], rec)
+	}
+	workspaceIDs := make([]string, 0, len(groups))
+	for workspaceID := range groups {
+		workspaceIDs = append(workspaceIDs, workspaceID)
+	}
+	sort.Strings(workspaceIDs)
+	workspaceReports := make([]workspaceReclamationReport, 0, len(workspaceIDs))
+	var reclaimedWorkspaces int
+	for _, workspaceID := range workspaceIDs {
+		records := groups[workspaceID]
+		workspacePath := ""
+		for _, rec := range records {
+			if rec.WorkspacePath != "" {
+				workspacePath = rec.WorkspacePath
+				break
+			}
+		}
+		if workspacePath == "" {
+			if currentID, idErr := workspacesnapshot.WorkspaceIDForPath(c.workspaceOrDot()); idErr == nil && currentID == workspaceID {
+				workspacePath = c.workspaceOrDot()
+			}
+		}
+		report := workspaceReclamationReport{WorkspaceID: workspaceID, Workspace: workspacePath, Snapshots: len(records)}
+		if workspacePath == "" {
+			report.Error = "workspace path is unavailable"
+		} else {
+			stats, reclaimErr := workspacesnapshot.ReclaimWorkspaceSnapshotObjects(ctx, workspacePath, workspaceID, records, *dryRun)
+			report.Objects, report.Bytes = stats.Objects, stats.Bytes
+			if reclaimErr != nil {
+				report.Error = reclaimErr.Error()
+			}
+		}
+		if report.Error != "" {
+			if !*dryRun {
+				fmt.Fprintf(stderr, "warning: snapshot object reclamation failed for workspace %s (%s): %s\n", workspaceID, workspacePath, report.Error)
+			}
+		} else if !*dryRun {
+			reclaimedWorkspaces++
+		}
+		workspaceReports = append(workspaceReports, report)
+	}
+
 	out := map[string]any{
-		"pruned":            prunedHistory,
-		"retention_days":    n,
-		"prune_runs_days":   *pruneRunsDays,
-		"prune_runs_before": cutRuns.Format(time.RFC3339),
-		"pruned_runs":       pruneRes.RunsDeleted,
-		"deleted_runs":      pruneRes.RunsDeleted,
-		"deleted_details":   pruneRes.Tables,
-		"tables":            pruneRes.Tables,
+		"pruned":                prunedHistory,
+		"retention_days":        n,
+		"prune_runs_days":       *pruneRunsDays,
+		"prune_runs_before":     cutRuns.Format(time.RFC3339),
+		"pruned_runs":           pruneRes.RunsDeleted,
+		"deleted_runs":          pruneRes.RunsDeleted,
+		"deleted_details":       pruneRes.Tables,
+		"tables":                pruneRes.Tables,
+		"dry_run":               *dryRun,
+		"deleted_snapshots":     pruneRes.SnapshotsDeleted,
+		"snapshots_to_delete":   pruneRes.SnapshotsToDelete,
+		"unassigned_retained":   pruneRes.UnassignedRetained,
+		"affected_workspaces":   len(workspaceReports),
+		"reclaimed_workspaces":  reclaimedWorkspaces,
+		"workspace_reclamation": workspaceReports,
+		"reclamation_failures":  countWorkspaceReclamationFailures(workspaceReports),
+	}
+	if *dryRun {
+		out["runs_to_delete"] = pruneRes.RunsToDelete
+	} else {
+		out["deleted_runs"] = pruneRes.RunsDeleted
 	}
 	if n > 0 {
 		out["before"] = cutHistory.Format(time.RFC3339)
@@ -602,6 +678,25 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 		out["wal_checkpoint"] = pruneRes.WALCheckpoint
 	}
 	return writeJSON(stdout, out)
+}
+
+type workspaceReclamationReport struct {
+	WorkspaceID string `json:"workspace_id"`
+	Workspace   string `json:"workspace"`
+	Snapshots   int    `json:"snapshots"`
+	Objects     int64  `json:"objects"`
+	Bytes       int64  `json:"bytes"`
+	Error       string `json:"error,omitempty"`
+}
+
+func countWorkspaceReclamationFailures(reports []workspaceReclamationReport) int {
+	count := 0
+	for _, report := range reports {
+		if report.Error != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func cmdIsolation(stdout, stderr io.Writer) int {

@@ -174,7 +174,10 @@ func TestMigration005FromExisting004(t *testing.T) {
 		{ID: "sb", WorkspaceID: "ws_b", Label: "run_b/batch-1/pre", TreeOID: "tree"},
 		{ID: "sx", WorkspaceID: "ws_x", Label: "runXb/batch-1/pre", TreeOID: "tree"},
 	} {
-		if _, err := old.CreateWorkspaceSnapshot(ctx, rec); err != nil {
+		// Seed the v4 schema directly; the current API writes columns added in v6.
+		if _, err := raw.ExecContext(ctx, `INSERT INTO workspace_snapshots
+			(id, workspace_id, tree_oid, label, file_count, total_bytes, created_at)
+			VALUES(?, ?, ?, ?, 0, 0, ?)`, rec.ID, rec.WorkspaceID, rec.TreeOID, rec.Label, formatTime(time.Now())); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -22,16 +22,16 @@ func (db *DB) CreateWorkspaceSnapshot(ctx context.Context, rec storage.Workspace
 		eventSeq = *rec.EventSeq
 	}
 	_, err := db.sql.ExecContext(ctx, `
-		INSERT INTO workspace_snapshots(id, workspace_id, tree_oid, label, event_seq, file_count, total_bytes, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.WorkspaceID, rec.TreeOID, rec.Label, eventSeq, rec.FileCount, rec.TotalBytes, formatTime(rec.CreatedAt))
+		INSERT INTO workspace_snapshots(id, run_id, workspace_id, workspace_path, tree_oid, label, event_seq, file_count, total_bytes, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.RunID, rec.WorkspaceID, rec.WorkspacePath, rec.TreeOID, rec.Label, eventSeq, rec.FileCount, rec.TotalBytes, formatTime(rec.CreatedAt))
 	return rec, err
 }
 
 // ListWorkspaceSnapshots returns a workspace's records in chronological order.
 func (db *DB) ListWorkspaceSnapshots(ctx context.Context, workspaceID string) ([]storage.WorkspaceSnapshot, error) {
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT id, workspace_id, tree_oid, label, event_seq, file_count, total_bytes, created_at
+		SELECT id, run_id, workspace_id, workspace_path, tree_oid, label, event_seq, file_count, total_bytes, created_at
 		FROM workspace_snapshots WHERE workspace_id = ? ORDER BY created_at ASC, id ASC`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (db *DB) ListWorkspaceSnapshots(ctx context.Context, workspaceID string) ([
 // GetWorkspaceSnapshot retrieves a record by its primary key.
 func (db *DB) GetWorkspaceSnapshot(ctx context.Context, id string) (storage.WorkspaceSnapshot, error) {
 	rec, err := scanWorkspaceSnapshot(db.sql.QueryRowContext(ctx, `
-		SELECT id, workspace_id, tree_oid, label, event_seq, file_count, total_bytes, created_at
+		SELECT id, run_id, workspace_id, workspace_path, tree_oid, label, event_seq, file_count, total_bytes, created_at
 		FROM workspace_snapshots WHERE id = ?`, id))
 	if err != nil {
 		return storage.WorkspaceSnapshot{}, mapErr(err, id)
@@ -84,7 +84,7 @@ func scanWorkspaceSnapshot(row snapshotScanner) (storage.WorkspaceSnapshot, erro
 	var rec storage.WorkspaceSnapshot
 	var eventSeq sql.NullInt64
 	var created string
-	if err := row.Scan(&rec.ID, &rec.WorkspaceID, &rec.TreeOID, &rec.Label, &eventSeq, &rec.FileCount, &rec.TotalBytes, &created); err != nil {
+	if err := row.Scan(&rec.ID, &rec.RunID, &rec.WorkspaceID, &rec.WorkspacePath, &rec.TreeOID, &rec.Label, &eventSeq, &rec.FileCount, &rec.TotalBytes, &created); err != nil {
 		return storage.WorkspaceSnapshot{}, err
 	}
 	if eventSeq.Valid {

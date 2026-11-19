@@ -47,7 +47,52 @@ CLI flags `--addr`, `--db`, `--provider`, `--http-token`, and `--http-allow-inse
 - Loopback binds (`127.0.0.1`, `localhost`, `::1`) work without `http_token`.
 - When `http_token` is empty and the listen address is non-loopback (for example `0.0.0.0:19421`), `cloud-harness serve` refuses to start unless `http_allow_insecure` is `true` (or `CLOUD_HARNESS_HTTP_ALLOW_INSECURE=1`), in which case it starts and emits a loud warning to stderr.
 
-`retention_days` in the JSON file is the same knob. `cloud-harness retain --days N` deletes history-index rows older than N days. Run, event, and checkpoint rows are kept.
+`retention_days` in the JSON file is the same history-index knob as
+`CLOUD_HARNESS_RETENTION_DAYS` (default `0`, which keeps every row).
+`cloud-harness retain --days N` overrides it for that invocation and deletes
+history-index documents older than N days, keeping runs, events, checkpoints,
+and workspace snapshots unless run pruning is explicitly enabled.
+
+Run pruning is enabled separately with `retain --prune-runs-days N`; it defaults
+to `0` and has no configuration-file or environment counterpart. A positive N
+deletes terminal runs (`COMPLETED`, `FAILED`, `CANCELLED`) with `updated_at`
+strictly before the UTC cutoff N calendar days ago, together with their child
+rows and associated automatic/rewind-safety snapshot records. It also removes
+snapshot records with an identifiable run ID whose run no longer exists,
+regardless of snapshot age. Snapshots with no identifiable run association and
+snapshots belonging to surviving runs are kept.
+
+Add `--dry-run` to preview both enabled policies without deleting persistent
+rows or modifying shadow Git refs/objects. The JSON `pruned` field is the
+selected history-document count in a preview and the removed count in a real
+pass. With run pruning enabled, `runs_to_delete` (dry-run only) and
+`snapshots_to_delete` count selected database rows; `deleted_runs` (also
+`pruned_runs`) and `deleted_snapshots` remain zero in a dry-run.
+`unassigned_retained` counts preserved snapshot rows with no identifiable run
+association across the database. `tables`/`deleted_details` preview only runs
+and snapshot rows; the real report includes actual child-table deletions.
+
+`affected_workspaces` counts distinct workspace IDs among selected snapshot
+records. `reclaimed_workspaces` counts successful object-reclamation batches
+in a real pass, including batches with no reclaimable objects; it is always
+zero in a dry-run. `workspace_reclamation` reports each workspace's selected
+`snapshots` count and estimated distinct `objects`/`bytes` reachable only from
+the removed snapshot refs. Shared objects protected by surviving snapshots are
+excluded. Bytes sum uncompressed Git object payload sizes, not measured disk
+savings. `reclamation_failures` counts entries with an `error`, including
+failed dry-run estimates.
+
+Actual object reclamation runs per workspace after the SQLite deletion
+transaction commits. It removes deleted snapshots' refs, expires reflogs, and
+runs `git gc --prune=now` only in the shadow repository under
+`.cloud-harness/snapshots/WORKSPACE_ID/`; workspace files and the workspace's
+own Git repository are unchanged. Records save the absolute workspace path;
+for legacy records without it, `--workspace` (default current directory) is
+used only if its workspace ID matches. Reclamation errors are reported per
+workspace and, in a real pass, as stderr warnings; committed database
+deletions remain committed and the command can still exit zero. Neither
+history-only pruning nor `--dry-run` performs object reclamation. See
+[CLI retain](cli.md#retain) for the full report contract and estimate limits.
 
 Resume flags are parsed before the run id:
 

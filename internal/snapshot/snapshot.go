@@ -116,6 +116,9 @@ func Open(workspace string, store RecordStore) (*Snapshotter, error) {
 // WorkspaceID returns the stable ID derived from the absolute workspace path.
 func (s *Snapshotter) WorkspaceID() string { return s.workspaceID }
 
+// WorkspacePath returns the absolute path bound to this snapshotter.
+func (s *Snapshotter) WorkspacePath() string { return s.workspace }
+
 // WorkspaceIDForPath returns the stable workspace ID without initializing the
 // shadow repository. Callers can persist the workspace binding before the
 // first (possibly much later) snapshot is captured.
@@ -166,14 +169,16 @@ func (s *Snapshotter) Snapshot(ctx context.Context, label string) (storage.Works
 		totalBytes += entry.size
 	}
 	rec := storage.WorkspaceSnapshot{
-		ID:          domain.NewID("snap_"),
-		WorkspaceID: s.workspaceID,
-		TreeOID:     treeOID,
-		Label:       label,
-		FileCount:   int64(len(entries)),
-		TotalBytes:  totalBytes,
-		CreatedAt:   time.Now().UTC(),
+		ID:            domain.NewID("snap_"),
+		WorkspaceID:   s.workspaceID,
+		WorkspacePath: s.workspace,
+		TreeOID:       treeOID,
+		Label:         label,
+		FileCount:     int64(len(entries)),
+		TotalBytes:    totalBytes,
+		CreatedAt:     time.Now().UTC(),
 	}
+	rec.RunID = runIDFromLabel(label)
 	if _, err := s.git(ctx, "update-ref", "refs/cloud-harness/snapshots/"+rec.ID, treeOID); err != nil {
 		return storage.WorkspaceSnapshot{}, err
 	}
@@ -571,6 +576,17 @@ func workspaceRelativePath(name string) (string, error) {
 func workspaceIDFor(absPath string) string {
 	sum := sha256.Sum256([]byte(absPath))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+func runIDFromLabel(label string) string {
+	label = strings.TrimPrefix(label, "rewind-safety/")
+	if !strings.HasPrefix(label, "run_") {
+		return ""
+	}
+	if index := strings.IndexByte(label, '/'); index > 0 {
+		return label[:index]
+	}
+	return ""
 }
 
 func (s *Snapshotter) checkExistingParents(name string) error {

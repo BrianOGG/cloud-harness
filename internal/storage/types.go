@@ -141,14 +141,16 @@ type TurnSummary struct {
 
 // WorkspaceSnapshot records one Git tree captured for a workspace.
 type WorkspaceSnapshot struct {
-	ID          string
-	WorkspaceID string
-	TreeOID     string
-	Label       string
-	EventSeq    *int64
-	FileCount   int64
-	TotalBytes  int64
-	CreatedAt   time.Time
+	ID            string
+	RunID         string
+	WorkspaceID   string
+	WorkspacePath string
+	TreeOID       string
+	Label         string
+	EventSeq      *int64
+	FileCount     int64
+	TotalBytes    int64
+	CreatedAt     time.Time
 }
 
 // HistoryCatalogEntry is a lightweight summary of one session history record.
@@ -161,9 +163,14 @@ type HistoryCatalogEntry struct {
 
 // PruneRunsResult details the rows removed by a run pruning operation.
 type PruneRunsResult struct {
-	RunsDeleted   int            `json:"runs_deleted"`
-	Tables        map[string]int `json:"tables"`
-	WALCheckpoint string         `json:"wal_checkpoint,omitempty"`
+	RunsDeleted        int                 `json:"runs_deleted"`
+	RunsToDelete       int                 `json:"runs_to_delete"`
+	SnapshotsDeleted   int                 `json:"snapshots_deleted"`
+	SnapshotsToDelete  int                 `json:"snapshots_to_delete"`
+	UnassignedRetained int                 `json:"unassigned_retained"`
+	Snapshots          []WorkspaceSnapshot `json:"-"`
+	Tables             map[string]int      `json:"tables"`
+	WALCheckpoint      string              `json:"wal_checkpoint,omitempty"`
 }
 
 // Store is the single persisted source of truth used by the run manager.

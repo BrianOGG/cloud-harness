@@ -623,6 +623,7 @@ func marshalError(e *domain.Error) (string, error) {
 // is executed best-effort.
 func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRunsResult, error) {
 	tables := map[string]int{
+		"workspace_snapshots":    0,
 		"checkpoints":            0,
 		"events":                 0,
 		"provider_continuations": 0,
@@ -665,6 +666,16 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 		_, _ = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_run_ids`)
 	}()
 
+	if _, err = tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS _prune_snapshot_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return result, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM _prune_snapshot_ids`); err != nil {
+		return result, err
+	}
+	defer func() {
+		_, _ = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_snapshot_ids`)
+	}()
+
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO _prune_run_ids (id)
 		SELECT id FROM runs
@@ -677,7 +688,74 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 	if err != nil {
 		return result, err
 	}
-	if nCandidates == 0 {
+	result.RunsToDelete = int(nCandidates)
+
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO _prune_snapshot_ids(id)
+		SELECT ws.id FROM workspace_snapshots ws
+		WHERE (
+			CASE
+				WHEN ws.run_id <> '' THEN ws.run_id
+				WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+				WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+				ELSE ''
+			END IN (SELECT id FROM _prune_run_ids)
+		) OR (
+			CASE
+				WHEN ws.run_id <> '' THEN ws.run_id
+				WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+				WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+				ELSE ''
+			END <> ''
+			AND NOT EXISTS (
+				SELECT 1 FROM runs r WHERE r.id = CASE
+					WHEN ws.run_id <> '' THEN ws.run_id
+					WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+					WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+					ELSE ''
+				END
+			)
+		)`,
+	); err != nil {
+		return result, err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM _prune_snapshot_ids`).Scan(&result.SnapshotsToDelete); err != nil {
+		return result, err
+	}
+	if err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM workspace_snapshots ws
+		WHERE CASE
+			WHEN ws.run_id <> '' THEN ws.run_id
+			WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+			WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+			ELSE ''
+		END = ''`).Scan(&result.UnassignedRetained); err != nil {
+		return result, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, run_id, workspace_id, workspace_path, tree_oid, label, event_seq, file_count, total_bytes, created_at
+		FROM workspace_snapshots WHERE id IN (SELECT id FROM _prune_snapshot_ids)
+		ORDER BY workspace_id, id`)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		rec, scanErr := scanWorkspaceSnapshot(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return result, scanErr
+		}
+		result.Snapshots = append(result.Snapshots, rec)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return result, err
+	}
+	if err = rows.Close(); err != nil {
+		return result, err
+	}
+
+	if result.SnapshotsToDelete == 0 && nCandidates == 0 {
 		_ = tx.Rollback()
 		return result, nil
 	}
@@ -696,6 +774,11 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 	}
 
 	// 1. Delete child rows of model_responses (provider_continuations, model_response_items)
+	if err = del("workspace_snapshots", `DELETE FROM workspace_snapshots WHERE id IN (SELECT id FROM _prune_snapshot_ids)`); err != nil {
+		return result, err
+	}
+	result.SnapshotsDeleted = tables["workspace_snapshots"]
+
 	if err = del("provider_continuations", `
 		DELETE FROM provider_continuations
 		WHERE response_id IN (
@@ -759,6 +842,9 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 	result.RunsDeleted = tables["runs"]
 
 	// Drop temp table before checking FK
+	if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_snapshot_ids`); err != nil {
+		return result, err
+	}
 	if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS _prune_run_ids`); err != nil {
 		return result, err
 	}
@@ -805,5 +891,95 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 		result.WALCheckpoint = "ok"
 	}
 
+	return result, nil
+}
+
+// PreviewPruneRuns reports the rows and snapshots a prune would select without
+// changing persistent database state.
+func (db *DB) PreviewPruneRuns(ctx context.Context, before time.Time) (storage.PruneRunsResult, error) {
+	result := storage.PruneRunsResult{Tables: map[string]int{"workspace_snapshots": 0, "runs": 0}}
+	if before.IsZero() {
+		return result, nil
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE _prune_run_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return result, err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE _prune_snapshot_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return result, err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO _prune_run_ids(id) SELECT id FROM runs WHERE status IN (?, ?, ?) AND updated_at < ?`,
+		domain.RunCompleted, domain.RunFailed, domain.RunCancelled, formatTime(before))
+	if err != nil {
+		return result, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return result, err
+	}
+	result.RunsToDelete = int(n)
+	result.Tables["runs"] = int(n)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO _prune_snapshot_ids(id)
+		SELECT ws.id FROM workspace_snapshots ws
+		WHERE (
+			CASE
+				WHEN ws.run_id <> '' THEN ws.run_id
+				WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+				WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+				ELSE ''
+			END IN (SELECT id FROM _prune_run_ids)
+		) OR (
+			CASE
+				WHEN ws.run_id <> '' THEN ws.run_id
+				WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+				WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+				ELSE ''
+			END <> ''
+			AND NOT EXISTS (
+				SELECT 1 FROM runs r WHERE r.id = CASE
+					WHEN ws.run_id <> '' THEN ws.run_id
+					WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+					WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+					ELSE ''
+				END
+			)
+		)`); err != nil {
+		return result, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM _prune_snapshot_ids`).Scan(&result.SnapshotsToDelete); err != nil {
+		return result, err
+	}
+	result.Tables["workspace_snapshots"] = result.SnapshotsToDelete
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM workspace_snapshots ws WHERE CASE
+		WHEN ws.run_id <> '' THEN ws.run_id
+		WHEN ws.label LIKE 'rewind-safety/%' THEN substr(substr(ws.label, length('rewind-safety/') + 1), 1, instr(substr(ws.label, length('rewind-safety/') + 1), '/') - 1)
+		WHEN ws.label LIKE 'run_%/%' THEN substr(ws.label, 1, instr(ws.label, '/') - 1)
+		ELSE '' END = ''`).Scan(&result.UnassignedRetained); err != nil {
+		return result, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, run_id, workspace_id, workspace_path, tree_oid, label, event_seq, file_count, total_bytes, created_at FROM workspace_snapshots WHERE id IN (SELECT id FROM _prune_snapshot_ids) ORDER BY workspace_id, id`)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		rec, scanErr := scanWorkspaceSnapshot(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return result, scanErr
+		}
+		result.Snapshots = append(result.Snapshots, rec)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return result, err
+	}
+	if err := rows.Close(); err != nil {
+		return result, err
+	}
 	return result, nil
 }

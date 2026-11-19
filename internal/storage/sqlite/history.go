@@ -241,6 +241,17 @@ func (db *DB) PruneHistory(ctx context.Context, before time.Time) (int, error) {
 	return len(ids), nil
 }
 
+// PreviewPruneHistory reports the number of history rows that meet the cutoff
+// without changing the database.
+func (db *DB) PreviewPruneHistory(ctx context.Context, before time.Time) (int, error) {
+	if before.IsZero() {
+		return 0, nil
+	}
+	var count int
+	err := db.sql.QueryRowContext(ctx, `SELECT COUNT(1) FROM history_docs WHERE created_at < ?`, formatTime(before)).Scan(&count)
+	return count, err
+}
+
 // DeleteHistory removes the given source_ids from history_docs, history_exact, and history_fts.
 func (db *DB) DeleteHistory(ctx context.Context, sourceIDs ...string) error {
 	if len(sourceIDs) == 0 {
