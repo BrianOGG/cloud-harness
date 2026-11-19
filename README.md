@@ -29,6 +29,7 @@ go build -o cloud-harness ./cmd/cloud-harness
 ./cloud-harness isolation
 ./cloud-harness program check
 ./cloud-harness agents --workspace .
+./cloud-harness repomap --dir .
 ```
 
 `serve` listens on `127.0.0.1:19421`; loopback addresses can start without a token.
@@ -82,6 +83,36 @@ cloud-harness eval run --task incident-wait-for-ready
 ```
 
 `eval suite` runs that list and prints completion, correctness, wall time, token totals the tasks actually reported, cache hit rate, planner arms, repeated tool calls, and recovery.
+
+## Repository symbol map
+
+`cloud-harness repomap` scans the current directory (or `--dir PATH`) and
+prints a deterministic, compact map for later context assembly and manual
+inspection. The default output limit is 64 KiB; use `--max-bytes N` to change
+it. Each supported source file is one tab-separated line:
+
+```text
+main.go	lines=6	package=main	symbols=type:App,func:NewApp,method:(*App).Run
+script.py	lines=3	symbols=def:hello
+```
+
+The first field is the path relative to the scanned directory. Go files list
+their package and top-level `type`, `func`, and receiver method declarations;
+methods include the receiver type. Python, JavaScript, TypeScript, Rust, Java,
+and Ruby files use lightweight top-level `def`/`function`/`fn`/`class` style
+matching. A supported file with no matching definition still records its path
+and line count. Symbols are de-duplicated within each file and retain source
+order; files are sorted by path.
+
+`.git`, `.cloud-harness`, `node_modules`, `vendor`, `dist`, and `__pycache__`
+directories are skipped. A file that cannot be read or whose Go syntax is
+invalid is skipped; the command continues and reports a diagnostic on stderr.
+When the byte limit is reached, the map keeps the longest complete prefix of
+file lines and ends with `# TRUNCATED omitted_files=N`, where `N` is the number
+of files omitted from the map. An empty workspace produces an empty stdout map.
+The limit includes the truncation marker; if it is too small to fit the marker
+and its file count, the command exits with an error and does not print a partial
+map.
 
 A live OpenAI-compatible call uses `OPENAI_API_KEY` only from the environment. See [docs/config.md](docs/config.md).
 

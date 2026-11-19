@@ -93,6 +93,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdWorktrees(args[1:], stdout, stderr)
 	case "agents":
 		return cmdAgents(args[1:], stdout, stderr)
+	case "repomap":
+		return cmdRepoMap(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -121,6 +123,7 @@ const usage = `Cloud Harness M5
   cloud-harness review [--workspace dir] [--json] [--diff]
   cloud-harness agents [show NAME] [--workspace dir] [--json]
   cloud-harness worktrees list|diff|merge|discard [RUN_ID] [--workspace dir] [--db path]
+  cloud-harness repomap [--dir path] [--max-bytes N]
   cloud-harness isolation
   cloud-harness program check
 
