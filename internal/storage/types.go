@@ -36,6 +36,7 @@ type Run struct {
 	WorktreeBaseSHA string
 	WorktreeBranch  string
 	WorktreePath    string
+	WorktreeState   string // Empty until a successful merge or explicit discard.
 	Status          domain.RunStatus
 	WaitReason      domain.WaitReason
 	Budget          domain.Budget

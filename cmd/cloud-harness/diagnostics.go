@@ -63,7 +63,14 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	items := make([]doctorItem, 0, 8)
+	wsRoot := *workspace
+	if wsRoot == "" {
+		wsRoot = "."
+	}
+	if root, err := filepath.Abs(wsRoot); err == nil {
+		cfg.DBPath = worktreeDBPath(cfg, root)
+	}
+	items := make([]doctorItem, 0, 9)
 	if configErr != nil {
 		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: configErrorDetail(configErr)})
 	} else if cfg.Provider != "mock" && cfg.Provider != "openai" {
@@ -114,6 +121,9 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		items = append(items, inspectShadowRepository(absWorkspace)...)
 	}
 
+	if wsErr == nil && gitErr == nil {
+		items = append(items, checkWorktrees(context.Background(), absWorkspace, cfg.DBPath))
+	}
 	if !configOK {
 		items = append(items, doctorItem{Name: "provider", Status: "warn", Detail: "skipped because configuration could not be validated"})
 	} else {

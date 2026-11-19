@@ -211,9 +211,140 @@ making a commit. Harness state is excluded. The unified diff is capped at
 summary, the event still records its identity and an `error` diagnostic.
 Waiting for approval or user input does not end the run or emit its summary.
 
-Worktrees and branches remain after the run. There is no automatic removal;
-list/diff/merge/discard and cleanup commands are planned for M10.2-4. This flag
-does not apply to `serve`.
+Worktrees and branches remain after the run; completion does not remove them.
+Use the lifecycle commands below to inspect, integrate or discard the result.
+
+## worktrees
+
+```bash
+cloud-harness worktrees list [--json] [--workspace dir] [--db path]
+cloud-harness worktrees diff <run-id> [--json] [--workspace dir] [--db path]
+cloud-harness worktrees merge <run-id> [--test-command "go test ./..."] [--provider mock|openai] [--workspace dir] [--db path]
+cloud-harness worktrees discard <run-id> [--force] [--workspace dir] [--db path]
+```
+
+The run ID may come before flags (as shown) or after all flags. The workspace
+defaults to `.`. The default DB is anchored at
+`<workspace>/.cloud-harness/harness.db`, matching `run --worktree`; pass the
+same explicit `--db` if the run used a different store. No new lifecycle table
+is used: `runs.worktree_state` stores only the successful terminal decision
+(`merged` or `discarded`); execution status, the original run binding and
+`worktree.Lookup` determine the observed state.
+
+### List, diff and lifecycle states
+
+`list` includes run ID, branch, full base SHA, path and state, including
+records of merged/discarded worktrees after their directories disappear.
+`--json` emits an array with `run_id`, `branch`, `base_sha`, `worktree_path`,
+`state`, `run_status`, `exists`, and optional `orphan`/`error` diagnostics.
+Reconciliation reads all bound runs, without the interactive run-list limit.
+A DB shared by multiple workspaces is filtered to the selected workspace.
+
+| State | Meaning |
+| --- | --- |
+| `running` (运行中) | Nonterminal run, including approval/user waits; finish or cancel before lifecycle mutations. |
+| `pending` (待处理) | Terminal run whose retained worktree is ready for review. |
+| `merged` (已合并) | Both merge test gates passed and integration was recorded. |
+| `discarded` (已销毁) | An explicit discard removed the worktree and branch; the run record remains. |
+
+Normal transitions are `running → pending → merged` or
+`running → pending → discarded`. Missing artifacts are not silently treated
+as a successful discard: `orphan: missing_worktree` identifies a bound run
+without its worktree; `orphan: missing_run` identifies a worktree/metadata
+without a run. Changed bindings, unreadable metadata and artifacts remaining
+after a recorded terminal decision are also explicitly diagnosed. `doctor`
+performs the same read-only reconciliation at startup and reports orphans as
+warnings. It never migrates a DB or removes a worktree. Version 7 worktree
+records can be listed/read without migration; the first lifecycle mutation
+applies migration 008 through the normal store opener.
+
+`diff` directly reuses `worktree.Summarize`: the complete file list and stat,
+plus a unified diff relative to the original dispatch base, including pending
+tracked/untracked edits and capped at 64 KiB. `--json` has the same fields as
+`worktree.summary`. Merged, discarded, missing or mismatched worktrees produce
+an explicit error. List and diff do not create a DB or modify the real index.
+
+### Merge policy (six steps)
+
+1. Determine the main workspace branch with `git symbolic-ref --short HEAD`;
+   no branch name is hardcoded, and detached HEAD is rejected. Require a clean
+   main workspace with no merge in progress. Commit pending agent file edits
+   on the agent branch for audit, then run `git merge <main>` **inside the
+   agent worktree first**. Commits use the local identity `Cloud Harness
+   <cloud-harness@localhost>` without changing repository configuration.
+2. On conflicts, ask the configured provider to resolve files, then run the
+   test gate. `worktree.ConflictResolutionAttempts` is **2** by default and is
+   a constant, shared across the entire merge invocation (including an older
+   retained conflict and any conflict with newer main). Each repair round is capped at 8 model calls and 24 tool calls.
+   Repairs use the same worktree and main DB, restricted read/write/edit tools,
+   no command/delegation tools and no extra snapshots. Git staging and commits
+   remain in the coordinator. Conflict-marker/whitespace checks and tests
+   must pass before committing a resolution. The default mock does not repair
+   conflicts; select the intended provider explicitly for model repairs.
+3. If repair fails, stop and print the conflict file list. Main remains
+   unchanged; the agent worktree, merge index and branch are retained. Resolve
+   and stage (or commit) conflicts there manually, then retry `merge`. A retry
+   completes a staged resolution and also integrates the current main branch
+   if main has advanced since the original conflict.
+4. Only after the agent branch is clean and its test gate passes, merge it
+   into main with a normal `--no-ff` merge. A failed merge is aborted with
+   `git merge --abort`; recovery also restores the pre-merge SHA if needed.
+   The main workspace keeps its pre-merge content on failure.
+5. Run the test gate again on main. A failing gate (or failure to record the
+   successful decision) runs `git reset --hard <pre-merge-SHA>` using a
+   recovery context independent of cancellation. The run stays pending and
+   its worktree remains retryable. Only after both gates pass is `merged`
+   recorded; then the worktree, agent branch and private metadata are removed.
+6. Merge requests queue behind a **process-wide in-process lock**, covering
+   run reconciliation, Git operations, both gates, DB state and cleanup.
+   Discard and retain use the same queue. This does not coordinate separate
+   operating-system processes: do not run concurrent merge/discard/retain CLI
+   processes against the same repository.
+
+Neither `ours`/`theirs` overwrite strategies nor rebase are used. Existing
+commits and the original base SHA remain auditable. A failed gate never marks
+the run merged. If integration succeeds but cleanup fails, the error states
+that the run is merged with cleanup pending; `discard` retries that cleanup.
+
+The required test gate defaults to `go test ./...` in each workspace. Use
+`--test-command "go test -p 1 ./..."` or another project test command when
+needed. This is an executable and space-separated arguments, **not a shell
+expression** (no quote/escape interpretation, pipes or redirects). An empty
+command is refused. Each gate has a five-minute timeout, and its output is
+written to stderr. Tests should leave the workspace clean.
+
+### Discard and retention
+
+`discard` removes the worktree first, then its branch and metadata, retaining
+the run and its audit history. Pending/unmerged runs require explicit
+`--force`, including committed or empty pending branches; the flag authorizes
+loss of their result. It never overrides an active/waiting run: finish/cancel
+that run first. Already merged/discarded cleanup is idempotent and needs no
+force; a merged record keeps its `merged` decision. No run row is deleted by
+`discard`.
+
+Orphan cleanup uses existing `retain --prune-runs-days N` invocations, with no
+new schedule or cleanup switch. Worktrees of runs selected by that prune are
+reclaimed after the DB prune. For worktrees already missing their run record,
+the later of directory/metadata modification times is compared with the same
+UTC cutoff. New orphans and worktrees of surviving runs are retained.
+`--dry-run` reports `worktree_reclamation` entries without deleting worktrees,
+branches or metadata; actual entries contain `removed` and optional `error`.
+Unreadable or mismatched artifacts are reported for manual inspection.
+
+### serve --worktree
+
+```bash
+cloud-harness serve --worktree [--workspace dir] [--db path] [--provider mock|openai] [--addr 127.0.0.1:19421]
+```
+
+`serve --worktree` uses the same `openRunManager` isolation path as run/chat.
+Every run created over HTTP gets its own worktree, with the DB anchored in
+main. Approval resumes, recovery and cancellation continue through the
+persisted worktree manager routing. Terminal runs emit `worktree.summary`
+and retain their worktrees. HTTP exposes no merge or discard endpoints;
+use the four CLI commands for lifecycle management. Without the flag, serve
+keeps its existing shared-workspace behavior.
 
 ## Images in chat and run (`@image:<path>`)
 
@@ -318,7 +449,8 @@ The database check opens SQLite with `mode=ro`, reads the migration version,
 journal mode (WAL), and `PRAGMA foreign_key_check`, and never runs migrations,
 checkpoints, or writes. Git checks only executable discovery and, when a
 snapshot shadow repository already exists, readability of its `HEAD`; it does
-not run `gc` or `fsck`. MCP entries are syntax/field checked and no server
+not run `gc` or `fsck`. Worktree inventory is reconciled with run records and
+orphans are reported as warnings (see `worktrees`); nothing is reclaimed. MCP entries are syntax/field checked and no server
 process is started. With `--provider openai`, a configured key gets one short
 `GET /models` probe; a missing `OPENAI_API_KEY` is a warning. API key material
 is redacted from diagnostics.
@@ -475,6 +607,7 @@ report uses these counts:
 | `reclaimed_workspaces` | Workspace reclamation batches completed without error in a real pass, even if zero objects are eligible; always zero in a dry-run |
 | `reclamation_failures` | Workspace batches with an `error`, including failed estimates in a dry-run |
 | `workspace_reclamation` | One entry per affected workspace, sorted by workspace ID |
+| `worktree_reclamation` | Worktrees selected by the same run cutoff or already orphaned and older than it; includes run binding, `dry_run`, `removed`, and optional `error` |
 | `tables`, `deleted_details` | Aliases for per-table counts; a dry-run previews only `runs` and `workspace_snapshots`, while a real pass reports actual deletions across the child tables |
 
 `retention_days` and optional `before` describe history pruning;

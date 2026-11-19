@@ -19,7 +19,11 @@ go build -o cloud-harness ./cmd/cloud-harness
 ./cloud-harness run --message "检索历史"
 ./cloud-harness run --worktree --message "Review this Git project in isolation"
 ./cloud-harness chat --worktree --message "Inspect this Git project"
-./cloud-harness serve
+./cloud-harness serve --worktree
+./cloud-harness worktrees list --json
+./cloud-harness worktrees diff RUN_ID
+./cloud-harness worktrees merge RUN_ID
+./cloud-harness worktrees discard RUN_ID --force
 ./cloud-harness eval suite
 ./cloud-harness isolation
 ./cloud-harness program check
@@ -28,12 +32,17 @@ go build -o cloud-harness ./cmd/cloud-harness
 
 `serve` listens on `127.0.0.1:19421`. A non-loopback address is refused unless `CLOUD_HARNESS_ALLOW_EXTERNAL=1`.
 
-`run` and `chat` optionally accept `--worktree` in a Git workspace. Each run
+`run`, `chat`, and `serve` optionally accept `--worktree` in a Git workspace. Each run
 starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under
 `.cloud-harness/worktrees/<run-id>/`; files are isolated while the database
 stays in the original workspace. A final `worktree.summary` event records the
 base SHA, file list, stat, and capped diff (including pending edits). Worktrees
-are retained; cleanup commands arrive in M10.2-4. See [docs/cli.md](docs/cli.md#run--chat).
+are retained for `worktrees list/diff/merge/discard`. Merge integrates main into
+the agent branch first, allows two conflict-repair rounds, then gates integration
+with tests and rolls main back on failure. Lifecycle mutations are serialized
+within one process; do not run concurrent lifecycle CLI processes against one
+repository. `doctor` reports orphans and `retain --prune-runs-days` can reclaim
+them. See [worktree lifecycle](docs/cli.md#worktrees) for states and recovery.
 
 Resume flags come before the run id:
 

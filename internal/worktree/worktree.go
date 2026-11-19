@@ -1,5 +1,5 @@
 // Package worktree creates persistent, isolated Git workspaces for runs.
-// It deliberately provides no merge or removal operation.
+// Retained workspaces can be reviewed and integrated through lifecycle operations.
 package worktree
 
 import (

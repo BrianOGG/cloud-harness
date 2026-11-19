@@ -87,6 +87,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdExport(args[1:], stdout, stderr)
 	case "review":
 		return cmdReview(args[1:], stdout, stderr)
+	case "worktrees":
+		return cmdWorktrees(args[1:], stdout, stderr)
 	case "agents":
 		return cmdAgents(args[1:], stdout, stderr)
 	default:
@@ -98,7 +100,7 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 const usage = `Cloud Harness M5
 
   cloud-harness version
-  cloud-harness serve [--addr 127.0.0.1:19421] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness run --message TEXT [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
@@ -116,6 +118,7 @@ const usage = `Cloud Harness M5
   cloud-harness export RUN_ID [--out path] [--sanitize|--raw] [--force] [--json] [--db path]
   cloud-harness review [--workspace dir] [--json] [--diff]
   cloud-harness agents [show NAME] [--workspace dir] [--json]
+  cloud-harness worktrees list|diff|merge|discard [RUN_ID] [--workspace dir] [--db path]
   cloud-harness isolation
   cloud-harness program check
 
@@ -288,6 +291,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
+	useWorktree := fs.Bool("worktree", false, "run HTTP-created runs in retained isolated Git worktrees")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -305,7 +309,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	mgr, db, err := openManager(ctx, cfg, c.workspace)
+	mgr, db, err := openRunManager(ctx, cfg, c.workspace, *useWorktree)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -559,6 +563,15 @@ func cmdTrace(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdRetain(args []string, stdout, stderr io.Writer) int {
+	code := 1
+	_ = serializeWorktreeLifecycle(context.Background(), func() error {
+		code = cmdRetainUnlocked(args, stdout, stderr)
+		return nil
+	})
+	return code
+}
+
+func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("retain", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
@@ -572,6 +585,9 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if root, pathErr := filepath.Abs(c.workspaceOrDot()); pathErr == nil {
+		cfg.DBPath = worktreeDBPath(cfg, root)
 	}
 	n := *days
 	if n < 0 {
@@ -616,6 +632,7 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cutRuns := time.Now().UTC().AddDate(0, 0, -*pruneRunsDays)
+	worktreePlan := planWorktreeReclamation(ctx, c.workspaceOrDot(), cfg.DBPath, cutRuns)
 	var pruneRes storage.PruneRunsResult
 	if *dryRun {
 		pruneRes, err = db.PreviewPruneRuns(ctx, cutRuns)
@@ -672,7 +689,9 @@ func cmdRetain(args []string, stdout, stderr io.Writer) int {
 		workspaceReports = append(workspaceReports, report)
 	}
 
+	worktreeReports := reclaimOrphanWorktrees(ctx, c.workspaceOrDot(), db, worktreePlan, *dryRun)
 	out := map[string]any{
+		"worktree_reclamation":  worktreeReports,
 		"pruned":                prunedHistory,
 		"retention_days":        n,
 		"prune_runs_days":       *pruneRunsDays,
