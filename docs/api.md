@@ -1,10 +1,9 @@
 # HTTP API
 
-`cloud-harness serve` listens on `127.0.0.1:19421` by default. Requests and
-responses use JSON, except for the event stream at
-`GET /v1/runs/{id}/events` (SSE). Successful responses contain the requested
-object or array directly; errors use an `error` object with `code`, `message`,
-and an optional `ref`.
+`cloud-harness serve` listens on `127.0.0.1:19421` by default. The `/v1/` API
+uses JSON except for the event stream at `GET /v1/runs/{id}/events` (SSE).
+Successful JSON responses contain the requested object or array directly.
+Errors use an `error` object with `code`, `message`, and an optional `ref`.
 
 ## Authentication and listen addresses
 
@@ -13,7 +12,8 @@ Configure an HTTP bearer token with `serve --http-token TOKEN`, the
 configuration file. A configured token must contain at least 16 characters.
 Every `/v1/` route, including `/v1/approvals`, `/v1/runs/{id}`, and its
 `/events` stream, uses the same authentication middleware and constant-time
-token comparison. `/healthz` is available without authentication.
+token comparison. `/healthz` and the static `/approval` page are available
+without authentication.
 
 When a token is configured, supply `Authorization: Bearer <token>`. A missing
 or incorrect token returns HTTP 401 with
@@ -43,6 +43,29 @@ The legacy `--http-allow-insecure`, `http_allow_insecure`,
 remain accepted for configuration compatibility and cannot waive this token
 requirement. See [serve CLI](cli.md#serve) and
 [HTTP configuration](config.md#http-authentication-and-non-loopback-rule).
+
+## GET /approval
+
+Open `/approval` to see the waiting queue or `/approval?run=<run-id>` to open
+a specific run. Set `notify.approval_base_url` to the `serve` URL your phone
+can reach to include the run link in waiting notifications. The link carries
+only the run ID. If a reverse proxy adds a path prefix, expose both `/approval`
+and `/v1/` under that prefix.
+
+The embedded page returns `Content-Type: text/html; charset=utf-8` and
+`Cache-Control: no-store`. Anyone can load the same static HTML, even if the
+run ID is unknown. Run data is loaded through the authenticated API. Paste the
+configured HTTP token once for this browser and origin. The page stores it in
+`localStorage` and sends it in the `Authorization: Bearer <token>` header with
+every API request, including the event stream. A 401 shows the token prompt
+and the API error. Clear the site's browser data to remove the stored token.
+
+1. `GET /v1/approvals` lists pending items and provides their summaries and wait times.
+2. `GET /v1/runs/{id}` loads the selected run. `GET /v1/runs/{id}/events`
+   follows updates so the page can show the current wait or final status.
+3. `POST /v1/runs/{id}/responses` sends `{"decision":"approve"}` or
+   `{"decision":"deny"}`. `POST /v1/runs/{id}/answer` sends `{"answer":"..."}`
+   for `ask_user`.
 
 ## GET /v1/approvals
 
@@ -112,5 +135,5 @@ This is a read-only endpoint. Inspect the full pending invocation or question
 with `GET /v1/runs/{id}`. Submit approval decisions through the existing
 `POST /v1/runs/{id}/responses` endpoint (`{"decision":"approve"}` or
 `{"decision":"deny"}`); submit user answers through that endpoint or
-`POST /v1/runs/{id}/answer` (`{"answer":"..."}`). An approval URL identifies
-the separately provided approval page; this API does not serve that page.
+`POST /v1/runs/{id}/answer` (`{"answer":"..."}`). Open the `approval_url` in
+a browser to handle the wait on the embedded approval page.

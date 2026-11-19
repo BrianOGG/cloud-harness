@@ -34,12 +34,15 @@ go build -o cloud-harness ./cmd/cloud-harness
 A non-loopback address requires `--http-token TOKEN`, `CLOUD_HARNESS_HTTP_TOKEN`,
 or JSON `http_token` (at least 16 characters), checked before binding a port.
 Legacy insecure/allow-external settings cannot bypass this requirement.
-With a configured token, `/v1/` routes require `Authorization: Bearer <token>`;
-`/healthz` stays open. `GET /v1/approvals` lists approval and user-question waits
-across sessions, oldest wait first. See the [HTTP API reference](docs/api.md).
-Optional webhook, Bark, and ntfy notifications can report approval waits,
-user questions, completion, and failure/cancellation. See [notification
-configuration](docs/config.md#run-notifications).
+With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
+`/healthz` and the static `/approval` page are public. Open `/approval` on desktop
+or mobile and paste the configured token once to view the pending queue, make
+an approval decision, or answer a question. See the
+[approval page reference](docs/api.md#get-approval).
+Optional webhook, Bark, and ntfy notifications report approval waits, user
+questions, completion, and failure or cancellation. Set `notify.approval_base_url`
+to include a direct link to the waiting run. See
+[notification configuration](docs/config.md#run-notifications).
 
 `run`, `chat`, and `serve` optionally accept `--worktree` in a Git workspace. Each run
 starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under

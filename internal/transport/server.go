@@ -5,6 +5,7 @@ package transport
 import (
 	"context"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +20,9 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
 )
+
+//go:embed approval.html
+var approvalHTML []byte
 
 const (
 	// DefaultMaxBodyBytes caps POST and PUT request bodies at 1 MiB.
@@ -97,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /approval", serveApprovalPage)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /v1/approvals", s.approvals)
@@ -109,7 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" {
+		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" && r.URL.Path != "/approval" {
 			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)
 				writeJSON(w, http.StatusUnauthorized, map[string]*domain.Error{
@@ -135,6 +140,13 @@ func checkBearerToken(header, expected string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
+
+func serveApprovalPage(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	_, _ = w.Write(approvalHTML)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

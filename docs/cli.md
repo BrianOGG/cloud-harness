@@ -16,12 +16,14 @@ Errors never echo the token. The legacy `--http-allow-insecure`,
 `http_allow_insecure`, `CLOUD_HARNESS_HTTP_ALLOW_INSECURE`, and
 `CLOUD_HARNESS_ALLOW_EXTERNAL` settings cannot bypass this requirement.
 
-When a token is set, `/v1/` endpoints require `Authorization: Bearer <token>`;
-missing or incorrect tokens return HTTP 401 with a `WWW-Authenticate: Bearer`
-challenge. `/healthz` remains accessible without a token. The read-only
-`GET /v1/approvals` endpoint lists approval and ask_user waits across sessions,
-oldest wait first. See the [HTTP API reference](api.md) for fields, examples,
-and the existing endpoints for submitting decisions and answers.
+When a token is set, `/v1/` endpoints require `Authorization: Bearer <token>`.
+Missing or incorrect tokens return HTTP 401 with a `WWW-Authenticate: Bearer`
+challenge. `/healthz` and the static `/approval` page are accessible without
+a token. Paste the configured token once in the browser to see the pending
+queue, approve or deny a run, or answer an `ask_user` question. The browser
+keeps the token in `localStorage` for this origin. `GET /v1/approvals` lists
+pending items across sessions, oldest wait first. See the
+[HTTP API reference](api.md#get-approval).
 
 ## Run notifications
 
@@ -40,8 +42,9 @@ also includes cancellation). Omitting `events` subscribes to all four. Each
 channel is sent asynchronously and concurrently with its own timeout. Failures
 are logged and recorded as `notify.failed`; they are not retried and do not
 change run status. Set `approval_base_url` to include an approval link in
-waiting notifications: `<approval_base_url>/approval?run=<run-id>`. If unset,
-notifications omit the link.
+waiting notifications. The link uses `<approval_base_url>/approval?run=<run-id>`
+and opens the selected run on the approval page. If unset, notifications omit
+the link.
 
 ## agents / agents show
 
