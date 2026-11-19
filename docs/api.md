@@ -70,8 +70,9 @@ and the API error. Clear the site's browser data to remove the stored token.
 ## GET /ui
 
 Open `http://127.0.0.1:19421/ui` on the default `serve` listener to start
-sessions, send messages, and inspect runs, events, and traces. The page and
-its assets under `/ui/` are public and contain no run data. Navigation to an
+sessions, send messages, inspect runs, events, and traces, and view serve
+statistics and doctor checks. The page and its assets under `/ui/` are public
+and contain no run data. Navigation to an
 app route under `/ui/` returns the same `index.html` with `Cache-Control: no-store`.
 
 The browser calls the real `/v1/` API on the same origin. If the server
@@ -85,6 +86,55 @@ To rebuild the assets, run `(cd web && npm ci && npm run build)` with Node.js
 22 (22.12 or later). This writes `web/dist/`, which is checked in so a Go build
 can embed the UI into the executable. Rebuild the Go binary to serve updated
 assets.
+
+## GET /v1/stats and GET /v1/doctor
+
+The Web UI observation page reads these authenticated, read-only endpoints from
+the running serve. Both use the same bearer authentication as other `/v1/`
+routes. `GET /v1/stats` counts retained sessions, runs (including child runs),
+persisted events, active runs (`RUNNING` or `WAITING`), and failed runs. Model
+response counts, token totals, cache hit rate, and estimated USD cost cover the
+last 30 days. The budget totals sum the used and maximum model/tool calls for
+root runs. The response also includes retained `allow`/`ask`/`deny` decisions,
+hook counts, and the 12 most recent failed runs, hook warnings, or failed tool
+calls. Cost is `null` if there is no recorded usage or model prices do not cover
+all of the recorded usage.
+
+```json
+{
+  "sessions": 4,
+  "runs": 5,
+  "events": 27,
+  "active_runs": 2,
+  "failed_runs": 1,
+  "model_calls": 8,
+  "usage": {
+    "input_tokens": 256,
+    "output_tokens": 96,
+    "cached_tokens": 0,
+    "cache_hit_rate": 0,
+    "cost": null
+  },
+  "budget": {"model_used": 8, "model_max": 100, "tool_used": 3, "tool_max": 100},
+  "policy": {"allow": 2, "ask": 1, "deny": 0},
+  "hooks": {"total": 6, "warnings": 0, "blocked": 0},
+  "recent_errors": [
+    {
+      "run_id": "run_123",
+      "session_id": "ses_456",
+      "type": "run.failed",
+      "message": "Model request failed",
+      "at": "2026-11-19T18:30:00Z"
+    }
+  ]
+}
+```
+
+`GET /v1/doctor` returns the current environment checks, one `overall` summary
+with failure and warning counts, and a `failed_runs` check for retained run
+failures. Each item has `name`, `status` (`ok`, `warn`, or `fail`), and a
+`detail`. The `failed_runs` check includes `run_id` for the latest recorded
+failed run. A completed diagnosis returns HTTP 200 even when a check fails.
 
 ## GET /v1/sessions
 

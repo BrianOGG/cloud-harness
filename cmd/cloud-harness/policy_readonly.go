@@ -23,6 +23,14 @@ type policyAuditReader struct {
 var _ agent.PolicyAuditStore = (*policyAuditReader)(nil)
 
 func newPolicyAuditReader(ctx context.Context, path string) (*policyAuditReader, error) {
+	db, err := openDiagnosticsDB(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return &policyAuditReader{db: db}, nil
+}
+
+func openDiagnosticsDB(ctx context.Context, path string) (*sql.DB, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -39,7 +47,7 @@ func newPolicyAuditReader(ctx context.Context, path string) (*policyAuditReader,
 		_ = db.Close()
 		return nil, err
 	}
-	return &policyAuditReader{db: db}, nil
+	return db, nil
 }
 
 func (r *policyAuditReader) Close() error { return r.db.Close() }

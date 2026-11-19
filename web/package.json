@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
-    "test": "tsx scripts/test-events.ts",
+    "test": "tsx scripts/test-events.ts && tsx scripts/test-observability.ts",
     "preview": "vite preview"
   },
   "dependencies": {

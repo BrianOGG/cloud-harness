@@ -16,9 +16,8 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WEB = ROOT / "web"
-ARTIFACTS = ROOT / ".cloud-harness" / "m11-8"
-SCREENSHOTS = WEB / "screenshots" / "m11-8"
-TOKEN = "m11-8-acceptance-token-20261119"
+SCREENSHOTS = WEB / "screenshots" / "m11-15"
+TOKEN = "m11-15-acceptance-token-20261119"
 
 
 def free_port():
@@ -58,6 +57,20 @@ def request(base, method, path, body=None, token=TOKEN):
         except ValueError:
             value = payload.decode(errors="replace")
         return error.code, value, elapsed
+
+
+def wait_run_status(base, run_id, expected, timeout=15):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        code, last, _ = request(base, "GET", f"/v1/runs/{run_id}")
+        assert code == 200, last
+        if last.get("status") == expected:
+            return last
+        if last.get("status") in ("FAILED", "COMPLETED", "CANCELLED"):
+            break
+        time.sleep(0.1)
+    raise AssertionError(f"run {run_id} did not reach {expected}: {last}")
 
 
 def read_events(base, run_id, after=0):
@@ -111,20 +124,44 @@ def wait_healthy(base):
 
 def run_node_capture(base, mode, *args):
     command = ["node", str(WEB / "scripts" / "capture-screenshots.mjs"), base, TOKEN, str(SCREENSHOTS), mode, *args]
-    subprocess.run(command, cwd=WEB, check=True, env=os.environ.copy())
+    subprocess.run(command, cwd=WEB, check=True, timeout=120)
+
+
+def check_doctor(base, failed_id=None):
+    code, items, _ = request(base, "GET", "/v1/doctor")
+    assert code == 200, items
+    overall, = [item for item in items if item["name"] == "overall"]
+    failed, = [item for item in items if item["name"] == "failed_runs"]
+    fails = sum(item["status"] == "fail" for item in items if item != overall)
+    warns = sum(item["status"] == "warn" for item in items if item != overall)
+    assert overall["status"] == ("fail" if fails else "warn" if warns else "ok"), items
+    assert overall["detail"] == f"{fails} failure{'s' if fails != 1 else ''}, {warns} warning{'s' if warns != 1 else ''}", items
+    assert failed["status"] == ("fail" if failed_id else "ok") and failed.get("run_id") == failed_id, items
+    return overall
 
 
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: serve-acceptance.py /path/to/cloud-harness")
     binary = pathlib.Path(sys.argv[1]).resolve()
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
     SCREENSHOTS.mkdir(parents=True, exist_ok=True)
-    run_stamp = str(time.time_ns())
-    with tempfile.TemporaryDirectory(prefix="m11-8-workspace-") as workspace_dir:
-        provider_port = free_port()
+    with tempfile.TemporaryDirectory(prefix="m11-15-") as temp_dir:
+        temp = pathlib.Path(temp_dir)
+        workspace = temp / "workspace"
+        workspace.mkdir()
+        settings = temp / "config"
+        settings.mkdir()
+        config_path = settings / "config.json"
+        config_path.write_text("{}\n")
+        # Exercise a real doctor warning independently of the failed-run check.
+        (settings / "AGENTS.md").mkdir()
+        (settings / "hooks.json").write_text(json.dumps({
+            "hooks": {"UserPromptSubmit": [{
+                "type": "command",
+                "command": "case \"$(cat)\" in *M11_FAILED_RUN*) echo 'Scripted input warning' >&2; exit 1;; esac",
+            }]},
+        }))
         serve_port = free_port()
-        mock_port = free_port()
         provider = subprocess.Popen(
             [sys.executable, str(WEB / "scripts" / "scripted-provider.py")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -145,10 +182,11 @@ def main():
             "OPENAI_IDLE_TIMEOUT_MS": "3000",
             "OPENAI_RETRY_BASE_MS": "1",
             "CLOUD_HARNESS_DISABLE_SNAPSHOTS": "true",
-            "CLOUD_HARNESS_DB": str(ARTIFACTS / f"serve-test-{run_stamp}.db"),
+            "CLOUD_HARNESS_CONFIG": str(config_path),
+            "CLOUD_HARNESS_DB": str(temp / "serve-test.db"),
         })
         serve = subprocess.Popen(
-            [str(binary), "serve", "--addr", f"127.0.0.1:{serve_port}", "--workspace", workspace_dir],
+            [str(binary), "serve", "--addr", f"127.0.0.1:{serve_port}", "--workspace", str(workspace)],
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         base = f"http://127.0.0.1:{serve_port}"
@@ -159,6 +197,15 @@ def main():
             assert request(base, "GET", "/v1/sessions", token="")[0] == 401
             assert request(base, "GET", "/v1/sessions")[1] == []
             assert request(base, "GET", "/v1/approvals")[1] == []
+            for path in ("/v1/stats", "/v1/doctor"):
+                assert request(base, "GET", path, token="")[0] == 401
+                assert request(base, "POST", path)[0] == 405
+            code, empty_stats, _ = request(base, "GET", "/v1/stats")
+            assert code == 200, empty_stats
+            assert all(empty_stats[key] == 0 for key in ("sessions", "runs", "events", "active_runs", "failed_runs", "model_calls")), empty_stats
+            assert empty_stats["recent_errors"] == [] and empty_stats["usage"]["cost"] is None, empty_stats
+            assert check_doctor(base)["status"] == "warn"
+            log("empty observability API: zero counts, no recent errors, and a doctor warning")
 
             run_node_capture(base, "empty")
 
@@ -187,6 +234,23 @@ def main():
             wait_question = next(item for item in queue if item["run_id"] == ask_run["id"])
             assert wait_approval["wait_reason"] == "approval" and wait_question["wait_reason"] == "ask_user"
 
+            failed_session = request(base, "POST", "/v1/sessions", {})[1]["id"]
+            code, failed_run, _ = request(base, "POST", f"/v1/sessions/{failed_session}/runs", {"message": "M11_FAILED_RUN Exercise the observability failure path."})
+            assert code == 201, failed_run
+            failed_run = wait_run_status(base, failed_run["id"], "FAILED")
+            log(f"created scripted failed run {failed_run['id']} for observability")
+
+            stats = request(base, "GET", "/v1/stats")[1]
+            sessions = request(base, "GET", "/v1/sessions")[1]
+            assert stats["sessions"] == len(sessions) == 4, (stats, sessions)
+            assert stats["runs"] == 4 and stats["active_runs"] == 3 and stats["failed_runs"] == 1, stats
+            assert stats["model_calls"] == 3 and stats["usage"]["input_tokens"] == 96 and stats["usage"]["cost"] is None, stats
+            assert stats["policy"]["ask"] > 0 and stats["hooks"]["warnings"] == 1, stats
+            errors = {error["type"] for error in stats["recent_errors"] if error["run_id"] == failed_run["id"]}
+            assert {"run.failed", "hook.warning"}.issubset(errors), stats
+            overall = check_doctor(base, failed_run["id"])
+            log(f"observability API matches serve: sessions={stats['sessions']}, failed_runs={stats['failed_runs']}, doctor={overall['detail']}, doctor_run={failed_run['id']}")
+
             code, trace, _ = request(base, "GET", f"/v1/runs/{approval_run['id']}/trace")
             assert code == 200 and trace["run"].get("steps"), trace
             assert trace["run"]["steps"][0].get("batches"), trace
@@ -198,6 +262,7 @@ def main():
                 base, "populated", approval_session, approval_run["id"], approval_message,
                 pending_session, pending_run["id"], pending_message,
                 ask_session, ask_run["id"], ask_message,
+                failed_run["id"],
             )
 
             code, after_events = read_events(base, approval_run["id"], last_event_id)
@@ -222,10 +287,12 @@ def main():
             request(base, "GET", "/v1/approvals")
             log("verified ask_user prompt, response, and final answer")
 
-            mock_env = os.environ.copy()
-            mock_env.update({"CLOUD_HARNESS_HTTP_TOKEN": TOKEN, "CLOUD_HARNESS_PROVIDER": "mock", "CLOUD_HARNESS_DB": str(ARTIFACTS / f"mock-regression-{run_stamp}.db"), "CLOUD_HARNESS_DISABLE_SNAPSHOTS": "true"})
+            mock_port = free_port()
+            priced_config = settings / "priced.json"
+            priced_config.write_text(json.dumps({"model_prices": {"mock": {"input": 1, "output": 2, "cached": 0.5}}}))
+            mock_env = {**env, "CLOUD_HARNESS_PROVIDER": "mock", "CLOUD_HARNESS_CONFIG": str(priced_config), "CLOUD_HARNESS_DB": str(temp / "mock-regression.db")}
             mock_serve = subprocess.Popen(
-                [str(binary), "serve", "--addr", f"127.0.0.1:{mock_port}", "--workspace", workspace_dir],
+                [str(binary), "serve", "--addr", f"127.0.0.1:{mock_port}", "--workspace", str(workspace)],
                 cwd=ROOT, env=mock_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             mock_base = f"http://127.0.0.1:{mock_port}"
@@ -234,7 +301,9 @@ def main():
                 mock_session = request(mock_base, "POST", "/v1/sessions", {})[1]["id"]
                 code, mock_run, _ = request(mock_base, "POST", f"/v1/sessions/{mock_session}/runs", {"message": "mock fallback remains healthy"})
                 assert code == 201 and mock_run["status"] == "COMPLETED" and "mock fallback remains healthy" in mock_run["final_answer"], mock_run
-                log("mock one-step regression: passed")
+                code, priced_stats, _ = request(mock_base, "GET", "/v1/stats")
+                assert code == 200 and isinstance(priced_stats["usage"]["cost"], (int, float)), priced_stats
+                log(f"mock one-step regression: passed; configured prices return a numeric cost ({priced_stats['usage']['cost']})")
             finally:
                 mock_serve.terminate()
                 try:
@@ -243,6 +312,12 @@ def main():
                     mock_serve.kill()
 
             log("regressions: /approval unchanged (200), protected /v1 routes authenticate (401 without token)")
+            expected_screenshots = {
+                "sessions-light.png", "sessions-dark.png", "run-light.png", "run-dark.png",
+                "approvals-light.png", "approvals-dark.png", "observability-light.png", "observability-dark.png",
+            }
+            actual_screenshots = {path.name for path in SCREENSHOTS.glob("*.png")}
+            assert actual_screenshots == expected_screenshots, (actual_screenshots, expected_screenshots)
             log(f"screenshots saved under {SCREENSHOTS}")
         finally:
             serve.terminate()

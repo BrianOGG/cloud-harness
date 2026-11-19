@@ -46,6 +46,8 @@ type Server struct {
 	MaxBodyBytes      int64
 	HeartbeatInterval time.Duration
 	PollInterval      time.Duration
+	Stats             http.HandlerFunc
+	Doctor            http.HandlerFunc
 
 	subMu sync.Mutex
 	subs  map[string]map[chan struct{}]struct{}
@@ -107,6 +109,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/runs", s.listSessionRuns)
 	mux.HandleFunc("POST /v1/sessions/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /v1/approvals", s.approvals)
+	if s.Stats != nil {
+		mux.HandleFunc("GET /v1/stats", s.Stats)
+	}
+	if s.Doctor != nil {
+		mux.HandleFunc("GET /v1/doctor", s.Doctor)
+	}
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /v1/runs/{id}/events", s.events)
 	mux.HandleFunc("GET /v1/runs/{id}/trace", s.traceRun)

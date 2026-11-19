@@ -371,9 +371,13 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if *useWorktree {
+		cfg.DBPath = worktreeDBPath(cfg, mgr.Workspace)
+	}
+	diagnostics := serveDiagnostics{cfg: cfg, workspace: mgr.Workspace}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           (&transport.Server{Manager: mgr, Token: cfg.HTTPToken}).Handler(),
+		Handler:           (&transport.Server{Manager: mgr, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

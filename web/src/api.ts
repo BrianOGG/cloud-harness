@@ -88,6 +88,33 @@ export interface TraceView {
   };
 }
 
+export interface StatsView {
+  sessions: number;
+  runs: number;
+  events: number;
+  active_runs: number;
+  failed_runs: number;
+  model_calls: number;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+    cache_hit_rate: number;
+    cost: number | null;
+  };
+  budget: { model_used: number; model_max: number; tool_used: number; tool_max: number };
+  policy: { allow: number; ask: number; deny: number };
+  hooks: { total: number; warnings: number; blocked: number };
+  recent_errors: { run_id: string; session_id: string; type: string; message: string; at: string }[];
+}
+
+export interface DoctorCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail' | string;
+  detail: string;
+  run_id?: string;
+}
+
 export function parseEventStream(text: string): HarnessEvent[] {
   const events: HarnessEvent[] = [];
   for (const block of text.replace(/\r\n/g, '\n').split(/\n\n+/)) {
@@ -124,7 +151,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     let message = `${response.status} ${response.statusText || '请求失败'}`;
     try {
       const body = await response.json();
-      if (body?.error?.message) message = body.error.message;
+      if (typeof body?.error === 'string') message = body.error;
+      else if (body?.error?.message) message = body.error.message;
     } catch {
       // Keep the HTTP status when the error response is not JSON.
     }
@@ -146,6 +174,8 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
   listApprovals: () => req<ApprovalView[]>('/v1/approvals'),
+  getStats: (signal?: AbortSignal) => req<StatsView>('/v1/stats', { signal }),
+  getDoctor: (signal?: AbortSignal) => req<DoctorCheck[]>('/v1/doctor', { signal }),
   getRun: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}`),
   respond: (runId: string, body: { decision?: string; answer?: string; extra_model_calls?: number }) =>
     req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses`, { method: 'POST', body: JSON.stringify(body) }),

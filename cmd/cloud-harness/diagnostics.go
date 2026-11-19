@@ -30,6 +30,7 @@ type doctorItem struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
+	RunID  string `json:"run_id,omitempty"`
 }
 
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
@@ -49,8 +50,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 	common := &commonFlags{db: *dbPath, provider: *providerFlag}
 	cfg, configErr := load(common)
-	configOK := configErr == nil
-	if !configOK {
+	if configErr != nil {
 		cfg = config.Config{DBPath: config.DefaultDB, Provider: "mock", OpenAIBaseURL: config.DefaultOpenAI, OpenAIModel: config.DefaultModel}
 		if *dbPath != "" {
 			cfg.DBPath = *dbPath
@@ -64,13 +64,31 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	wsRoot := *workspace
-	if wsRoot == "" {
-		wsRoot = "."
+	ws := *workspace
+	if ws == "" {
+		ws = "."
 	}
-	if root, err := filepath.Abs(wsRoot); err == nil {
+	if root, err := filepath.Abs(ws); err == nil {
 		cfg.DBPath = worktreeDBPath(cfg, root)
 	}
+	items := collectDoctorChecks(context.Background(), cfg, ws, configErr)
+	if *jsonOutput {
+		if code := writeJSON(stdout, items); code != 0 {
+			return code
+		}
+	} else {
+		for _, item := range items {
+			fmt.Fprintf(stdout, "%s: %s - %s\n", item.Name, item.Status, item.Detail)
+		}
+	}
+	if items[len(items)-1].Status == "fail" {
+		return 1
+	}
+	return 0
+}
+
+func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, configErr error) []doctorItem {
+	configOK := configErr == nil
 	items := make([]doctorItem, 0, 9)
 	if configErr != nil {
 		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: configErrorDetail(configErr)})
@@ -97,12 +115,8 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		items = append(items, doctorItem{Name: "mcp", Status: "warn", Detail: "skipped because configuration could not be validated"})
 	}
 
-	items = append(items, checkDatabase(cfg.DBPath)...)
+	items = append(items, checkDatabase(ctx, cfg.DBPath)...)
 
-	ws := *workspace
-	if ws == "" {
-		ws = "."
-	}
 	absWorkspace, wsInfo, wsErr := inspectWorkspace(ws)
 	if wsErr != nil {
 		items = append(items, doctorItem{Name: "workspace", Status: "fail", Detail: scrubDoctor(wsErr.Error())})
@@ -125,12 +139,12 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if wsErr == nil && gitErr == nil {
-		items = append(items, checkWorktrees(context.Background(), absWorkspace, cfg.DBPath))
+		items = append(items, checkWorktrees(ctx, absWorkspace, cfg.DBPath))
 	}
 	if !configOK {
 		items = append(items, doctorItem{Name: "provider", Status: "warn", Detail: "skipped because configuration could not be validated"})
 	} else {
-		items = append(items, checkProvider(cfg))
+		items = append(items, checkProvider(ctx, cfg))
 	}
 
 	fails, warns := 0, 0
@@ -152,19 +166,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	for i := range items {
 		items[i].Detail = scrubDoctor(items[i].Detail)
 	}
-	if *jsonOutput {
-		if code := writeJSON(stdout, items); code != 0 {
-			return code
-		}
-	} else {
-		for _, item := range items {
-			fmt.Fprintf(stdout, "%s: %s - %s\n", item.Name, item.Status, item.Detail)
-		}
-	}
-	if fails > 0 {
-		return 1
-	}
-	return 0
+	return items
 }
 
 func checkProjectRules(workspace string) doctorItem {
@@ -224,7 +226,7 @@ func validateMCPServers(servers []config.MCPServerConfig) error {
 	return nil
 }
 
-func checkDatabase(path string) []doctorItem {
+func checkDatabase(ctx context.Context, path string) []doctorItem {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []doctorItem{{Name: "database", Status: "warn", Detail: "尚未创建"}}
@@ -235,7 +237,7 @@ func checkDatabase(path string) []doctorItem {
 	if !info.Mode().IsRegular() {
 		return []doctorItem{{Name: "database", Status: "fail", Detail: "path is not a regular database file"}}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	dbInfo, err := sqlite.InspectReadOnly(ctx, path)
 	if err != nil {
@@ -321,7 +323,7 @@ func inspectShadowRepository(workspace string) []doctorItem {
 	return []doctorItem{{Name: "shadow_repository", Status: "ok", Detail: "HEAD is readable"}}
 }
 
-func checkProvider(cfg config.Config) doctorItem {
+func checkProvider(ctx context.Context, cfg config.Config) doctorItem {
 	switch cfg.Provider {
 	case "mock":
 		return doctorItem{Name: "provider", Status: "ok", Detail: "mock provider is available"}
@@ -329,7 +331,7 @@ func checkProvider(cfg config.Config) doctorItem {
 		if strings.TrimSpace(cfg.OpenAIAPIKey) == "" {
 			return doctorItem{Name: "provider", Status: "warn", Detail: "OPENAI_API_KEY is not set; OpenAI connectivity probe skipped"}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		client := &http.Client{Timeout: 3 * time.Second}
 		probe := &provider.OpenAICompatible{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Client: client}

@@ -119,7 +119,13 @@
 - 事件请求携带 `Last-Event-ID`；客户端短轮询 SSE 并重连，事件按 seq 合并。可见轨迹只包含编排层状态，不展示模型思维链。
 - 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行，前端随后轮询状态。
 - token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
-- `npm run test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。验收入口：`web/scripts/acceptance.sh`。
+- `npm test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。
+
+## M11-15：观测与响应式布局
+
+- 「观测」从同源的 `GET /v1/stats` 和 `GET /v1/doctor` 读取数据。检查项按失败、警告、通过排列；失败运行和最近错误可直接打开运行详情。没有用量、缺少价格、接口失败各有明确提示。
+- 深色主题覆盖四个主屏。宽度 ≤768px 时隐藏运行侧栏，卡片改为单列。没有 action 的轨迹步骤用「步骤 N」作标题。
+- 从仓库根目录运行 `bash web/scripts/acceptance.sh`。完整输出和退出码写入 `.cloud-harness/m11-15/acceptance-final.log`，四屏浅/深主题截图写入 `web/screenshots/m11-15/`。浏览器在 390px 和 768px 两种视口检查布局；设置 `M11_MOBILE_SCREENSHOTS` 可把额外的 390px 深色截图输出到指定目录，供目视复查。
 
 ---
 

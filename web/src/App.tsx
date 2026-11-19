@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import type { ApprovalView, HarnessEvent, RunView, SessionView, TraceView } from './api';
 import { RunBudget } from './RunBudget';
+import { Observability } from './Observability';
 import './App.css';
 
-type Screen = 'sessions' | 'session' | 'run' | 'approvals';
+type Screen = 'sessions' | 'session' | 'run' | 'approvals' | 'observability';
 type Panel = 'trace' | 'events';
 const THEME_KEY = 'cloud-harness.web-theme';
 const MESSAGES_KEY = 'cloud-harness.web-messages';
@@ -21,7 +22,12 @@ const shortId = (id: string) => (id.length > 18 ? `${id.slice(0, 12)}…${id.sli
 const statusLabel: Record<string, string> = {
   RUNNING: '运行中', WAITING: '等待处理', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消',
 };
-const statusClass = (status?: string) => `status status-${(status || 'unknown').toLowerCase()}`;
+const normalizedStatus = (status?: string) => status?.trim() || '';
+const statusClass = (status?: string) => `status status-${normalizedStatus(status).toLowerCase() || 'unknown'}`;
+const statusName = (status?: string) => {
+  const value = normalizedStatus(status);
+  return statusLabel[value] || value || '未知';
+};
 const actionLabel: Record<string, string> = {
   ANSWER: '生成回复', RETRIEVE: '检索上下文', EXECUTE: '执行工具', PLAN: '制定计划', ASK_USER: '向你提问',
 };
@@ -294,6 +300,20 @@ export default function App() {
     await createSession();
   };
 
+  const openRunById = async (runId: string) => {
+    setError('');
+    try {
+      const run = await api.getRun(runId);
+      setActiveSession(run.session_id);
+      setRuns((previous) => ({ ...previous, [run.session_id]: [...(previous[run.session_id] || []).filter((item) => item.id !== run.id), run] }));
+      setSelectedRunId(run.id);
+      setPanel('trace');
+      setScreen('run');
+    } catch (reason) {
+      setError(`运行加载失败：${errorText(reason)}`);
+    }
+  };
+
   const runEvents = selectedRun ? events[selectedRun.id] || [] : [];
   const localMessage = selectedRun ? messages[selectedRun.id] : '';
   const waiting = selectedRun?.status === 'WAITING' ? selectedRun : null;
@@ -308,6 +328,7 @@ export default function App() {
         <nav className="main-nav" aria-label="主导航">
           <button className={screen === 'sessions' || screen === 'session' || screen === 'run' ? 'nav-link active' : 'nav-link'} onClick={() => setScreen(activeSession ? 'session' : 'sessions')}>工作区</button>
           <button className={screen === 'approvals' ? 'nav-link active' : 'nav-link'} onClick={() => { setError(''); setScreen('approvals'); }}>审批队列{approvals.length > 0 && <span className="nav-count">{approvals.length}</span>}</button>
+          <button className={screen === 'observability' ? 'nav-link active' : 'nav-link'} onClick={() => { setError(''); setScreen('observability'); }}>观测</button>
         </nav>
         <div className="topbar-actions">
           <div className={online ? 'connection connected' : 'connection'}><span className="connection-dot" />{online ? `${provider || 'serve'} 已连接` : '未连接'}</div>
@@ -330,7 +351,7 @@ export default function App() {
               <button type="button" className="session-card" key={session.id} onClick={() => openSession(session.id)}>
                 <span className="session-icon">◷</span>
                 <span className="session-card-main"><strong>会话 {shortId(session.id)}</strong><span>最近更新 {dateLabel(session.latest_run_at || session.updated_at)}</span></span>
-                <span className="session-card-meta"><span>{session.run_count} {session.run_count === 1 ? 'run' : 'runs'}</span>{session.latest_run_status && <span className={statusClass(session.latest_run_status)}>{statusLabel[session.latest_run_status] || session.latest_run_status}</span>}</span>
+                <span className="session-card-meta"><span>{session.run_count} {session.run_count === 1 ? 'run' : 'runs'}</span>{session.latest_run_status?.trim() && <span className={statusClass(session.latest_run_status)}>{statusName(session.latest_run_status)}</span>}</span>
                 <span className="chevron">›</span>
               </button>
             ))}
@@ -352,7 +373,7 @@ export default function App() {
                     <button className="run-row" key={run.id} onClick={() => { setSelectedRunId(run.id); setPanel('trace'); setScreen('run'); }}>
                       <span className={`run-indicator ${(run.status || '').toLowerCase()}`} />
                       <span className="run-row-main"><strong>{messages[run.id] || `运行 ${activeRuns.length - index}`}</strong><span className="mono">{shortId(run.id)}</span></span>
-                      <span className={statusClass(run.status)}>{statusLabel[run.status] || run.status}</span><span className="chevron">›</span>
+                      <span className={statusClass(run.status)}>{statusName(run.status)}</span><span className="chevron">›</span>
                     </button>
                   ))}
                 </div>
@@ -371,14 +392,14 @@ export default function App() {
         <main className="run-page">
           <div className="run-page-main">
           <div className="breadcrumb"><button onClick={showSessions}>‹ 会话</button><span>/</span><button onClick={() => setScreen('session')}>{shortId(selectedRun.session_id)}</button><span>/</span><span>运行详情</span></div>
-            <div className="run-title-row"><div><p className="eyebrow">RUN DETAIL</p><h1>运行详情</h1><p className="mono run-id">{selectedRun.id}</p></div><span className={statusClass(selectedRun.status)}>{statusLabel[selectedRun.status] || selectedRun.status}</span></div>
+            <div className="run-title-row"><div><p className="eyebrow">RUN DETAIL</p><h1>运行详情</h1><p className="mono run-id">{selectedRun.id}</p></div><span className={statusClass(selectedRun.status)}>{statusName(selectedRun.status)}</span></div>
             <section className="message-card">
               <div className="message-author"><span className="user-avatar">你</span><div><strong>你的消息</strong><span className="mono">{shortId(selectedRun.id)}</span></div></div>
               <p className="message-body">{localMessage || '此运行来自已有会话，原始用户消息无法通过当前运行列表接口取回。'}</p>
             </section>
             <section className="run-summary-card">
               <div className="section-heading"><div><h2>运行状态</h2><p>自动同步 · 每秒刷新</p></div>{(selectedRun.status === 'RUNNING' || selectedRun.status === 'WAITING') && <button className="button danger-outline" onClick={() => { setActingRunId(selectedRun.id); api.cancel(selectedRun.id).then((run) => { setRuns((previous) => ({ ...previous, [run.session_id]: (previous[run.session_id] || []).map((item) => item.id === run.id ? run : item) })); }).catch((reason: unknown) => setError(errorText(reason))).finally(() => setActingRunId(null)); }} disabled={actingRunId === selectedRun.id}>取消运行</button>}</div>
-              <div className="state-line"><span className={statusClass(selectedRun.status)}>{statusLabel[selectedRun.status] || selectedRun.status}</span>{selectedRun.wait_reason && <span className="wait-chip">{selectedRun.wait_reason}</span>}<span className="version-label">版本 {selectedRun.version}</span></div>
+              <div className="state-line"><span className={statusClass(selectedRun.status)}>{statusName(selectedRun.status)}</span>{selectedRun.wait_reason?.trim() && <span className="wait-chip">{selectedRun.wait_reason}</span>}<span className="version-label">版本 {selectedRun.version}</span></div>
               <RunBudget budget={selectedRun.budget} />
             </section>
 
@@ -402,7 +423,7 @@ export default function App() {
             <div className="sidebar-heading"><div><h2>本会话运行</h2><span>{activeRuns.length} 条记录</span></div><button className="icon-button" aria-label="返回会话" onClick={() => setScreen('session')}>↗</button></div>
             {activeRuns.length === 0 ? <p className="muted">没有运行记录。</p> : [...activeRuns].reverse().map((run) => (
               <button className={`sidebar-run ${run.id === selectedRun.id ? 'current' : ''}`} key={run.id} onClick={() => setSelectedRunId(run.id)}>
-                <span className={`run-indicator ${(run.status || '').toLowerCase()}`} /><span className="sidebar-run-copy"><strong>{messages[run.id] || shortId(run.id)}</strong><span className={statusClass(run.status)}>{statusLabel[run.status] || run.status}{run.wait_reason ? ` · ${run.wait_reason}` : ''}</span></span>
+                <span className={`run-indicator ${normalizedStatus(run.status).toLowerCase()}`} /><span className="sidebar-run-copy"><strong>{messages[run.id] || shortId(run.id)}</strong><span className={statusClass(run.status)}>{statusName(run.status)}{run.wait_reason?.trim() ? ` · ${run.wait_reason}` : ''}</span></span>
               </button>
             ))}
             <button className="button secondary full-width new-run-button" onClick={() => setScreen('session')}>＋ 发送新消息</button>
@@ -425,6 +446,8 @@ export default function App() {
           <p className="page-footnote">审批操作直接提交到当前 serve。运行恢复由后端继续处理。</p>
         </main>
       )}
+
+      {screen === 'observability' && <Observability onOpenRun={(runId) => void openRunById(runId)} />}
     </div>
   );
 }
@@ -435,15 +458,18 @@ function TracePanel({ trace, run }: { trace: TraceView | null; run: RunView }) {
   const children = trace.run.children || [];
   if (!steps.length && !children.length) return <div className="empty-state process-empty"><div className="empty-icon">⌁</div><strong>暂无执行步骤</strong><span>步骤与工具批次会在运行推进后显示。</span></div>;
   return <div className="timeline">
-    {steps.map((step, index) => <div className="timeline-item" key={step.id}>
+    {steps.map((step, index) => {
+      const action = normalizedStatus(step.action);
+      return <div className="timeline-item" key={step.id}>
       <span className="timeline-node">{String(index + 1).padStart(2, '0')}</span>
-      <div className="timeline-content"><div className="timeline-title"><strong>{actionLabel[step.action] || step.action || `步骤 ${index + 1}`}</strong><span className="action-chip">{step.action}</span></div>
-        {(step.batches || []).map((batch) => <div className="batch-card" key={batch.id}><div className="batch-title"><span>工具批次</span><span>{batch.action}</span><span className={statusClass(batch.status)}>{batch.status}</span></div>
-          {(batch.calls || []).map((call) => <div className="tool-call" key={call.id}><span className="tool-order">{String(call.ordinal + 1).padStart(2, '0')}</span><code>{call.name}</code><span className={statusClass(call.status)}>{call.status}</span></div>)}
+      <div className="timeline-content"><div className="timeline-title"><strong>{actionLabel[action] || action || `步骤 ${index + 1}`}</strong>{action && <span className="action-chip">{action}</span>}</div>
+        {(step.batches || []).map((batch) => <div className="batch-card" key={batch.id}><div className="batch-title"><span>工具批次</span>{batch.action?.trim() && <span>{batch.action}</span>}<span className={statusClass(batch.status)}>{statusName(batch.status)}</span></div>
+          {(batch.calls || []).map((call) => <div className="tool-call" key={call.id}><span className="tool-order">{String(call.ordinal + 1).padStart(2, '0')}</span><code>{call.name || '未知工具'}</code><span className={statusClass(call.status)}>{statusName(call.status)}</span></div>)}
         </div>)}
       </div>
-    </div>)}
-    {children.map((child) => <div className="timeline-item child-item" key={child.id}><span className="timeline-node child-node">⑂</span><div className="timeline-content child-card"><strong>子任务</strong><span className="mono">{shortId(child.id)}</span><span className={statusClass(child.status)}>{statusLabel[child.status] || child.status}</span>{child.wait_reason && <span className="wait-chip">{child.wait_reason}</span>}</div></div>)}
+    </div>;
+    })}
+    {children.map((child) => <div className="timeline-item child-item" key={child.id}><span className="timeline-node child-node">⑂</span><div className="timeline-content child-card"><strong>子任务</strong><span className="mono">{shortId(child.id)}</span><span className={statusClass(child.status)}>{statusName(child.status)}</span>{child.wait_reason?.trim() && <span className="wait-chip">{child.wait_reason}</span>}</div></div>)}
   </div>;
 }
 
