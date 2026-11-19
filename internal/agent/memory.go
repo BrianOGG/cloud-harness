@@ -45,6 +45,25 @@ func (m *Manager) injectProjectRules(ctx context.Context, run storage.Run, messa
 	return assembled
 }
 
+// injectSkillCatalog adds only frontmatter summaries to the frozen prefix. A
+// skill body is loaded later through load_skill when the model asks for it.
+func (m *Manager) injectSkillCatalog(messages []provider.Message, st *loopState) []provider.Message {
+	catalog := contextpkg.DiscoverSkills(m.Workspace)
+	for _, diagnostic := range catalog.Diagnostics {
+		log.Printf("skills skipped: %v", diagnostic)
+	}
+	content := catalog.Prompt()
+	if content == "" {
+		return messages
+	}
+	prefix := append([]provider.Message(nil), messages[:st.prefixN]...)
+	prefix = append(prefix, provider.Message{Role: "system", Content: content})
+	assembled := append(prefix, messages[st.prefixN:]...)
+	st.prefixN++
+	st.userAt++
+	return assembled
+}
+
 func (m *Manager) tokenLimit() int {
 	if m.ContextTokenLimit > 0 {
 		return m.ContextTokenLimit

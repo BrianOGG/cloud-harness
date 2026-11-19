@@ -163,6 +163,11 @@ func (m *Manager) recordSnapshotDispatch(ctx context.Context, inv domain.Invocat
 // Both initial dispatch and approval resume pass here. Only actual broker
 // execution triggers post: denials, validation errors and cached results do not.
 func (m *Manager) driveBatch(ctx context.Context, run storage.Run, batch *domain.Batch, st *loopState) error {
+	if st.planTools != nil {
+		err := m.drivePolicyBatch(ctx, run, batch, st)
+		st.planTools.markUnknownTools(batch)
+		return err
+	}
 	if m.DisableSnapshots || m.Workspace == "" || !batch.Accepted() {
 		return m.drivePolicyBatch(ctx, run, batch, st)
 	}

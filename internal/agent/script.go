@@ -31,6 +31,11 @@ func (m *Manager) executePoll(ctx context.Context, args json.RawMessage) (json.R
 	if runID == "" {
 		return nil, domain.E(domain.CodeToolError, "poll has no run")
 	}
+	if p, ok := ctx.Value(policyContextKey{}).(policyContext); ok {
+		if err := p.st.planTools.unknown(body.TargetTool); err != nil {
+			return nil, err
+		}
+	}
 	if excludedByChildToolLimit(ctx, body.TargetTool) {
 		return nil, domain.E(domain.CodeAuthDenied, "poll target is outside the child tool allowlist")
 	}

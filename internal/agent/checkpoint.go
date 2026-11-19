@@ -24,6 +24,7 @@ type snapshot struct {
 	UserAt             int                    `json:"user_at,omitempty"`
 	WorkspaceSnapshots workspaceSnapshotState `json:"workspace_snapshots,omitempty"`
 	Policy             *security.Policy       `json:"policy,omitempty"`
+	PlanMode           bool                   `json:"plan_mode,omitempty"`
 	Hooks              *hooks.Config          `json:"hooks,omitempty"`
 }
 
@@ -47,6 +48,7 @@ func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages
 		snap.UserAt = st.userAt
 		snap.WorkspaceSnapshots = st.snapshots
 		snap.Policy = st.policy
+		snap.PlanMode = st.planTools != nil
 		if st.hooks != nil {
 			snap.Hooks = st.hooks.Config
 		}

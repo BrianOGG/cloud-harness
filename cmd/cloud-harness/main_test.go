@@ -55,6 +55,41 @@ func TestVersionAndMockRun(t *testing.T) {
 	}
 }
 
+func TestSkillCLIUsesWorkspaceLoader(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	path := filepath.Join(root, ".agents", "skills", "demo", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\nname: demo\ndescription: Demo\n---\nSkill body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	if code := Main([]string{"/skill", "demo", "--workspace", root}, &out, &errBuf); code != 0 || errBuf.Len() != 0 || out.String() != "---\nname: demo\ndescription: Demo\n---\nSkill body\n" {
+		t.Fatalf("skill code=%d out=%q err=%q", code, out.String(), errBuf.String())
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := Main([]string{"skill", "missing", "--workspace", root}, &out, &errBuf); code != 1 || out.Len() != 0 || !strings.Contains(errBuf.String(), "not found") {
+		t.Fatalf("missing skill code=%d out=%q err=%q", code, out.String(), errBuf.String())
+	}
+}
+
+func TestRunPlanFlag(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
+	var out, errBuf bytes.Buffer
+	db := filepath.Join(t.TempDir(), "h.db")
+	code := Main([]string{"run", "--plan", "--workspace", t.TempDir(), "--db", db, "--provider", "mock", "--message", "outline the change"}, &out, &errBuf)
+	var view struct {
+		Plan   bool             `json:"plan"`
+		Status domain.RunStatus `json:"status"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &view); code != 0 || err != nil || !view.Plan || view.Status != domain.RunCompleted {
+		t.Fatalf("plan code=%d out=%q stderr=%q err=%v", code, out.String(), errBuf.String(), err)
+	}
+}
+
 func TestResumeFlagOrder(t *testing.T) {
 	var out, err bytes.Buffer
 	db := t.TempDir() + "/h.db"

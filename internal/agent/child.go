@@ -13,6 +13,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/agents"
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/cloud-harness/cloud-harness/internal/tools"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
 )
 
@@ -79,6 +80,9 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 				add(name, m.Workspace)
 			}
 		}
+	}
+	if m.Broker != nil && m.Broker.Has(tools.LoadSkillName) {
+		add(tools.LoadSkillName, "")
 	}
 	canWrite := m.parentHasWorkspaceWriteGrant(ctx, run)
 	canEdit := m.parentHasWorkspaceToolGrant(ctx, run, "edit_file") || canWrite

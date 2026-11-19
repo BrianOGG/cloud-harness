@@ -62,6 +62,9 @@ func (m *Manager) ensureTools() {
 			Execute:    executeUpdatePlan,
 		})
 	}
+	if !m.Broker.Has(tools.LoadSkillName) {
+		m.Broker.Register(tools.LoadSkillSpec(m.Workspace))
+	}
 	if !m.Broker.Has("retrieve_resource") {
 		m.Broker.Register(tools.Spec{
 			Name: "retrieve_resource", Description: "Load one history row by id at summary, excerpt, or verbatim precision.",
@@ -173,6 +176,7 @@ type loopState struct {
 	policy         *security.Policy
 	policyRecorded map[string]bool
 	policyDenials  map[string]string
+	planTools      planToolRegistry
 	policyErr      error
 	hooks          *hooks.Engine
 	hookPre        map[string]bool
@@ -234,6 +238,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	// transition and restores its frozen rules from the checkpoint instead.
 	if run.Version == 1 {
 		messages = m.injectProjectRules(ctx, run, messages, st)
+		messages = m.injectSkillCatalog(messages, st)
 	}
 	if hasImages(messages) {
 		if !provider.SupportsImages(m.Provider) {
@@ -295,7 +300,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			Model:                m.Model,
 			Messages:             messages,
 			Prefix:               prefix,
-			Tools:                m.toolDefs(),
+			Tools:                m.toolDefsFor(st.planTools),
 			Continuation:         continuation,
 			ContinuationProvider: contProvider,
 		})
@@ -504,6 +509,9 @@ func (m *Manager) commitAnswer(ctx context.Context, run storage.Run, resp domain
 
 func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func(domain.Invocation) domain.GateDecision {
 	return func(inv domain.Invocation) domain.GateDecision {
+		if st.planTools.unknown(inv.Name) != nil {
+			return domain.GateDeny
+		}
 		if excludedByChildToolLimit(ctx, inv.Name) {
 			return domain.GateDeny
 		}
@@ -562,6 +570,9 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 
 func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) domain.ExecFunc {
 	return func(inv domain.Invocation) (json.RawMessage, error) {
+		if err := st.planTools.unknown(inv.Name); err != nil {
+			return nil, err
+		}
 		policy, err := m.decidePolicy(ctx, run, st, inv)
 		if err != nil {
 			return nil, err
@@ -737,6 +748,7 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 		add("update_plan", "")
 		add("retrieve_history", "")
 		add("retrieve_resource", "")
+		add(tools.LoadSkillName, "")
 		add(domain.ToolPoll, "")
 		add(domain.ToolExecuteProgram, "")
 		add(domain.ToolDelegateTask, "")
@@ -807,6 +819,10 @@ func (m *Manager) parentHasWorkspaceToolGrant(ctx context.Context, run storage.R
 }
 
 func (m *Manager) toolDefs() []provider.ToolDefinition {
+	return m.toolDefsFor(nil)
+}
+
+func (m *Manager) toolDefsFor(planTools planToolRegistry) []provider.ToolDefinition {
 	if m.Broker == nil {
 		return nil
 	}
@@ -818,6 +834,9 @@ func (m *Manager) toolDefs() []provider.ToolDefinition {
 	}
 	var out []provider.ToolDefinition
 	for _, spec := range m.Broker.List() {
+		if planTools.unknown(spec.Name) != nil {
+			continue
+		}
 		if m.Depth > 0 && (spec.Name == domain.ToolAskUser || spec.Name == domain.ToolDelegateTask) {
 			continue
 		}

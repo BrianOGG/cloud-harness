@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/cloud-harness/cloud-harness/internal/tools"
 	"github.com/cloud-harness/cloud-harness/internal/trace"
 	"github.com/cloud-harness/cloud-harness/internal/worktree"
 )
@@ -44,7 +45,7 @@ func (m *Manager) worktreeManager(run storage.Run) (*Manager, error) {
 	}
 	if m.Broker != nil {
 		broker, err := m.Broker.ForkWorkspace(run.WorktreePath, "retrieve_resource", "retrieve_history",
-			domain.ToolPoll, domain.ToolExecuteProgram, domain.ToolDelegateTask)
+			domain.ToolPoll, domain.ToolExecuteProgram, domain.ToolDelegateTask, tools.LoadSkillName)
 		if err != nil {
 			return nil, err
 		}

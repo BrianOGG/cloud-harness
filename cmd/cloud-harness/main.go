@@ -93,6 +93,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdWorktrees(args[1:], stdout, stderr)
 	case "agents":
 		return cmdAgents(args[1:], stdout, stderr)
+	case "skill", "/skill":
+		return cmdSkill(args[1:], stdout, stderr)
 	case "repomap":
 		return cmdRepoMap(args[1:], stdout, stderr)
 	default:
@@ -105,7 +107,7 @@ const usage = `Cloud Harness M5
 
   cloud-harness version
   cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness run --message TEXT [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness run --message TEXT [--plan] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
   cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
@@ -122,6 +124,7 @@ const usage = `Cloud Harness M5
   cloud-harness export RUN_ID [--out path] [--sanitize|--raw] [--force] [--json] [--db path]
   cloud-harness review [--workspace dir] [--json] [--diff]
   cloud-harness agents [show NAME] [--workspace dir] [--json]
+  cloud-harness /skill NAME [--workspace dir]
   cloud-harness worktrees list|diff|merge|discard [RUN_ID] [--workspace dir] [--db path]
   cloud-harness repomap [--dir path] [--max-bytes N]
   cloud-harness isolation
@@ -361,6 +364,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	c := addCommon(fs)
 	message := fs.String("message", "", "user message")
 	useWorktree := fs.Bool("worktree", false, "run in a retained Git worktree isolated from the workspace")
+	planMode := fs.Bool("plan", false, "run in read-only plan mode")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -391,21 +395,25 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	run, err := mgr.RunMessageWithImages(ctx, ses.ID, userText, images)
+	run, err := mgr.RunMessageWithOptions(ctx, ses.ID, userText, agent.RunOptions{Images: images, Plan: *planMode})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(map[string]any{
+	view := map[string]any{
 		"session_id":   ses.ID,
 		"run_id":       run.ID,
 		"status":       run.Status,
 		"wait_reason":  run.WaitReason,
 		"final_answer": run.FinalAnswer,
 		"error":        run.Error,
-	})
+	}
+	if *planMode {
+		view["plan"] = true
+	}
+	_ = enc.Encode(view)
 	if run.Status == domain.RunFailed {
 		return 1
 	}
@@ -902,6 +910,9 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 	}
 
 	if initialMessage != "" {
+		if handled, code := runChatSkillCommand(mgr.Workspace, initialMessage, stdout, stderr); handled {
+			return code
+		}
 		_, code, _ := runChatTurn(ctx, mgr, sessionID, initialMessage, reader, stdout, stderr)
 		return code
 	}
@@ -917,6 +928,9 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 			if eof {
 				return 0
 			}
+			continue
+		}
+		if handled, _ := runChatSkillCommand(mgr.Workspace, msg, stdout, stderr); handled {
 			continue
 		}
 		_, code, stoppedOnEOF := runChatTurn(ctx, mgr, sessionID, msg, reader, stdout, stderr)

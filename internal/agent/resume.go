@@ -303,6 +303,9 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		policy:    snap.Policy,
 		hooks:     engine,
 	}
+	if snap.PlanMode {
+		st.planTools = m.registerPlanTools()
+	}
 	ctx = context.WithValue(ctx, sessionKey, running.SessionID)
 	ctx = context.WithValue(ctx, runKey, running.ID)
 	switch run.WaitReason {
@@ -401,10 +404,11 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 	if waiting == nil {
 		return storage.Run{}, domain.E(domain.CodeConflict, "no invocation is waiting for approval").WithRef(run.ID)
 	}
-	if decision == "deny" {
+	if decision == "deny" || st.planTools.unknown(waiting.Name) != nil {
 		if err := batch.Deny(waiting.ID); err != nil {
 			return storage.Run{}, err
 		}
+		st.planTools.markUnknownTools(&batch)
 	} else {
 		if err := m.grantApprovedInvocation(ctx, run, *waiting); err != nil {
 			return storage.Run{}, err

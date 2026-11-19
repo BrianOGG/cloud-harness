@@ -10,7 +10,14 @@ A spec carries the name, description, JSON schema, whether it is readonly, idemp
 
 ## Workspace tools
 
-Every local tool resolves paths through `resolveInside`, which evaluates symlinks on existing paths (and on the nearest existing parent directory for not-yet-existing targets) and denies any target that resolves outside the evaluated workspace root with `auth_denied`.
+`load_skill` (`readonly`, idempotent) loads one discovered
+`.agents/skills/<name>/SKILL.md` by its `name` argument. The result is
+`{name, content, truncated}`, where `content` includes frontmatter and body.
+The workspace file takes precedence over a same-named global skill. Unlisted
+names beyond the catalog cap can be loaded explicitly. Missing names return
+`tool_error`. `content` has a 64 KiB cap including the truncation marker.
+
+The workspace file and command tools below resolve paths through `resolveInside`, which evaluates symlinks on existing paths (and on the nearest existing parent directory for not-yet-existing targets) and denies any target that resolves outside the evaluated workspace root with `auth_denied`.
 
 - `read_file` (`readonly`, `pollable`, side-effect `none`): reads a UTF-8 file inside the workspace. Accepts required `path` and optional 1-based inclusive `start_line` and `end_line`. Returns `{path, content, total_lines, start_line, end_line, truncated}` and includes an explicit `notice` whenever content is truncated by the 1MiB cap or by the requested line range.
 - `write_file` (side-effect `reversible`, `status_probe`): writes a UTF-8 file (up to 1MiB) inside the workspace. Requires a scoped grant or approval.

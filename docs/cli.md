@@ -234,9 +234,16 @@ the caller names a definition.
 ## run / chat
 
 ```bash
-cloud-harness run --message TEXT [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness run --message TEXT [--plan] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
 cloud-harness chat [--message TEXT] [--session ID] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
 ```
+
+`--plan` runs the turn with a read-only model tool catalog. File writes,
+commands, child delegation, scripts, and plan updates are omitted from the
+provider request. A call to one of those omitted names is recorded as an
+unknown tool before dispatch. Plan runs skip automatic workspace snapshots
+and keep the restricted catalog after a resume. The run output includes
+`"plan": true`. The event stream records `plan.mode` with `{"enabled": true}`.
 
 `--worktree` is off by default. When enabled, each new run (each chat turn)
 checks out the dispatch-time `HEAD` commit in
@@ -267,6 +274,41 @@ Waiting for approval or user input does not end the run or emit its summary.
 
 Worktrees and branches remain after the run; completion does not remove them.
 Use the lifecycle commands below to inspect, integrate or discard the result.
+
+## /skill
+
+```bash
+cloud-harness /skill NAME [--workspace dir]
+```
+
+`/skill NAME` prints the full `SKILL.md`, including its frontmatter. You can
+also type `/skill NAME` in `chat` to display the file without starting a run.
+The CLI uses the same lookup as the model's `load_skill` tool.
+
+Place a skill at `<workspace>/.agents/skills/<name>/SKILL.md` or under the
+same relative path in the global config directory. The global directory is
+the parent of `CLOUD_HARNESS_CONFIG` when set. Otherwise it is the OS user
+config directory with `cloud-harness` appended. A valid workspace skill
+overrides a global skill with the same name.
+
+```markdown
+---
+name: review
+description: Review the current changes for regressions.
+---
+Read the diff and check how errors propagate.
+```
+
+Use UTF-8 text and single-line `key: value` frontmatter between `---` lines.
+The name must match the directory and use ASCII letters, digits, `_`, or `-`.
+The description must be nonempty. Matching outer quotes are optional. The
+harness reads regular files and skips invalid definitions during discovery.
+
+The executor's first request shows only names and descriptions after the
+`AGENTS.md` rules and before session history. It shows up to 50 skills in
+name order and marks the number omitted. `load_skill` and `/skill` can still
+load an omitted name. Both cap the returned text at 64 KiB including the
+truncation marker. A missing name produces a clear error.
 
 ## worktrees
 
