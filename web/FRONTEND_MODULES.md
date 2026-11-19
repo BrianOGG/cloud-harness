@@ -3,24 +3,27 @@
 > 依据：cloud-harness 现有代码与 HTTP API（2026-11-12 核对）。给 coding agent 做 demo 时的规格说明。
 > 一句话背景：harness 是一个 agent 运行时——用户发一句话，后端开一个 **run**，run 内部是「模型响应 → 工具批次 → 模型响应…」的循环，带权限审批、预算、等待/恢复、子任务。前端的本质是把一个 run 的生命周期可视化并提供干预入口。
 
-## 后端接口总览（全部接口，仅此 9 个）
+## 前端使用的后端接口
 
 | 接口 | 用途 |
 |---|---|
 | `GET /healthz` | 健康检查，返回 `{status, provider}` |
+| `GET /v1/sessions` | 列出会话、run 数和最近状态/时间 |
 | `POST /v1/sessions` | 新建会话，返回 `{id}` |
+| `GET /v1/sessions/{id}/runs` | 列出该会话全部 runs |
 | `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图 |
 | `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, status, wait_reason, budget{...}, final_answer, error, version}` |
 | `GET /v1/runs/{id}/events` | SSE 格式一次性倒出该 run 的持久事件；带 `Last-Event-ID` 请求头可增量拉取（倒完即断开，需客户端重连/轮询） |
 | `GET /v1/runs/{id}/trace` | 执行轨迹：`{session_id, run:{status, wait_reason, steps[], children[]}}`；step = 一次模型响应 `{id, action, batches[]}`；batch = 一批工具调用 `{id, status, action, calls[]}`；call = `{id, name, status, ordinal, provider_call_id}` |
 | `POST /v1/runs/{id}/responses` | 恢复等待中的 run，body 可带 `{decision}` / `{answer}` / `{extra_model_calls}` |
+| `GET /v1/approvals` | 读取待审批工具调用和 ask_user 问题 |
 | `POST /v1/runs/{id}/budget` | 补预算，body `{extra_model_calls}` |
 | `POST /v1/runs/{id}/cancel` | 取消 run |
 
 ## 全局硬约束（先读，否则会假设错接口）
 
-1. **没有列表接口**：不能列会话、不能列某会话的 runs。前端必须自己记住创建过的 session/run id（localStorage 即可），靠 id 逐个回查状态。
-2. **API 无 CORS 头**：前端不能跨域直连，开发时用 Vite 代理或同源部署（参考本目录现成 demo 的 `vite.config.ts`）。
+1. **服务端列表可用**：会话与 run 列表分别来自 `GET /v1/sessions`、`GET /v1/sessions/{id}/runs`；服务端数据是列表权威来源。API 不返回 turn 文本，本客户端创建的消息在浏览器本地保存，旧会话缺失的原文会显示占位提示。
+2. **API 无 CORS 头**：前端不能跨域直连，开发时用 Vite 代理或同源部署。M11-2 起 UI 在 `/ui/` 同源托管。
 3. **没有真正的 token 流式输出**：`stream.delta` 事件不落盘；实时感只能靠轮询 run 视图 + 用 `Last-Event-ID` 增量拉事件实现。
 4. **模型的原始思维链不可见（设计如此）**：推理内容是 opaque continuation，只回放给同一 provider，不落盘、不经 API 透出。前端能展示的"思考过程"是**编排层行踪**：每一步模型响应的意图、规划器决策、工具批次、用量（见模块 6）。
 5. **一轮对话 = 一个 run**：会话里每发一条消息就开一个新 run；消息列表与 run 一一对应。
@@ -44,7 +47,7 @@
 
 ### 2. 会话管理模块
 - 职责：新建会话、会话列表、切换会话；每个会话下挂它的 run 列表（标题取用户首句、状态点）。
-- 数据：`POST /v1/sessions` + 前端自记 id（约束 1）；run 状态靠逐个 `GET /v1/runs/{id}` 回查。
+- 数据：`GET /v1/sessions`、`POST /v1/sessions`、`GET /v1/sessions/{id}/runs`；run 状态按需轮询。
 
 ### 3. 布局壳
 - 职责：三栏——左会话列表 / 中对话 / 右过程面板（事件流与轨迹切换）。纯前端，无数据。
@@ -109,6 +112,14 @@
 
 ### 15. 错误与终态呈现
 - 职责：`FAILED` 时展示 run 的 `error{code,message}`；`CANCELLED` 有明确终态样式；接口报错（4xx 的 `{error:{code,message}}`）统一 toast/条幅呈现。
+
+## M11-8：Web 真 serve 全流程
+
+- 会话列表、运行记录、审批队列均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
+- 事件请求携带 `Last-Event-ID`；客户端短轮询 SSE 并重连，事件按 seq 合并。可见轨迹只包含编排层状态，不展示模型思维链。
+- 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行，前端随后轮询状态。
+- token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
+- `npm run test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。验收入口：`web/scripts/acceptance.sh`。
 
 ---
 
