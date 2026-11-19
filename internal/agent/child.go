@@ -37,6 +37,10 @@ func isChildBaselineReadTool(name string) bool {
 	return false
 }
 
+func rootOnlyTool(name string) bool {
+	return name == domain.ToolAskUser || name == domain.ToolDelegateTask || name == tools.ToolAskOracle
+}
+
 func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Grant {
 	if m.definitionToolLimit && len(m.AllowedTools) == 0 {
 		return nil
@@ -49,7 +53,7 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 	seen := map[string]bool{}
 	var grants []domain.Grant
 	for _, g := range m.Grants {
-		if g.Tool == domain.ToolAskUser || g.Tool == domain.ToolDelegateTask {
+		if rootOnlyTool(g.Tool) {
 			continue
 		}
 		if hasAllowed && !allowed[g.Tool] {
@@ -59,7 +63,7 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 		grants = append(grants, g)
 	}
 	add := func(name, scope string) {
-		if name == domain.ToolAskUser || name == domain.ToolDelegateTask {
+		if rootOnlyTool(name) {
 			return
 		}
 		if hasAllowed && !allowed[name] {
@@ -87,7 +91,7 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 	canWrite := m.parentHasWorkspaceWriteGrant(ctx, run)
 	canEdit := m.parentHasWorkspaceToolGrant(ctx, run, "edit_file") || canWrite
 	for _, name := range m.AllowedTools {
-		if isChildBaselineReadTool(name) || name == domain.ToolAskUser || name == domain.ToolDelegateTask {
+		if isChildBaselineReadTool(name) || rootOnlyTool(name) {
 			continue
 		}
 		switch name {
@@ -137,7 +141,7 @@ func (m *Manager) partitionAllowedTools(names []string) (known, unknown []string
 }
 
 func (m *Manager) isKnownChildTool(name string) bool {
-	if name == "" || name == domain.ToolAskUser || name == domain.ToolDelegateTask {
+	if name == "" || rootOnlyTool(name) {
 		return false
 	}
 	if m.Broker == nil {

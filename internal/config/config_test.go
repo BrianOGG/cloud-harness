@@ -266,6 +266,44 @@ func TestModelPricesConfig(t *testing.T) {
 	}
 }
 
+func TestOracleMaxCostConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harness.json")
+	load := func(body string, env map[string]string) (Config, error) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path, func(name string) string { return env[name] })
+	}
+	for _, tc := range []struct {
+		body string
+		want float64
+	}{
+		{`{}`, 0},
+		{`{"oracle_max_cost_usd":0}`, 0},
+		{`{"oracle_max_cost_usd":0.25}`, 0.25},
+	} {
+		cfg, err := load(tc.body, nil)
+		if err != nil || cfg.OracleMaxCostUSD != tc.want {
+			t.Fatalf("Load(%s) = %.8f, error = %v", tc.body, cfg.OracleMaxCostUSD, err)
+		}
+	}
+	for _, body := range []string{`{"oracle_max_cost_usd":-0.1}`, `{"oracle_max_cost_usd":"not-a-number"}`, `{"oracle_max_cost_usd":null}`} {
+		if _, err := load(body, nil); err == nil || !strings.Contains(err.Error(), "oracle_max_cost_usd") {
+			t.Errorf("invalid oracle cost %s error = %v", body, err)
+		}
+	}
+	for _, value := range []string{"-1", "not-a-number", "NaN", "+Inf"} {
+		if _, err := load(`{}`, map[string]string{"CLOUD_HARNESS_ORACLE_MAX_COST_USD": value}); err == nil || !strings.Contains(err.Error(), "CLOUD_HARNESS_ORACLE_MAX_COST_USD") {
+			t.Errorf("invalid oracle cost env %q error = %v", value, err)
+		}
+	}
+	cfg, err := load(`{"oracle_max_cost_usd":0.25}`, map[string]string{"CLOUD_HARNESS_ORACLE_MAX_COST_USD": "0.75"})
+	if err != nil || cfg.OracleMaxCostUSD != 0.75 {
+		t.Fatalf("oracle cost env override = %.8f, error = %v", cfg.OracleMaxCostUSD, err)
+	}
+}
+
 func TestServeRefusesNonLoopbackWithoutToken(t *testing.T) {
 	validToken := "0123456789abcdef"
 

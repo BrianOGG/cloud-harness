@@ -98,6 +98,7 @@ func (m *Manager) decidePolicy(ctx context.Context, run storage.Run, st *loopSta
 func (m *Manager) allowPolicyInvocation(ctx context.Context, run storage.Run, st *loopState, inv domain.Invocation, policy security.PolicyDecision) (bool, error) {
 	legacy, err := m.Broker.Authorize(ctx, tools.Request{
 		RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
+		DefaultAllow:  m.oracleDefaultAllow(inv.Name),
 		SensitiveSeen: st.sensitive, Egress: isEgressTool(m.Broker, inv.Name), Now: m.now(),
 	})
 	if err != nil {

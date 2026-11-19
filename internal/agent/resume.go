@@ -417,7 +417,7 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 			return storage.Run{}, err
 		}
 		stopHookHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
-		driveErr := m.driveBatch(ctx, run, &batch, st)
+		driveErr := m.driveBatch(m.withOracle(ctx, run.ID, leaseVersion, nil), run, &batch, st)
 		stopHookHeartbeat()
 		if err := driveErr; err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
 			return storage.Run{}, err

@@ -101,7 +101,7 @@ func (p *OpenAICompatible) Probe(ctx context.Context) error {
 	return nil
 }
 
-func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.ModelResponse, error) {
+func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.ModelResponse, completionErr error) {
 	var images []Image
 	for _, msg := range req.Messages {
 		images = append(images, msg.Images...)
@@ -245,6 +245,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 
 	var onDelta func(string)
 	switch {
+	case req.oracle:
 	case p.OnDelta != nil && req.OnDelta != nil:
 		onDelta = func(d string) {
 			p.OnDelta(d)
@@ -287,6 +288,9 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 		headerTimer.Stop()
 		if err != nil {
 			cancelAttempt()
+			if req.oracle && (headerTimedOut.Load() || IsTimeout(err)) {
+				return domain.ModelResponse{}, context.DeadlineExceeded
+			}
 			if headerTimedOut.Load() && ctx.Err() == nil {
 				return domain.ModelResponse{}, domain.E(domain.CodeProviderHTTP, "response header timeout exceeded")
 			}
@@ -323,6 +327,13 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (domain.Mo
 		defer cancelAttempt()
 		defer res.Body.Close()
 		bodyReader := &idleTimeoutReader{r: res.Body, timeout: idleTimeout, cancel: cancelAttempt}
+		if req.oracle {
+			defer func() {
+				if completionErr != nil && bodyReader.didTimeout() {
+					completionErr = context.DeadlineExceeded
+				}
+			}()
+		}
 		scrubber := func(s string) string {
 			if len(images) > 0 {
 				s = imageDataURLRE.ReplaceAllString(s, "[image data omitted]")
@@ -370,15 +381,16 @@ func (ir *idleTimeoutReader) Read(p []byte) (int, error) {
 	})
 	n, err := ir.r.Read(p)
 	timer.Stop()
-	if err != nil {
-		ir.mu.Lock()
-		to := ir.timedOut
-		ir.mu.Unlock()
-		if to {
-			return n, domain.E(domain.CodeProviderHTTP, "stream read idle timeout exceeded")
-		}
+	if err != nil && ir.didTimeout() {
+		return n, domain.E(domain.CodeProviderHTTP, "stream read idle timeout exceeded")
 	}
 	return n, err
+}
+
+func (ir *idleTimeoutReader) didTimeout() bool {
+	ir.mu.Lock()
+	defer ir.mu.Unlock()
+	return ir.timedOut
 }
 
 func (ir *idleTimeoutReader) Close() error {

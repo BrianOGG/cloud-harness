@@ -18,6 +18,7 @@ baseline denials, examples, and run snapshot behavior.
   "openai_base_url": "https://api.openai.com/v1",
   "openai_model": "gpt-4.1-mini",
   "model_prices": {},
+  "oracle_max_cost_usd": 0,
   "http_token": "",
   "http_allow_insecure": false,
   "disable_snapshots": false,
@@ -154,8 +155,8 @@ be called until the budget is extended.
 
 ## Model prices
 
-`model_prices` is optional JSON configuration used only by
-`cloud-harness stats` for cost estimates. Keys are model names and each value
+`model_prices` is optional JSON configuration used by `cloud-harness stats`
+and the `ask_oracle` cost limit for estimates. Keys are model names and each value
 contains `input`, `output`, and `cached` prices per one million tokens. Prices
 must be finite and non-negative. The cached price applies to the cached subset
 of input tokens; the estimate charges the remaining input tokens at `input`.
@@ -164,8 +165,19 @@ No default prices are supplied, so an unpriced model is reported with cost
 the model id on each response; stats therefore maps OpenAI rows to the current
 `openai_model` and uses the persisted provider value for other rows. Keep the
 matching key aligned with that attribution when enabling estimates.
-With model profiles, these estimates still use the default model's price;
-they cannot break down costs by the models actually called.
+With model profiles, stats estimates use the default model's price; they cannot
+break down costs by the models actually called. Oracle estimates use the model
+recorded in each `oracle.asked` event and its input/output token counts. An
+unpriced oracle model contributes zero to the oracle total.
+
+`oracle_max_cost_usd` is an optional non-negative finite dollar limit per run.
+Zero (the default) disables the amount limit, and
+`CLOUD_HARNESS_ORACLE_MAX_COST_USD` overrides the file value. The limit is
+checked before each new consultation request against the accumulated cost from
+that run's `oracle.asked` events, including after resume. Since the completed
+consultation's token usage is unknown before it runs, one consultation can put
+the run over the limit; the next consultation is stopped before its request.
+All monetary amounts are estimates.
 
 Each model entry contains numeric `input`, `output`, and `cached` fields. Use
 the exact model name as the key, and fill the values from the provider's
