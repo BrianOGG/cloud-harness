@@ -51,6 +51,40 @@ and the hit rate is below 20%, the report adds a warning about a potentially
 unstable prompt prefix. The 100,000-token threshold is intentionally fixed in
 the command and is included in JSON warnings.
 
+## export
+
+```bash
+cloud-harness export RUN_ID [--out path] [--sanitize|--raw] [--force] [--json] [--db path]
+cloud-harness export RUN_ID --json
+```
+
+`export` reads the selected run's saved turn, model response items, tool
+invocations/results, approval rows, and persistent event log. It copies the
+database and any WAL into a private system temporary snapshot, then queries
+that snapshot; it removes the temporary files on exit. It does not run
+migrations, checkpoint or open the source database through SQLite, invoke a
+provider, restore or inspect workspace files, or write under `.cloud-harness`.
+Run metadata includes status and timestamps, providers,
+available model attribution, and summed persisted input/output/cached-token
+usage. The schema does not save a model id per response, so an OpenAI model name
+is identified as coming from the current configuration; it may differ from
+the model used by an older run.
+
+The default output is a Markdown timeline on stdout. `--json` emits the same
+run metadata, usage totals, and timeline entries as structured JSON.
+Redaction is enabled by default; `--sanitize` makes that explicit. It masks
+long `sk-` tokens, `hsurr:` values, bearer credentials, values assigned to
+`api_key`, `apikey`, `token`, `secret`, or `password`, Authorization header
+credentials, and the configured `OPENAI_API_KEY` value. Redaction applies to
+messages, tool arguments and results, event payloads, and stored errors while
+preserving the surrounding export structure. `--raw` disables all masking and
+prints `exporting without redaction` to stderr.
+
+`--out path` writes the rendered export to a new file and refuses to overwrite
+an existing path. Add `--force` with `--out` to replace it. The database remains
+read-only in either output mode; the database and its SQLite sidecars cannot be
+used as the output path.
+
 ## retain
 
 ```bash
