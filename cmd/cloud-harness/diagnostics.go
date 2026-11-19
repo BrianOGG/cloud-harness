@@ -110,6 +110,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		items = append(items, doctorItem{Name: "workspace", Status: "ok", Detail: fmt.Sprintf("directory is enterable; mode=%04o", wsInfo.Mode().Perm())})
 	}
 	items = append(items, checkProjectRules(ws))
+	items = append(items, checkPolicy(ws, cfg.DBPath))
 
 	gitBin, gitErr := exec.LookPath("git")
 	if gitErr != nil {

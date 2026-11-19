@@ -97,3 +97,53 @@ run 启动后修改或删除策略文件，只影响以后启动的 run。策略
 同一 invocation 的预检查、执行和审批恢复共用一个事件，不重复记录。
 事件不包含文件正文、工具参数或命令全文；命令内容与规则中的 `command_prefix`
 只以 SHA-256 哈希记录。嵌套轮询或脚本目标检查有自己的判定事件。
+
+## 查询决策审计
+
+```sh
+cloud-harness policy decisions
+cloud-harness policy decisions --run run_123 --tool write_file
+cloud-harness policy decisions --effect deny --since 2026-11-19T00:00:00Z
+cloud-harness policy decisions --limit 100 --db /path/to/harness.db --json
+```
+
+默认按事件时间倒序返回最近 50 条 `policy.decided`。`--limit` 必须为正整数，
+超过 500 时按 500 处理。先过滤，再排序并应用条数限制；时间相同时按 run ID
+升序、同一 run 的事件序号倒序，保证输出稳定。
+
+| 参数 | 含义 |
+| --- | --- |
+| `--run ID` | 精确匹配 run ID。 |
+| `--tool NAME` | 精确匹配工具名。 |
+| `--effect allow\|ask\|deny` | 只显示指定效果。 |
+| `--since RFC3339` | 只显示该时刻及之后的事件，包含边界；支持时区偏移和小数秒。 |
+| `--limit N` | 返回条数，默认 50，最多 500。 |
+| `--db path` | 沿用已有配置选择数据库，可显式覆盖。 |
+| `--workspace dir` | 解析默认相对数据库路径时使用的工作区，默认当前目录。 |
+| `--json` | 输出 JSON 数组；没有匹配记录时为 `[]`。 |
+
+文本输出每条包括时间、run、工具名、效果、来源层和规则摘要。来源层为
+`workspace`、`global`、`builtin` 或 `default`；用户规则摘要包括匹配的工具名、
+可选 `path_glob`，命令前缀仍只显示已有哈希。内置和默认规则显示其现有说明。
+JSON 额外保留 invocation ID 和可选规则序号，便于关联同一次调用。
+审计只投影已有决策字段，不展开工具参数、文件正文、工具结果或完整命令。
+
+查询使用只读数据库连接，不执行迁移，不启动 provider 或 MCP，不重新装载当前
+策略文件。即使策略文件随后变更，仍可查询历史判定。空库、数据库尚未创建、
+不存在的 run 或无匹配记录均返回空列表，不创建数据库。参数错误退出码为 2，
+数据库或决策事件损坏等读取错误退出码为 1。
+
+## doctor 策略汇总
+
+`cloud-harness doctor [--workspace dir] [--db path] [--json]` 的 `policy` 检查列出：
+
+- workspace、global 的策略文件路径、是否加载及规则数；缺失文件显示 0，空规则
+  文件显示已加载且为 0。路径沿用上文配置目录约定。
+- builtin 基线为内置规则（`embedded`），共 2 条，没有对应的磁盘规则文件。
+- 从全部保留的 `policy.decided` 事件统计的 `allow`、`ask`、`deny` 次数。
+  不受查询的 50/500 条限制；空库或数据库尚未创建时各项为 0。
+
+规则文件汇总描述当前配置，历史决策计数描述 run 实际使用的策略快照；二者可能
+因配置变更而不同。doctor 不输出规则正文或命令前缀，不读取工具参数、结果、
+checkpoint 或模型内容来推断决策；汇总的事件读取只访问决策事件正文和关联 ID。
+整个检查保持只读。策略文件加载失败或事件不可读时，`policy` 检查报告失败。

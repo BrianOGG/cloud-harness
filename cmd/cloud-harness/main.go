@@ -97,6 +97,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdSkill(args[1:], stdout, stderr)
 	case "repomap":
 		return cmdRepoMap(args[1:], stdout, stderr)
+	case "policy":
+		return cmdPolicy(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -127,6 +129,7 @@ const usage = `Cloud Harness M5
   cloud-harness /skill NAME [--workspace dir]
   cloud-harness worktrees list|diff|merge|discard [RUN_ID] [--workspace dir] [--db path]
   cloud-harness repomap [--dir path] [--max-bytes N]
+  cloud-harness policy decisions [--run ID] [--tool NAME] [--effect allow|ask|deny] [--since RFC3339] [--limit N] [--db path] [--workspace dir] [--json]
   cloud-harness isolation
   cloud-harness program check
 
