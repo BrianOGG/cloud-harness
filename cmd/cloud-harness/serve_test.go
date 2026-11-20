@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +14,12 @@ import (
 	"testing"
 	"time"
 )
+
+// The parent must allow more than serveShutdownTimeout: after HTTP draining,
+// serve still closes connections and SQLite, exits, and Wait joins the stdout /
+// stderr copies. Keep 2s of headroom above the 1s drain (under CPU load normal
+// SIGINT-to-Wait was <100ms), independent of the 20s startup budget.
+const serveStopGrace = serveShutdownTimeout + 2*time.Second
 
 func TestServeRejectsExternalBeforeListening(t *testing.T) {
 	for _, tc := range []struct {
@@ -136,9 +144,11 @@ func TestServeHTTPBindBaseline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, args...)
+			startupCtx, cancelStartup := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancelStartup()
+			// Startup cancellation must not kill the child during graceful stop.
+			// stop owns SIGINT, its separate grace, and the final Kill / Wait.
+			cmd := exec.Command(executable, args...)
 			cmd.Env = append(os.Environ(), "CLOUD_HARNESS_M1032_SERVE_HELPER=1")
 			var out, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &stderr
@@ -158,18 +168,26 @@ func TestServeHTTPBindBaseline(t *testing.T) {
 				default:
 				}
 				_ = cmd.Process.Signal(os.Interrupt)
+				timer := time.NewTimer(serveStopGrace)
+				defer timer.Stop()
 				select {
 				case <-done:
-				case <-time.After(3 * time.Second):
+				case <-timer.C:
 					_ = cmd.Process.Kill()
 					<-done
 				}
 			}
 			defer stop()
 			base := "http://" + net.JoinHostPort("127.0.0.1", port)
-			client := &http.Client{Timeout: time.Second}
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Transport: transport, Timeout: time.Second}
 			for {
-				resp, err := client.Get(base + "/healthz")
+				req, err := http.NewRequestWithContext(startupCtx, http.MethodGet, base+"/healthz", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := client.Do(req)
 				if err == nil {
 					_ = resp.Body.Close()
 					if resp.StatusCode != http.StatusOK {
@@ -180,12 +198,13 @@ func TestServeHTTPBindBaseline(t *testing.T) {
 				select {
 				case <-done:
 					t.Fatalf("serve exited before listening: %v stdout=%s stderr=%s", processErr, out.String(), stderr.String())
-				case <-ctx.Done():
+				case <-startupCtx.Done():
 					stop()
 					t.Fatalf("serve did not become healthy: stdout=%s stderr=%s", out.String(), stderr.String())
 				case <-time.After(10 * time.Millisecond):
 				}
 			}
+			cancelStartup()
 			req, err := http.NewRequest(http.MethodGet, base+"/v1/approvals", nil)
 			if err != nil {
 				t.Fatal(err)
@@ -208,6 +227,87 @@ func TestServeHTTPBindBaseline(t *testing.T) {
 			if !strings.Contains(out.String(), "listening on http://") || (token != "" && (strings.Contains(out.String(), token) || strings.Contains(stderr.String(), token))) {
 				t.Fatal("missing startup announcement or leaked token")
 			}
+		})
+	}
+}
+
+func TestServeShutdownClosesPendingConnections(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		name := "new_without_headers"
+		if active {
+			name = "active_handler"
+		}
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted, handling, handled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			srv := &http.Server{
+				Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					close(handling)
+					defer close(handled)
+					<-r.Context().Done()
+				}),
+				ConnState: func(_ net.Conn, state http.ConnState) {
+					if state == http.StateNew {
+						close(accepted)
+					}
+				},
+			}
+			serveErr := make(chan error, 1)
+			go func() { serveErr <- srv.Serve(listener) }()
+			t.Cleanup(func() {
+				_ = srv.Close()
+				if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
+					t.Errorf("Serve: %v", err)
+				}
+			})
+			conn, err := net.DialTimeout("tcp", listener.Addr().String(), serveStopGrace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			// Synchronize on the server's state rather than sleeping: a successful
+			// Dial alone does not prove that Serve has accepted the connection.
+			select {
+			case <-accepted:
+			case <-time.After(serveStopGrace):
+				t.Fatal("server did not accept the connection")
+			}
+			if active {
+				if _, err := io.WriteString(conn, "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-handling:
+				case <-time.After(serveStopGrace):
+					t.Fatal("handler did not start")
+				}
+			}
+			started := time.Now()
+			shutdownServe(srv)
+			elapsed := time.Since(started)
+			if elapsed >= serveStopGrace {
+				t.Fatalf("HTTP shutdown exhausted the parent's %s grace: %s", serveStopGrace, elapsed)
+			}
+			// Returning on the drain deadline alone is insufficient: Close must
+			// also release the header reader / cancel the active handler.
+			if err := conn.SetReadDeadline(time.Now().Add(serveStopGrace)); err != nil {
+				t.Fatal(err)
+			}
+			var b [1]byte
+			if n, err := conn.Read(b[:]); n != 0 || !errors.Is(err, io.EOF) {
+				t.Fatalf("connection remained open after shutdown: n=%d err=%v", n, err)
+			}
+			if active {
+				select {
+				case <-handled:
+				case <-time.After(serveStopGrace):
+					t.Fatal("shutdown did not cancel the request context")
+				}
+			}
+			t.Logf("pending connection=%s shutdown=%s", name, elapsed)
 		})
 	}
 }

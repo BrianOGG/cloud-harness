@@ -35,6 +35,11 @@ import (
 
 const version = "0.5.0-m5"
 
+// StateNew connections can keep net/http.Shutdown waiting even when every
+// handler has finished. Bound draining so connection and SQLite cleanup still
+// fit inside the caller's shutdown grace (see serveStopGrace in serve_test.go).
+const serveShutdownTimeout = time.Second
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		program.ServeWorker(os.Stdin, os.Stdout)
@@ -387,9 +392,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "listening on http://%s %s\n", cfg.ListenAddr, safe)
 	select {
 	case <-ctx.Done():
-		shut, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shut)
+		shutdownServe(srv)
 		return 0
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
@@ -397,6 +400,16 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+}
+
+func shutdownServe(srv *http.Server) {
+	shut, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shut); err != nil {
+		// Shutdown leaves connections open on timeout. Close them before the
+		// deferred store cleanup, also canceling any remaining request contexts.
+		_ = srv.Close()
 	}
 }
 
