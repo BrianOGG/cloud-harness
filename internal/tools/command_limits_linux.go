@@ -197,9 +197,6 @@ func commandSandboxSpecFor(root string) (commandSandboxSpec, error) {
 	if err != nil {
 		return commandSandboxSpec{}, err
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
 	spec := commandSandboxSpec{Enabled: true}
 	preserve := ""
 	if control, ok := worktreeControlDir(abs); ok {
@@ -252,9 +249,17 @@ func commandConfigPath(root string) (string, bool, bool) {
 	if err != nil {
 		return "", false, false
 	}
+	absRoot = filepath.Clean(absRoot)
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolved
+	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", false, false
+	}
+	absDir = filepath.Clean(absDir)
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+		absDir = resolved
 	}
 	rel, err := filepath.Rel(absDir, absRoot)
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -277,27 +282,34 @@ func applyCommandSandbox(spec commandSandboxSpec) error {
 	}
 	preserve := filepath.Clean(spec.Preserve)
 	preserved := ""
+	preservedResolved := ""
 	if preserve != "" {
+		resolvedPreserve, _ := resolveSandboxMask(preserve)
 		for _, entry := range spec.Paths {
-			resolved, err := resolveSandboxMask(entry.Path)
-			if err != nil || !pathWithin(preserve, resolved) {
+			maskPath := filepath.Clean(entry.Path)
+			if !pathWithin(preserve, maskPath) {
 				continue
 			}
-			if resolved == preserve {
+			resolvedMask, _ := resolveSandboxMask(maskPath)
+			if resolvedMask == resolvedPreserve {
 				return errors.New("refusing to mask the command workspace")
 			}
-			if preserved != "" && preserved != resolved {
+			if preserved != "" && preserved != maskPath {
 				return errors.New("multiple control masks contain the command workspace")
 			}
-			preserved = resolved
+			preserved = maskPath
+			preservedResolved = resolvedMask
 		}
 		if preserved != "" {
-			if err := maskPreservedControl(preserved, preserve); err != nil {
+			if err := maskPreservedControl(preservedResolved, preserve); err != nil {
 				return err
 			}
 		}
 	}
-	seen := map[string]bool{preserved: true}
+	seen := map[string]bool{}
+	if preservedResolved != "" {
+		seen[preservedResolved] = true
+	}
 	for _, entry := range spec.Paths {
 		path := filepath.Clean(entry.Path)
 		if entry.Create {
@@ -321,6 +333,9 @@ func applyCommandSandbox(spec commandSandboxSpec) error {
 		}
 		if seen[resolved] {
 			continue
+		}
+		if preservedResolved != "" && resolved != preservedResolved && pathWithin(preservedResolved, resolved) {
+			return errors.New("refusing to mask a directory containing the preserved command workspace")
 		}
 		seen[resolved] = true
 		info, err := os.Stat(resolved)
