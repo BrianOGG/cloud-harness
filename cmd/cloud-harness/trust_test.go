@@ -132,6 +132,38 @@ func TestTrustCLIApproveStatusRevoke(t *testing.T) {
 	}
 }
 
+func TestTrustApproveRecoversStaleLock(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	workspace := t.TempDir()
+	write := func(file, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(workspace, ".cloud-harness", "hooks.json"), `{"hooks":{"SessionStart":[{"type":"command","command":"echo stale-lock"}]}}`)
+	write(filepath.Join(workspace, ".cloud-harness", "policy.json"), `{"rules":[]}`)
+	lock := filepath.Join(config, "cloud-harness", "trust.json.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, []byte("left by a crashed approval"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := trustCLI(t, "", "approve", "--workspace", workspace, "--yes")
+	if code != 0 {
+		t.Fatalf("approve with stale lock: %d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if got := trustStates(t, workspace); got["hooks.json"] != security.TrustTrusted || got["policy.json"] != security.TrustTrusted {
+		t.Fatalf("after stale-lock approval = %+v", got)
+	}
+}
+
 func TestTrustCLIUsageAndErrors(t *testing.T) {
 	setDiagnosticEnv(t, "", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
