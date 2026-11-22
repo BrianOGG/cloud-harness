@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -82,8 +83,10 @@ func execLimited(args []string) {
 	if err := json.Unmarshal([]byte(args[1]), &sandbox); err != nil {
 		fail("sandbox", "decode sandbox: "+err.Error())
 	}
-	if err := applyCommandSandbox(sandbox); err != nil {
-		fail("sandbox", err.Error())
+	if sandbox.Enabled {
+		if err := applyCommandSandbox(sandbox); err != nil {
+			fail("sandbox", err.Error())
+		}
 	}
 	env := os.Environ()
 	for _, lim := range limits {
@@ -91,8 +94,10 @@ func execLimited(args []string) {
 			fail("limits", "setrlimit "+lim.name+": "+err.Error())
 		}
 	}
-	if err := dropCommandPrivileges(); err != nil {
-		fail("sandbox", err.Error())
+	if sandbox.Enabled {
+		if err := dropCommandPrivileges(); err != nil {
+			fail("sandbox", err.Error())
+		}
 	}
 	err = syscall.Exec(args[2], args[3:], env)
 	var errno syscall.Errno
@@ -173,7 +178,8 @@ type commandSandboxPath struct {
 }
 
 type commandSandboxSpec struct {
-	Paths []commandSandboxPath `json:"paths"`
+	Enabled bool                 `json:"enabled"`
+	Paths   []commandSandboxPath `json:"paths,omitempty"`
 }
 
 // commandControlPaths returns the control directories for this workspace and
@@ -182,15 +188,16 @@ type commandSandboxSpec struct {
 // database, or the trust store.
 func commandControlPaths(root string) []commandSandboxPath {
 	path := filepath.Join(filepath.Clean(root), security.ControlDir)
-	create := false
-	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
-		create = true
-	}
-	paths := []commandSandboxPath{{Path: path, Create: create}}
+	paths := []commandSandboxPath{controlSandboxPath(path)}
 	if config, ok := commandConfigPath(root); ok {
-		paths = append(paths, commandSandboxPath{Path: config})
+		paths = append(paths, controlSandboxPath(config))
 	}
 	return paths
+}
+
+func controlSandboxPath(path string) commandSandboxPath {
+	_, err := os.Lstat(path)
+	return commandSandboxPath{Path: path, Create: os.IsNotExist(err)}
 }
 
 func commandConfigPath(root string) (string, bool) {
@@ -223,6 +230,12 @@ func applyCommandSandbox(spec commandSandboxSpec) error {
 		path := filepath.Clean(entry.Path)
 		if entry.Create {
 			if err := os.MkdirAll(path, 0o755); err != nil {
+				// A read-only or permission-denied parent means the command
+				// cannot create the control directory either, so there is
+				// nothing to mask.
+				if errors.Is(err, syscall.EROFS) || os.IsPermission(err) {
+					continue
+				}
 				return fmt.Errorf("create control mask %s: %w", path, err)
 			}
 		}
@@ -249,8 +262,21 @@ func applyCommandSandbox(spec commandSandboxSpec) error {
 	return nil
 }
 
+func commandLastCapability() int {
+	raw, err := os.ReadFile("/proc/sys/kernel/cap_last_cap")
+	if err != nil {
+		return int(unix.CAP_LAST_CAP)
+	}
+	last, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || last < 0 {
+		return int(unix.CAP_LAST_CAP)
+	}
+	return last
+}
+
 func dropCommandPrivileges() error {
-	for cap := 0; cap <= unix.CAP_LAST_CAP; cap++ {
+	last := commandLastCapability()
+	for cap := 0; cap <= last; cap++ {
 		if cap == unix.CAP_SETPCAP {
 			continue
 		}
@@ -258,8 +284,10 @@ func dropCommandPrivileges() error {
 			return fmt.Errorf("drop capability %d: %w", cap, err)
 		}
 	}
-	if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(unix.CAP_SETPCAP), 0, 0, 0); err != nil {
-		return fmt.Errorf("drop capability %d: %w", unix.CAP_SETPCAP, err)
+	if last >= int(unix.CAP_SETPCAP) {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(unix.CAP_SETPCAP), 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d: %w", unix.CAP_SETPCAP, err)
+		}
 	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("set no_new_privs: %w", err)
@@ -267,9 +295,33 @@ func dropCommandPrivileges() error {
 	return nil
 }
 
-// commandGuard runs one run_command process in its own process group, in a
-// user+mount namespace that masks harness control files, under resource limits
-// when they are enabled.
+var commandSandboxProbe = struct {
+	sync.Once
+	ok bool
+}{}
+
+func commandSandboxAvailable() bool {
+	commandSandboxProbe.Do(func() {
+		cmd := exec.Command("/bin/true")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+			UidMappings: []syscall.SysProcIDMap{
+				{ContainerID: 0, HostID: os.Getuid(), Size: 1},
+			},
+			GidMappings: []syscall.SysProcIDMap{
+				{ContainerID: 0, HostID: os.Getgid(), Size: 1},
+			},
+			GidMappingsEnableSetgroups: false,
+		}
+		commandSandboxProbe.ok = cmd.Run() == nil
+	})
+	return commandSandboxProbe.ok
+}
+
+// commandGuard runs one run_command process in its own process group, under
+// resource limits when they are enabled. When user namespaces are available it
+// also masks harness control files; restricted kernels keep the rlimits-only
+// behavior instead of failing every command.
 type commandGuard struct {
 	cmd     *exec.Cmd
 	target  string
@@ -288,22 +340,25 @@ func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string) *comman
 	if cmd.Err != nil {
 		return g
 	}
-	control := commandControlPaths(workspace)
-	g.sandbox.Paths = control
-	for _, entry := range control {
-		if entry.Create {
-			g.created = append(g.created, entry.Path)
+	if commandSandboxAvailable() {
+		g.sandbox.Enabled = true
+		control := commandControlPaths(workspace)
+		g.sandbox.Paths = control
+		for _, entry := range control {
+			if entry.Create {
+				g.created = append(g.created, entry.Path)
+			}
 		}
+		attr := cmd.SysProcAttr
+		if attr == nil {
+			attr = &syscall.SysProcAttr{}
+			cmd.SysProcAttr = attr
+		}
+		attr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
+		attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+		attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+		attr.GidMappingsEnableSetgroups = false
 	}
-	attr := cmd.SysProcAttr
-	if attr == nil {
-		attr = &syscall.SysProcAttr{}
-		cmd.SysProcAttr = attr
-	}
-	attr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
-	attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
-	attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-	attr.GidMappingsEnableSetgroups = false
 	plan, err := planRlimits(limits)
 	if err != nil {
 		g.planErr = err

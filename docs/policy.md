@@ -98,12 +98,12 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
 编辑。消息中的 `@文件` 引用使用同一判定，同样不能引用该目录下的文件。
 
 文件基线针对文件工具的目标路径。`run_command` 不解析 shell 命令内部的文件访问，
-但在 Linux 上命令运行在私有用户/挂载命名空间中，`.cloud-harness` 和 harness 配置目录
-被替换为空目录，不能读写 `.cloud-harness/**` 或 `trust.json`；macOS 和 Windows 没有
-这层隔离。允许集中的 `ls`/`pwd`/`wc` 参数若直接指向该目录也会被拒绝。工作区
-`hooks.json`、`policy.json` 仍按内容信任，见下一节。`git_diff`、`git_status` 在未指定
-路径时输出整个仓库的结果；如果仓库跟踪了 `.cloud-harness/` 下的文件，其差异会出现在
-输出中。
+但在 Linux 且支持非特权用户命名空间时，命令运行在私有用户/挂载命名空间中，
+`.cloud-harness` 和 harness 配置目录被替换为空目录，不能读写 `.cloud-harness/**`
+或 `trust.json`；macOS、Windows 和受限内核没有这层隔离。允许集中的 `ls`/`pwd`/`wc`
+参数若直接指向该目录也会被拒绝。工作区 `hooks.json`、`policy.json` 仍按内容信任，
+见下一节。`git_diff`、`git_status` 在未指定路径时输出整个仓库的结果；如果仓库跟踪了
+`.cloud-harness/` 下的文件，其差异会出现在输出中。
 
 示例最后的通配 `ask` 会停止后续层和第 1、2 条基线的求值，只希望为少数操作增加规则时，
 应省略这一条，使其他调用继续经过全局规则和基线。

@@ -395,6 +395,9 @@ func TestRlimitEncoding(t *testing.T) {
 }
 
 func TestRunCommandMasksControlDirectory(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
 	limitHelpers(t, map[string]string{"probe-control": "set +e\nls .cloud-harness\ncat .cloud-harness/secret\nprintf x > .cloud-harness/new\n"})
 	root := t.TempDir()
 	control := filepath.Join(root, ".cloud-harness")
@@ -422,6 +425,9 @@ func TestRunCommandMasksControlDirectory(t *testing.T) {
 }
 
 func TestRunCommandMasksTrustStore(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
 	configDir := t.TempDir()
 	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(configDir, "settings.json"))
 	trustPath := filepath.Join(configDir, "trust.json")
@@ -442,6 +448,9 @@ func TestRunCommandMasksTrustStore(t *testing.T) {
 }
 
 func TestRunCommandMasksMissingControlDirectory(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
 	limitHelpers(t, map[string]string{"make-control": "printf x > .cloud-harness/pwn\n"})
 	root := t.TempDir()
 

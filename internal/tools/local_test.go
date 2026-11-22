@@ -993,6 +993,33 @@ func TestRunCommandRejectsControlPathArguments(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsControlWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBroker(&memCharge{b: domain.Budget{MaxToolCalls: 1}}, &memGrants{})
+	specs, err := LocalSpecs(b, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec Spec
+	for _, s := range specs {
+		if s.Name == "run_command" {
+			spec = s
+			break
+		}
+	}
+	if spec.Execute == nil {
+		t.Fatal("run_command spec missing")
+	}
+	for _, cwd := range []string{".cloud-harness", ".cloud-harness/sub"} {
+		if _, err := spec.Execute(context.Background(), json.RawMessage(`{"command":"ls","cwd":"`+cwd+`"}`)); err == nil {
+			t.Fatalf("cwd %s was allowed", cwd)
+		}
+	}
+}
+
 func TestRunCommandReportsExitCode(t *testing.T) {
 	root := t.TempDir()
 	binDir := t.TempDir()

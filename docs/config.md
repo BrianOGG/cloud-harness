@@ -182,10 +182,11 @@ What the limits do and do not cover:
   systemd, a container): the lower value wins.
 - Core dumps are turned off (`RLIMIT_CORE` 0) whenever limits are enabled.
 - The 120 second timeout, the environment allowlist, and the 1 MiB output cap
-  apply as before. On Linux the command runs in its own process group and in a
-  private user and mount namespace where `.cloud-harness` and the harness
-  configuration directory are masked by empty tmpfs mounts, even when `disabled`
-  is true; a timeout or cancellation kills the whole process group.
+  apply as before. On Linux, when unprivileged user namespaces are available,
+  the command runs in its own process group and in a private user and mount
+  namespace where `.cloud-harness` and the harness configuration directory are
+  masked by empty tmpfs mounts, even when `disabled` is true; a timeout or
+  cancellation kills the whole process group.
 - macOS and Windows run commands without these limits or the control-directory
   mask.
 

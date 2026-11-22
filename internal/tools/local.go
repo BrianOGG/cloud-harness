@@ -948,7 +948,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux, harness control files are masked from the command. Dangerous commands require approval and are not started.",
+		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces, harness control files are masked from the command. Dangerous commands require approval and are not started.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,
@@ -975,6 +975,9 @@ func runCommandSpec(b *Broker, abs string) Spec {
 				}
 				if !info.IsDir() {
 					return nil, domain.E(domain.CodeInvalidArgument, "cwd is not a directory")
+				}
+				if controlFiles(abs)(workDir) {
+					return nil, domain.E(domain.CodeAuthDenied, "cwd cannot be inside harness control files")
 				}
 			}
 			command := stringField(args, "command")
