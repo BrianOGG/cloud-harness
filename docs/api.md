@@ -140,7 +140,10 @@ curl -s -X POST -H "Content-Type: application/json" \
     "max_model_calls": 100, "used_model_calls": 0,
     "max_tool_calls": 300, "used_tool_calls": 0,
     "max_script_calls": 50, "used_script_calls": 0,
-    "max_child_runs": 4, "used_child_runs": 0
+    "max_child_runs": 4, "used_child_runs": 0,
+    "max_tokens": 0, "used_input_tokens": 0, "used_output_tokens": 0,
+    "used_cached_input_tokens": 0,
+    "max_cost_usd": 0, "used_cost_usd": 0
   },
   "version": 1
 }
@@ -157,6 +160,10 @@ Any other value of `wait` returns HTTP 400 and creates no run.
 
 `POST /v1/runs/{id}/responses`, `/answer`, and `/budget` resume a waiting run
 and take the same `wait` parameter with the same default. They return HTTP 200.
+
+`/budget` takes `extra_model_calls`, `extra_tokens`, and `extra_cost_usd`, at
+least one of them positive; `/responses` accepts the same three fields. See
+[run token and cost limits](config.md#run-token-and-cost-limits).
 
 **Changed in M13-2.** These four requests used to answer only once the run had
 stopped, with the final answer or the wait in the response. A client that
@@ -399,7 +406,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | `wait_kind` | string, optional | Wait kind, matching `wait_reason` when present. |
 | `question` | string, optional | Pending user question for an `ask_user` wait. |
 | `pending_invocation` | object, optional | Invocation awaiting approval, with the same structure as the single-run view. Its optional `warnings` string array is set when the write targets `AGENTS.md` or `.agents/**`, which changes later runs; clients must show it next to the decision. See [approval warnings](cli.md#approval-warnings-for-behavior-files). |
-| `budget` | object | Model, tool, script, and child-run limits and usage counters. |
+| `budget` | object | Model, tool, script, and child-run limits and usage counters, plus the token and estimated-cost limits and usage (`max_tokens`, `used_input_tokens`, `used_output_tokens`, `used_cached_input_tokens`, `max_cost_usd`, `used_cost_usd`). A limit of `0` on tokens or cost is unlimited. |
 | `final_answer` | string, optional | Final answer for a completed run. |
 | `error` | object, optional | Error details for a failed run. |
 | `version` | integer | Run version. |

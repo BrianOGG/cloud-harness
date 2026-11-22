@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import type { HarnessEvent, RunView } from './api';
+import type { BudgetExtension, HarnessEvent, RunView } from './api';
+import { budgetExtension } from './budget';
 import { actionLabels, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
 import { CopyButton, Markdown } from './Markdown';
@@ -14,7 +15,7 @@ export interface Exchange {
 
 export interface TurnActions {
   respond: (runId: string, body: { decision?: string; answer?: string }) => void;
-  addBudget: (runId: string) => void;
+  addBudget: (runId: string, extension: BudgetExtension) => void;
   cancel: (runId: string) => void;
   inspect: (runId: string) => void;
   loadEvents: (run: RunView) => void;
@@ -117,11 +118,12 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
     );
   }
   if (run.wait_reason === 'BUDGET') {
+    const { title, label, extension } = budgetExtension(run.budget);
     return (
       <div className="wait-card" role="group" aria-label="等待补充预算">
-        <div className="wait-head"><Icon name="alert" /><strong>模型调用预算已用完</strong></div>
+        <div className="wait-head"><Icon name="alert" /><strong>{title}</strong></div>
         <p className="wait-text">运行已暂停，进度不会丢失。补充预算后继续。</p>
-        <div className="wait-actions"><button type="button" className="button primary" disabled={acting} onClick={() => actions.addBudget(run.id)}>增加 10 次模型调用</button></div>
+        <div className="wait-actions"><button type="button" className="button primary" disabled={acting} onClick={() => actions.addBudget(run.id, extension)}>{label}</button></div>
       </div>
     );
   }

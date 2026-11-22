@@ -225,6 +225,11 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 	if err != nil {
 		return nil, err
 	}
+	// A child spends the parent's tokens and cost, so a parent that has none
+	// left cannot start one.
+	if err := parent.Budget.SpendErr(); err != nil {
+		return nil, err
+	}
 	if err := m.Store.Charge(ctx, parent.ID, domain.ChargeChild, 1); err != nil {
 		return nil, err
 	}
@@ -295,6 +300,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		failOnToolBudget:    def.MaxToolCalls > 0,
 		SkipPlanner:         true,
 		Stream:              m.Stream,
+		ModelPrices:         m.prices(),
 	}
 	message := childUserMessage(body.Goal, body.RelevantContext, body.SuccessCriteria, body.OutputContract)
 	finished, runErr := childMgr.runPrepared(childCtx, childRun, message)
@@ -1120,6 +1126,14 @@ func nestedBudget(parent domain.Budget, maxModel, maxTool int) domain.Budget {
 		MaxToolCalls:   remain(parent.MaxToolCalls, parent.UsedToolCalls),
 		MaxScriptCalls: remain(parent.MaxScriptCalls, parent.UsedScriptCalls),
 		MaxChildRuns:   0,
+	}
+	// The child gets what the parent has left. Zero means unlimited, so a
+	// limited parent never hands down zero.
+	if parent.MaxTokens > 0 {
+		b.MaxTokens = max(parent.MaxTokens-parent.UsedTokens(), 1)
+	}
+	if parent.MaxCostUSD > 0 {
+		b.MaxCostUSD = max(parent.MaxCostUSD-parent.UsedCostUSD, 1e-9)
 	}
 	if maxModel > 0 && maxModel < b.MaxModelCalls {
 		b.MaxModelCalls = maxModel

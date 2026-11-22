@@ -22,6 +22,7 @@ func TestImagesSurviveToolCallsCompactionAndCheckpointResume(t *testing.T) {
 	m, db, root := testManager(t, mock)
 	m.ContextTokenLimit = 1
 	m.SkipPlanner = true
+	structuralCompactionOnly(m)
 	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("large tool result ", 500)), 0o600); err != nil {
 		t.Fatal(err)
 	}

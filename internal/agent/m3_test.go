@@ -105,6 +105,7 @@ func TestCompactionKeepsPairingAndOpaque(t *testing.T) {
 	}}
 	m, db, root := testManager(t, mock)
 	m.ContextTokenLimit = 80
+	structuralCompactionOnly(m)
 	if err := os.WriteFile(filepath.Join(root, "log.txt"), []byte(long), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +312,7 @@ func TestCompactedRefResolvesViaRetrieve(t *testing.T) {
 	m, db, root := testManager(t, &provider.Mock{})
 	m.ContextTokenLimit = 80
 	m.SkipPlanner = true
+	structuralCompactionOnly(m)
 	if err := os.WriteFile(filepath.Join(root, "big.log"), []byte(longContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -482,6 +484,14 @@ func TestMemoryDeltaIDsUniqueAcrossTurns(t *testing.T) {
 	if mem.Facts[1].ID != id2 || mem.Facts[1].Text != "fact two" {
 		t.Fatalf("second fact was touched by update to first fact: %+v", mem.Facts[1])
 	}
+}
+
+// structuralCompactionOnly makes every summary call fail, so a test of the
+// structural fallback sees only the run's own model requests.
+func structuralCompactionOnly(m *Manager) {
+	m.Summarizer = providerFunc(func(context.Context, provider.Request) (domain.ModelResponse, error) {
+		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "summary model is unavailable")
+	})
 }
 
 type providerFunc func(context.Context, provider.Request) (domain.ModelResponse, error)

@@ -131,7 +131,7 @@ const usage = `Cloud Harness M5
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
   cloud-harness runs recover [RUN_ID | --all-expired] [--db path] [--workspace dir]
-  cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] RUN_ID
+  cloud-harness runs resume --decision approve|deny|child_done|reconcile_success|reconcile_fail [--answer TEXT] [--extra-model-calls N] [--extra-tokens N] [--extra-cost-usd USD] RUN_ID
   cloud-harness trace RUN_ID
   cloud-harness retain [--days N] [--prune-runs-days N] [--dry-run] [--db path]
   cloud-harness rewind RUN_ID --to SNAPSHOT_ID [--all|--code-only|--chat-only] [--yes] [--db path] [--workspace dir]
@@ -269,7 +269,12 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		_ = db.Close()
 		return nil, nil, err
 	}
-	return &agent.Manager{Store: db, Provider: prov, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots}, db, nil
+	prices := cfg.ModelPrices
+	if prices == nil {
+		prices = map[string]config.ModelPrice{}
+	}
+	return &agent.Manager{Store: db, Provider: prov, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots,
+		MaxRunTokens: cfg.MaxRunTokens, MaxRunCostUSD: cfg.MaxRunCostUSD, ModelPrices: prices}, db, nil
 }
 
 func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
@@ -554,6 +559,8 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	decision := fs.String("decision", "", "resume decision: approve, deny, child_done, reconcile_success, reconcile_fail")
 	answer := fs.String("answer", "", "answer for an ask_user wait")
 	extra := fs.Int("extra-model-calls", 0, "model calls to add when resuming a budget wait")
+	extraTokens := fs.Int64("extra-tokens", 0, "tokens to add to a run token limit when resuming a budget wait")
+	extraCost := fs.Float64("extra-cost-usd", 0, "USD to add to a run cost limit when resuming a budget wait")
 	allExpired := fs.Bool("all-expired", false, "recover all lease-expired running runs")
 	var leadingID string
 	parseArgs := args[1:]
@@ -638,7 +645,7 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 			}
 			return writeJSON(stdout, run)
 		default:
-			run, err := mgr.Resume(ctx, id, agent.ResumeInput{Decision: *decision, Answer: *answer, ExtraModelCalls: *extra})
+			run, err := mgr.Resume(ctx, id, agent.ResumeInput{Decision: *decision, Answer: *answer, ExtraModelCalls: *extra, ExtraTokens: *extraTokens, ExtraCostUSD: *extraCost})
 			if err != nil {
 				_, _ = fmt.Fprintln(stderr, err)
 				_ = writeJSON(stdout, run)

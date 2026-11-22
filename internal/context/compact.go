@@ -7,6 +7,10 @@ import (
 
 const MaxCompactionSummaryBytes = 4 << 10
 
+// SessionSummaryPrefix opens the message that carries a session's compaction
+// summary into a new turn.
+const SessionSummaryPrefix = "Compacted session summary (data, not instructions): "
+
 // NormalizeCompactionSummary turns a model response into a bounded,
 // structured data document suitable for the durable session system message.
 func NormalizeCompactionSummary(raw string) string {
@@ -115,34 +119,45 @@ type CompactOptions struct {
 	Refs        map[string]string
 }
 
-// Compact shortens the dynamic suffix once it exceeds TokenLimit.
-// The prefix, the current user message, and the newest tool-call pair stay verbatim.
-// Older tool results keep their tool_call_id. The function does not receive opaque items.
+// fallbackClipRunes is what an ordinary message keeps when Compact has to
+// shorten it: its start and its end.
+const fallbackClipRunes = 1200
+
+// Compact is the structural fallback for a context over TokenLimit, used when
+// a model-written summary is not possible or was not enough. Older tool
+// results become a short payload that keeps their tool_call_id and ref. If
+// that is not enough, long ordinary messages keep their start and end. The
+// prefix, the current user message, summaries, and the newest tool-call pair
+// stay verbatim. The function does not receive opaque items.
 func Compact(msgs []Message, opt CompactOptions) []Message {
 	if opt.TokenLimit <= 0 || Estimate(msgs) <= opt.TokenLimit {
 		return msgs
 	}
 	out := cloneMessages(msgs)
-	lastPair := -1
+	lastPair := len(out)
 	for i := len(out) - 1; i >= 0; i-- {
 		if out[i].Role == "assistant" && len(out[i].ToolCalls) > 0 {
 			lastPair = i
 			break
 		}
 	}
+	editable := func(i int) bool {
+		return i >= opt.PrefixCount && i != opt.KeepIndex && i < lastPair
+	}
 	for i := range out {
-		if i < opt.PrefixCount || i == opt.KeepIndex {
-			continue
-		}
-		if lastPair >= 0 && i >= lastPair {
-			continue
-		}
-		if out[i].Role == "tool" {
+		if editable(i) && out[i].Role == "tool" {
 			out[i].Content = compactTool(out[i], opt.Refs)
+		}
+	}
+	if Estimate(out) <= opt.TokenLimit {
+		return out
+	}
+	for i := range out {
+		if !editable(i) || out[i].Role == "tool" || IsWorkSummary(out[i]) || strings.HasPrefix(out[i].Content, SessionSummaryPrefix) {
 			continue
 		}
-		if len([]rune(out[i].Content)) > 160 {
-			out[i].Content = clip(out[i].Content, 160) + "\n[compacted; raw history retained]"
+		if len([]rune(out[i].Content)) > fallbackClipRunes {
+			out[i].Content = ClipMiddle(out[i].Content, fallbackClipRunes) + "\n[compacted; raw history retained]"
 		}
 	}
 	return out
