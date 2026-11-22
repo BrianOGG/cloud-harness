@@ -978,6 +978,21 @@ func TestRunCommandCwdEscapeDenied(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsControlPathArguments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"ls .cloud-harness", "wc .cloud-harness/harness.db"} {
+		if _, _, err := parseCommand(root, command); err == nil {
+			t.Fatalf("%s was allowed", command)
+		}
+	}
+	if _, dangerous, err := parseCommand(root, "ls ."); err != nil || dangerous {
+		t.Fatalf("ordinary safe command changed: dangerous=%v err=%v", dangerous, err)
+	}
+}
+
 func TestRunCommandReportsExitCode(t *testing.T) {
 	root := t.TempDir()
 	binDir := t.TempDir()

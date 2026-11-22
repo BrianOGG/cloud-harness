@@ -3,17 +3,20 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/cloud-harness/cloud-harness/internal/security"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,20 +62,28 @@ func init() {
 	}
 }
 
-// execLimited is the trampoline body: args are the encoded limits, the target
-// path, and the target argv. It never returns.
+// execLimited is the trampoline body: args are the encoded limits, the
+// encoded command sandbox, the target path, and the target argv. It never
+// returns.
 func execLimited(args []string) {
 	fail := func(kind, detail string) {
 		_, _ = syscall.Write(limitStatusFD, []byte(kind+"\n"+detail))
 		os.Exit(126)
 	}
 	syscall.CloseOnExec(limitStatusFD)
-	if len(args) < 3 {
-		fail("limits", "malformed trampoline arguments")
+	if len(args) < 4 {
+		fail("sandbox", "malformed trampoline arguments")
 	}
 	limits, err := decodeRlimits(args[0])
 	if err != nil {
 		fail("limits", err.Error())
+	}
+	var sandbox commandSandboxSpec
+	if err := json.Unmarshal([]byte(args[1]), &sandbox); err != nil {
+		fail("sandbox", "decode sandbox: "+err.Error())
+	}
+	if err := applyCommandSandbox(sandbox); err != nil {
+		fail("sandbox", err.Error())
 	}
 	env := os.Environ()
 	for _, lim := range limits {
@@ -80,7 +91,10 @@ func execLimited(args []string) {
 			fail("limits", "setrlimit "+lim.name+": "+err.Error())
 		}
 	}
-	err = syscall.Exec(args[1], args[2:], env)
+	if err := dropCommandPrivileges(); err != nil {
+		fail("sandbox", err.Error())
+	}
+	err = syscall.Exec(args[2], args[3:], env)
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		fail("exec", strconv.Itoa(int(errno)))
@@ -97,6 +111,9 @@ func encodeRlimits(limits []rlimit) string {
 }
 
 func decodeRlimits(spec string) ([]rlimit, error) {
+	if spec == "" {
+		return nil, nil
+	}
 	var out []rlimit
 	for _, part := range strings.Split(spec, ",") {
 		name, value, ok := strings.Cut(part, "=")
@@ -150,8 +167,109 @@ func planRlimits(limits CommandLimits) ([]rlimit, error) {
 	return plan, nil
 }
 
-// commandGuard runs one run_command process in its own process group, under
-// resource limits when they are enabled.
+type commandSandboxPath struct {
+	Path   string `json:"path"`
+	Create bool   `json:"create,omitempty"`
+}
+
+type commandSandboxSpec struct {
+	Paths []commandSandboxPath `json:"paths"`
+}
+
+// commandControlPaths returns the control directories for this workspace and
+// the harness configuration directory. The command sees them as empty tmpfs
+// mounts, so reads and writes cannot reach hooks, policy, snapshots, the run
+// database, or the trust store.
+func commandControlPaths(root string) []commandSandboxPath {
+	path := filepath.Join(filepath.Clean(root), security.ControlDir)
+	create := false
+	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+		create = true
+	}
+	paths := []commandSandboxPath{{Path: path, Create: create}}
+	if config, ok := commandConfigPath(root); ok {
+		paths = append(paths, commandSandboxPath{Path: config})
+	}
+	return paths
+}
+
+func commandConfigPath(root string) (string, bool) {
+	dir, err := security.ConfigDirectory()
+	if err != nil {
+		return "", false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absDir, absRoot)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// Masking the configuration directory would also hide the workspace.
+		return "", false
+	}
+	return absDir, true
+}
+
+func applyCommandSandbox(spec commandSandboxSpec) error {
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make mounts private: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, entry := range spec.Paths {
+		path := filepath.Clean(entry.Path)
+		if entry.Create {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return fmt.Errorf("create control mask %s: %w", path, err)
+			}
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			resolved = path
+		}
+		resolved = filepath.Clean(resolved)
+		if resolved == string(os.PathSeparator) {
+			return fmt.Errorf("refusing to mask filesystem root")
+		}
+		if seen[resolved] {
+			continue
+		}
+		seen[resolved] = true
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if err := unix.Mount("tmpfs", resolved, "tmpfs", 0, "mode=0755"); err != nil {
+			return fmt.Errorf("mask %s: %w", resolved, err)
+		}
+	}
+	return nil
+}
+
+func dropCommandPrivileges() error {
+	for cap := 0; cap <= unix.CAP_LAST_CAP; cap++ {
+		if cap == unix.CAP_SETPCAP {
+			continue
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(cap), 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d: %w", cap, err)
+		}
+	}
+	if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(unix.CAP_SETPCAP), 0, 0, 0); err != nil {
+		return fmt.Errorf("drop capability %d: %w", unix.CAP_SETPCAP, err)
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("set no_new_privs: %w", err)
+	}
+	return nil
+}
+
+// commandGuard runs one run_command process in its own process group, in a
+// user+mount namespace that masks harness control files, under resource limits
+// when they are enabled.
 type commandGuard struct {
 	cmd     *exec.Cmd
 	target  string
@@ -159,21 +277,41 @@ type commandGuard struct {
 	planErr error
 	statusR *os.File
 	statusW *os.File
+	sandbox commandSandboxSpec
+	created []string
 }
 
-func guardCommand(cmd *exec.Cmd, limits CommandLimits) *commandGuard {
+func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string) *commandGuard {
 	g := &commandGuard{cmd: cmd, target: cmd.Path, applied: map[string]uint64{}}
 	applySysProc(cmd)
 	cmd.Cancel = func() error { return killGroup(cmd) }
 	if cmd.Err != nil {
 		return g
 	}
+	control := commandControlPaths(workspace)
+	g.sandbox.Paths = control
+	for _, entry := range control {
+		if entry.Create {
+			g.created = append(g.created, entry.Path)
+		}
+	}
+	attr := cmd.SysProcAttr
+	if attr == nil {
+		attr = &syscall.SysProcAttr{}
+		cmd.SysProcAttr = attr
+	}
+	attr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
+	attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+	attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+	attr.GidMappingsEnableSetgroups = false
 	plan, err := planRlimits(limits)
 	if err != nil {
 		g.planErr = err
 		return g
 	}
-	if len(plan) == 0 {
+	sandboxJSON, err := json.Marshal(g.sandbox)
+	if err != nil {
+		g.planErr = err
 		return g
 	}
 	if g.statusR, g.statusW, err = os.Pipe(); err != nil {
@@ -185,15 +323,16 @@ func guardCommand(cmd *exec.Cmd, limits CommandLimits) *commandGuard {
 			g.applied[lim.config] = lim.cur
 		}
 	}
-	cmd.Args = append([]string{limitExecArg0, encodeRlimits(plan), cmd.Path}, cmd.Args...)
+	cmd.Args = append([]string{limitExecArg0, encodeRlimits(plan), string(sandboxJSON), cmd.Path}, cmd.Args...)
 	cmd.Path = limitExecSelf
 	cmd.ExtraFiles = []*os.File{g.statusW}
 	return g
 }
 
-// Run starts the command and waits for it. A command whose limits could not
-// be established is not started.
+// Run starts the command and waits for it. A command whose limits or sandbox
+// could not be established is not started.
 func (g *commandGuard) Run() error {
+	defer g.cleanupSandbox()
 	if g.planErr != nil {
 		return limitsNotApplied(g.planErr.Error())
 	}
@@ -204,7 +343,7 @@ func (g *commandGuard) Run() error {
 	err := g.cmd.Start()
 	_ = g.statusW.Close()
 	if err != nil {
-		return limitsNotApplied(err.Error())
+		return sandboxNotApplied(err.Error())
 	}
 	status, _ := io.ReadAll(io.LimitReader(g.statusR, 4096))
 	err = g.cmd.Wait()
@@ -215,11 +354,24 @@ func (g *commandGuard) Run() error {
 	if errno, convErr := strconv.Atoi(detail); kind == "exec" && convErr == nil {
 		return &os.PathError{Op: "fork/exec", Path: g.target, Err: syscall.Errno(errno)}
 	}
+	if kind == "sandbox" {
+		return sandboxNotApplied(detail)
+	}
 	return limitsNotApplied(detail)
 }
 
 func limitsNotApplied(detail string) error {
 	return errors.New("resource limits could not be applied, so the command was not started: " + detail)
+}
+
+func sandboxNotApplied(detail string) error {
+	return errors.New("command sandbox could not be applied, so the command was not started: " + detail)
+}
+
+func (g *commandGuard) cleanupSandbox() {
+	for _, path := range g.created {
+		_ = os.Remove(path)
+	}
 }
 
 // limitHit reports which resource limit, if any, explains the failure err.

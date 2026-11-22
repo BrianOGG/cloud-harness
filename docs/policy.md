@@ -97,9 +97,11 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
 文件，也不应读取保存其他会话内容的数据库。需要修改这些文件时，由用户在 harness 之外
 编辑。消息中的 `@文件` 引用使用同一判定，同样不能引用该目录下的文件。
 
-文件基线针对文件工具的目标路径，不解析 shell 命令内部的文件访问：经审批的
-`run_command` 仍然可以读写 `.cloud-harness/**`。通过这种方式写入或修改的
-`hooks.json`、`policy.json` 不会自动生效，见下一节。`git_diff`、`git_status` 在未指定
+文件基线针对文件工具的目标路径。`run_command` 不解析 shell 命令内部的文件访问，
+但在 Linux 上命令运行在私有用户/挂载命名空间中，`.cloud-harness` 和 harness 配置目录
+被替换为空目录，不能读写 `.cloud-harness/**` 或 `trust.json`；macOS 和 Windows 没有
+这层隔离。允许集中的 `ls`/`pwd`/`wc` 参数若直接指向该目录也会被拒绝。工作区
+`hooks.json`、`policy.json` 仍按内容信任，见下一节。`git_diff`、`git_status` 在未指定
 路径时输出整个仓库的结果；如果仓库跟踪了 `.cloud-harness/` 下的文件，其差异会出现在
 输出中。
 

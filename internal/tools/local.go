@@ -948,7 +948,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single allowlisted command in the workspace without a shell. Dangerous commands require approval and are not started.",
+		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux, harness control files are masked from the command. Dangerous commands require approval and are not started.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,
@@ -1002,7 +1002,7 @@ func runCommandSpec(b *Broker, abs string) Spec {
 			stderr.limit = maxFileBytes
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
-			guard := guardCommand(cmd, b.CommandLimits())
+			guard := guardCommand(cmd, b.CommandLimits(), abs)
 			err = guard.Run()
 			exitCode := 0
 			if err != nil {
@@ -1583,6 +1583,7 @@ func parseCommandInDir(root, workDir, command string) ([]string, bool, error) {
 	if !safeCommands[name] {
 		return fields, true, nil
 	}
+	isControl := controlFiles(root)
 	for _, arg := range fields[1:] {
 		if strings.HasPrefix(arg, "-") {
 			continue
@@ -1591,8 +1592,12 @@ func parseCommandInDir(root, workDir, command string) ([]string, bool, error) {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(workDir, target)
 		}
-		if _, err := resolveInside(root, target); err != nil {
+		p, err := resolveInside(root, target)
+		if err != nil {
 			return nil, true, err
+		}
+		if isControl(p) {
+			return nil, true, domain.E(domain.CodeAuthDenied, "command arguments cannot target harness control files")
 		}
 	}
 	resolved, err := exec.LookPath(name)

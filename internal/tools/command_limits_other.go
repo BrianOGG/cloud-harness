@@ -10,7 +10,7 @@ type commandGuard struct {
 	cmd *exec.Cmd
 }
 
-func guardCommand(cmd *exec.Cmd, _ CommandLimits) *commandGuard {
+func guardCommand(cmd *exec.Cmd, _ CommandLimits, _ string) *commandGuard {
 	return &commandGuard{cmd: cmd}
 }
 

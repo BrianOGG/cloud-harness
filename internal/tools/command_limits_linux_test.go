@@ -387,9 +387,68 @@ func TestRlimitEncoding(t *testing.T) {
 	if plan, err := planRlimits(CommandLimits{Disabled: true}); err != nil || len(plan) != 0 {
 		t.Fatalf("disabled plan = %v %v, want empty", plan, err)
 	}
-	for _, bad := range []string{"", "cpu", "cpu=1", "cpu=1:x", "bogus=1:1", "cpu=-1:1"} {
+	for _, bad := range []string{"cpu", "cpu=1", "cpu=1:x", "bogus=1:1", "cpu=-1:1"} {
 		if _, err := decodeRlimits(bad); err == nil {
 			t.Fatalf("decodeRlimits(%q) succeeded", bad)
 		}
+	}
+}
+
+func TestRunCommandMasksControlDirectory(t *testing.T) {
+	limitHelpers(t, map[string]string{"probe-control": "set +e\nls .cloud-harness\ncat .cloud-harness/secret\nprintf x > .cloud-harness/new\n"})
+	root := t.TempDir()
+	control := filepath.Join(root, ".cloud-harness")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "secret"), []byte("CONTROL_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-control")
+	combined := out.Stdout + out.Stderr
+	if strings.Contains(combined, "CONTROL_SECRET") {
+		t.Fatalf("command read control file:\n%s", combined)
+	}
+	if strings.Contains(out.Stdout, "secret") {
+		t.Fatalf("control directory was not masked:\n%s", out.Stdout)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "secret")); err != nil || string(body) != "CONTROL_SECRET" {
+		t.Fatalf("control file changed: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(control, "new")); !os.IsNotExist(err) {
+		t.Fatalf("command wrote through the control mask: %v", err)
+	}
+}
+
+func TestRunCommandMasksTrustStore(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(configDir, "settings.json"))
+	trustPath := filepath.Join(configDir, "trust.json")
+	if err := os.WriteFile(trustPath, []byte("TRUST_SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limitHelpers(t, map[string]string{"probe-trust": "cat " + trustPath + "\nprintf x > " + trustPath + "\n"})
+	root := t.TempDir()
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-trust")
+	combined := out.Stdout + out.Stderr
+	if strings.Contains(combined, "TRUST_SECRET") {
+		t.Fatalf("command read trust store:\n%s", combined)
+	}
+	if body, err := os.ReadFile(trustPath); err != nil || string(body) != "TRUST_SECRET" {
+		t.Fatalf("trust store changed: %q %v", body, err)
+	}
+}
+
+func TestRunCommandMasksMissingControlDirectory(t *testing.T) {
+	limitHelpers(t, map[string]string{"make-control": "printf x > .cloud-harness/pwn\n"})
+	root := t.TempDir()
+
+	if _, out := runLimited(t, context.Background(), root, CommandLimits{}, "make-control"); strings.Contains(out.Stdout+out.Stderr, "CONTROL_SECRET") {
+		t.Fatalf("command saw control contents:\n%s", out.Stdout+out.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cloud-harness")); !os.IsNotExist(err) {
+		t.Fatalf("temporary control mask was not cleaned up: %v", err)
 	}
 }
