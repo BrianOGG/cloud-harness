@@ -443,6 +443,7 @@ export default function App() {
       openSession(run.session_id);
       upsertRun(run);
       setInspected(run.id);
+      loadEvents(run);
     } catch (reason) {
       setError(`无法打开运行：${errorText(reason)}`);
     }
