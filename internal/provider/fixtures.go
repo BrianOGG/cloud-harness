@@ -13,6 +13,7 @@ func ParseAnthropicMessage(raw []byte) (domain.ModelResponse, error) {
 	var env struct {
 		ID      string            `json:"id"`
 		Content []json.RawMessage `json:"content"`
+		Usage   *anthropicUsage   `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return domain.ModelResponse{}, domain.E(domain.CodeProtocol, "anthropic message was not JSON")
@@ -56,23 +57,49 @@ func ParseAnthropicMessage(raw []byte) (domain.ModelResponse, error) {
 		}
 		resp.Items = append(resp.Items, item)
 	}
+	if env.Usage != nil {
+		if u := env.Usage.domain(); u.InputTokens > 0 || u.OutputTokens > 0 || u.CachedInputTokens > 0 {
+			resp.Items = append(resp.Items, domain.ResponseItem{Ordinal: len(resp.Items), Kind: domain.ItemUsage, Usage: &u})
+		}
+	}
 	if err := domain.ValidateItems(resp.Items); err != nil {
 		return domain.ModelResponse{}, err
 	}
 	return resp, nil
 }
 
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+func (u anthropicUsage) domain() domain.Usage {
+	return domain.Usage{
+		InputTokens:       u.InputTokens + u.CacheCreationInputTokens,
+		OutputTokens:      u.OutputTokens,
+		CachedInputTokens: u.CacheReadInputTokens,
+	}
+}
+
 // ParseOpenAIResponses maps a Responses API body onto ordered response items.
 // Each reasoning item's original JSON is the opaque payload.
 func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 	var env struct {
-		ID     string            `json:"id"`
-		Output []json.RawMessage `json:"output"`
+		ID     string                `json:"id"`
+		Status string                `json:"status"`
+		Output []json.RawMessage     `json:"output"`
+		Usage  *openAIResponsesUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return domain.ModelResponse{}, domain.E(domain.CodeProtocol, "openai response was not JSON")
 	}
-	resp := domain.ModelResponse{Provider: "openai", ProviderResponseID: env.ID, Complete: true}
+	resp := domain.ModelResponse{
+		Provider:           "openai-responses",
+		ProviderResponseID: env.ID,
+		Complete:           env.Status == "" || env.Status == "completed",
+	}
 	for _, block := range env.Output {
 		var head struct {
 			Type      string `json:"type"`
@@ -92,7 +119,7 @@ func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 		case "reasoning":
 			item.Kind = domain.ItemOpaque
 			item.Opaque = &domain.OpaqueItem{
-				Provider: "openai",
+				Provider: "openai-responses",
 				Kind:     "reasoning",
 				Payload:  append([]byte(nil), bytes.TrimSpace(block)...),
 			}
@@ -114,12 +141,33 @@ func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 			item.Text = text
 		default:
 			item.Kind = domain.ItemOpaque
-			item.Opaque = &domain.OpaqueItem{Provider: "openai", Kind: head.Type, Payload: append([]byte(nil), bytes.TrimSpace(block)...)}
+			item.Opaque = &domain.OpaqueItem{Provider: "openai-responses", Kind: head.Type, Payload: append([]byte(nil), bytes.TrimSpace(block)...)}
 		}
 		resp.Items = append(resp.Items, item)
+	}
+	if env.Usage != nil {
+		if u := env.Usage.domain(); u.InputTokens > 0 || u.OutputTokens > 0 || u.CachedInputTokens > 0 {
+			resp.Items = append(resp.Items, domain.ResponseItem{Ordinal: len(resp.Items), Kind: domain.ItemUsage, Usage: &u})
+		}
 	}
 	if err := domain.ValidateItems(resp.Items); err != nil {
 		return domain.ModelResponse{}, err
 	}
 	return resp, nil
+}
+
+type openAIResponsesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	InputDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+}
+
+func (u openAIResponsesUsage) domain() domain.Usage {
+	return domain.Usage{
+		InputTokens:       u.InputTokens,
+		OutputTokens:      u.OutputTokens,
+		CachedInputTokens: u.InputDetails.CachedTokens,
+	}
 }

@@ -76,7 +76,7 @@ func TestOpenAIReasoningPassthroughOrder(t *testing.T) {
 	if resp.Items[1].ToolCall.ProviderCallID != "call_1" || resp.Items[2].Text != "done" {
 		t.Fatal("items were reordered")
 	}
-	replayed, err := domain.Replay("openai", resp.Items)
+	replayed, err := domain.Replay("openai-responses", resp.Items)
 	if err != nil {
 		t.Fatal(err)
 	}

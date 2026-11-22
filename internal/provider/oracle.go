@@ -28,6 +28,14 @@ func ModelName(p Provider, requested string) string {
 		if p.Model != "" {
 			return p.Model
 		}
+	case *OpenAIResponses:
+		if p.Model != "" {
+			return p.Model
+		}
+	case *Anthropic:
+		if p.Model != "" {
+			return p.Model
+		}
 	case *PrefixCache:
 		return ModelName(p.Inner, "")
 	}

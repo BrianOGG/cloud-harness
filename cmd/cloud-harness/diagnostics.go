@@ -50,7 +50,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dbPath := fs.String("db", "", "sqlite database path")
 	workspace := fs.String("workspace", "", "workspace directory")
-	providerFlag := fs.String("provider", "", "mock or openai")
+	providerFlag := fs.String("provider", "", "mock, openai, openai-responses, or anthropic")
 	jsonOutput := fs.Bool("json", false, "write JSON checks")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -110,8 +110,8 @@ func collectDoctorChecksMCP(ctx context.Context, cfg config.Config, ws string, c
 	items := make([]doctorItem, 0, 10)
 	if configErr != nil {
 		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: configErrorDetail(configErr)})
-	} else if cfg.Provider != "mock" && cfg.Provider != "openai" {
-		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: "field provider: must be mock or openai"})
+	} else if cfg.Provider != "mock" && cfg.Provider != "openai" && cfg.Provider != "openai-responses" && cfg.Provider != "anthropic" {
+		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: "field provider: must be mock, openai, openai-responses, or anthropic"})
 		configOK = false
 	} else if err := config.ValidateModelPrices(cfg.ModelPrices); err != nil {
 		items = append(items, doctorItem{Name: "config", Status: "fail", Detail: configErrorDetail(err)})
@@ -391,7 +391,7 @@ func checkProvider(ctx context.Context, cfg config.Config) doctorItem {
 	switch cfg.Provider {
 	case "mock":
 		return doctorItem{Name: "provider", Status: "ok", Detail: "mock provider is available"}
-	case "openai":
+	case "openai", "openai-responses":
 		if strings.TrimSpace(cfg.OpenAIAPIKey) == "" {
 			return doctorItem{Name: "provider", Status: "warn", Detail: "OPENAI_API_KEY is not set; OpenAI connectivity probe skipped"}
 		}
@@ -403,15 +403,28 @@ func checkProvider(ctx context.Context, cfg config.Config) doctorItem {
 			return doctorItem{Name: "provider", Status: "fail", Detail: "GET /models failed: " + err.Error()}
 		}
 		return doctorItem{Name: "provider", Status: "ok", Detail: "GET /models succeeded"}
+	case "anthropic":
+		if strings.TrimSpace(cfg.AnthropicAPIKey) == "" {
+			return doctorItem{Name: "provider", Status: "warn", Detail: "ANTHROPIC_API_KEY is not set; Anthropic connectivity probe skipped"}
+		}
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		client := &http.Client{Timeout: 3 * time.Second}
+		probe := &provider.Anthropic{BaseURL: cfg.AnthropicBaseURL, APIKey: cfg.AnthropicAPIKey, Client: client}
+		if err := probe.Probe(ctx); err != nil {
+			return doctorItem{Name: "provider", Status: "fail", Detail: "GET /v1/models failed: " + err.Error()}
+		}
+		return doctorItem{Name: "provider", Status: "ok", Detail: "GET /v1/models succeeded"}
 	default:
 		return doctorItem{Name: "provider", Status: "fail", Detail: "field provider: unsupported provider"}
 	}
 }
 
 func scrubDoctor(s string) string {
-	key := os.Getenv("OPENAI_API_KEY")
-	if key != "" {
-		s = strings.ReplaceAll(s, key, "[redacted]")
+	for _, key := range []string{os.Getenv("OPENAI_API_KEY"), os.Getenv("ANTHROPIC_API_KEY")} {
+		if key != "" {
+			s = strings.ReplaceAll(s, key, "[redacted]")
+		}
 	}
 	return s
 }
@@ -485,8 +498,8 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, scrubDoctor(configErrorDetail(err)))
 		return 1
 	}
-	if cfg.Provider != "mock" && cfg.Provider != "openai" {
-		fmt.Fprintln(stderr, "field provider: must be mock or openai")
+	if cfg.Provider != "mock" && cfg.Provider != "openai" && cfg.Provider != "openai-responses" && cfg.Provider != "anthropic" {
+		fmt.Fprintln(stderr, "field provider: must be mock, openai, openai-responses, or anthropic")
 		return 1
 	}
 	since := time.Now().UTC().AddDate(0, 0, -*days)

@@ -22,6 +22,8 @@ const (
 	DefaultDB              = ".cloud-harness/harness.db"
 	DefaultModel           = "gpt-4.1-mini"
 	DefaultOpenAI          = "https://api.openai.com/v1"
+	DefaultAnthropic       = "https://api.anthropic.com"
+	DefaultAnthropicModel  = "claude-sonnet-4-5"
 	DefaultReasoningReplay = "message"
 	MinHTTPTokenLen        = 16
 )
@@ -86,6 +88,9 @@ type Config struct {
 	OpenAIHeaderTimeoutMS    int    `json:"openai_header_timeout_ms"`
 	OpenAIIdleTimeoutMS      int    `json:"openai_idle_timeout_ms"`
 	OpenAIRetryBaseMS        int    `json:"openai_retry_base_ms"`
+	AnthropicBaseURL         string `json:"anthropic_base_url"`
+	AnthropicModel           string `json:"anthropic_model"`
+	AnthropicAPIKey          string `json:"-"`
 	HTTPToken                string `json:"http_token"`
 	HTTPAllowInsecure        bool   `json:"http_allow_insecure"` // Deprecated; cannot bypass HTTP token requirements.
 	AllowExternal            bool   `json:"-"`                   // Deprecated legacy setting, retained for config compatibility.
@@ -187,6 +192,8 @@ func Load(path string, env func(string) string) (Config, error) {
 		OpenAIBaseURL:         DefaultOpenAI,
 		OpenAIModel:           DefaultModel,
 		OpenAIReasoningReplay: DefaultReasoningReplay,
+		AnthropicBaseURL:      DefaultAnthropic,
+		AnthropicModel:        DefaultAnthropicModel,
 		OwnerID:               "local",
 	}
 	if err := loadFile(path, env, &cfg); err != nil {
@@ -269,6 +276,13 @@ func Load(path string, env func(string) string) (Config, error) {
 		cfg.OpenAIRetryBaseMS = n
 	}
 	cfg.OpenAIAPIKey = env("OPENAI_API_KEY")
+	if v := env("ANTHROPIC_BASE_URL"); v != "" {
+		cfg.AnthropicBaseURL = v
+	}
+	if v := env("ANTHROPIC_MODEL"); v != "" {
+		cfg.AnthropicModel = v
+	}
+	cfg.AnthropicAPIKey = env("ANTHROPIC_API_KEY")
 	if v := env("CLOUD_HARNESS_HTTP_TOKEN"); v != "" {
 		cfg.HTTPToken = v
 	}
@@ -509,6 +523,10 @@ func (c Config) Redacted() map[string]any {
 	if c.OpenAIAPIKey != "" {
 		key = "set"
 	}
+	anthropicKey := "unset"
+	if c.AnthropicAPIKey != "" {
+		anthropicKey = "set"
+	}
 	token := "unset"
 	if c.HTTPToken != "" {
 		token = "set"
@@ -533,6 +551,9 @@ func (c Config) Redacted() map[string]any {
 		"openai_disable_images":   c.OpenAIDisableImages,
 		"openai_reasoning_replay": c.OpenAIReasoningReplay,
 		"openai_api_key":          key,
+		"anthropic_base_url":      c.AnthropicBaseURL,
+		"anthropic_model":         c.AnthropicModel,
+		"anthropic_api_key":       anthropicKey,
 		"http_token":              token,
 		"http_allow_insecure":     c.HTTPAllowInsecure,
 		"allow_external":          c.AllowExternal,
