@@ -677,8 +677,15 @@ func finishStatsRow(bucket *statsAccumulator) statsRow {
 }
 
 func attributedModel(providerName string, cfg config.Config) string {
-	if providerName == "openai" && cfg.OpenAIModel != "" {
-		return cfg.OpenAIModel
+	switch providerName {
+	case "openai", "openai-responses":
+		if cfg.OpenAIModel != "" {
+			return cfg.OpenAIModel
+		}
+	case "anthropic":
+		if cfg.AnthropicModel != "" {
+			return cfg.AnthropicModel
+		}
 	}
 	if strings.TrimSpace(providerName) == "" {
 		return "unknown"
