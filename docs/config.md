@@ -23,6 +23,7 @@ baseline denials, examples, and run snapshot behavior.
   "http_allow_insecure": false,
   "disable_snapshots": false,
   "command_env_allow": [],
+  "command_limits": {},
   "notify": {
     "approval_base_url": "https://harness.example",
     "channels": [
@@ -99,12 +100,66 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_RETENTION_DAYS` | `0` | history-index age limit; `0` keeps every row |
 | `CLOUD_HARNESS_CONFIG` | unset | optional JSON file |
 | `CLOUD_HARNESS_DISABLE_SNAPSHOTS` | `false` | Disable automatic workspace snapshots (`1` or `true`); the default captures pre/post snapshots around batches with side effects |
+| `CLOUD_HARNESS_COMMAND_LIMITS` | unset | `off`, or `name=value` pairs overriding single `command_limits` fields; see [Command resource limits](#command-resource-limits) |
 | `CLOUD_HARNESS_MODEL_PROFILES` | unset | JSON object replacing `model_profiles` from the file |
 | `CLOUD_HARNESS_MODEL_ROLES` | unset | JSON object replacing `model_roles` from the file |
 | `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | default model id for roles without a profile |
 | `OPENAI_DISABLE_IMAGES` | `false` | Reject image input locally for a text-only compatible endpoint/model; JSON field `openai_disable_images` |
+
+## Command resource limits
+
+On Linux every `run_command` process starts under kernel resource limits
+(`setrlimit`), which its child processes inherit. `command_limits` adjusts
+them. An omitted field keeps its default and `0` leaves that one resource
+unlimited.
+
+| Field | Default | Kernel limit | Effect |
+| --- | --- | --- | --- |
+| `memory_bytes` | `8589934592` (8 GiB) | `RLIMIT_DATA` | Private writable memory (heap, anonymous mappings, thread stacks) of each process |
+| `address_space_bytes` | `0` (unlimited) | `RLIMIT_AS` | Virtual address space of each process |
+| `cpu_seconds` | 120 per CPU core, at least `600` | `RLIMIT_CPU` | CPU time of each process; the kernel sends `SIGXCPU` at the limit and `SIGKILL` 5 seconds later. The default cannot be reached within the 120 second timeout, so it only stops processes that outlive their command |
+| `file_size_bytes` | `4294967296` (4 GiB) | `RLIMIT_FSIZE` | Size of any single file a process writes |
+| `open_files` | `16384` | `RLIMIT_NOFILE` | Open file descriptors of each process |
+| `processes` | `16384` | `RLIMIT_NPROC` | Processes and threads of the user running the harness, counted across the whole system |
+| `disabled` | `false` | | `true` starts commands with none of these limits |
+
+```json
+{
+  "command_limits": {"memory_bytes": 17179869184, "cpu_seconds": 0}
+}
+```
+
+`CLOUD_HARNESS_COMMAND_LIMITS` overrides the file: `off` disables the limits,
+and a comma-separated list such as `memory_bytes=17179869184,cpu_seconds=0`
+replaces the named fields, keeps the others, and turns the limits back on if
+the file disabled them. Values are non-negative integers in bytes, seconds, or
+counts.
+
+What the limits do and do not cover:
+
+- They are per process, not a budget for the command's process tree. A command
+  that starts ten processes can use ten times `memory_bytes`. Only `processes`
+  bounds the tree, and it counts every process of the user, including ones the
+  command did not start. The kernel does not enforce it for root.
+- The default memory limit is `RLIMIT_DATA` and not `RLIMIT_AS` because
+  Chromium reserves far more address space than it uses and fails under an
+  8 GiB address-space limit. Set `address_space_bytes` to add one.
+- C and C++ binaries built with AddressSanitizer or ThreadSanitizer map
+  terabytes of writable shadow memory at startup and fail under the default
+  `memory_bytes` with `failed to allocate ... bytes`. Set `memory_bytes` to
+  `0` to run them. Go's race detector (`go test -race`) is not affected.
+- A limit never raises what the harness process itself runs under (`ulimit`,
+  systemd, a container): the lower value wins.
+- Core dumps are turned off (`RLIMIT_CORE` 0) whenever limits are enabled.
+- The 120 second timeout, the environment allowlist, and the 1 MiB output cap
+  apply as before. On Linux the command runs in its own process group, and a
+  timeout or cancellation kills the whole group.
+- macOS and Windows run commands without these limits.
+
+How a limit shows up in the `run_command` result is described in
+[tools.md](tools.md).
 
 ## Model profiles
 

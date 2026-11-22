@@ -48,6 +48,11 @@ questions, completion, and failure or cancellation. Set `notify.approval_base_ur
 to include a direct link to the waiting run. See
 [notification configuration](docs/config.md#run-notifications).
 
+On Linux, `run_command` processes and their children run under kernel resource
+limits (memory, CPU time, file size, open files, process count). The defaults
+fit ordinary builds and tests; adjust or disable them with `command_limits`.
+See [command resource limits](docs/config.md#command-resource-limits).
+
 `run`, `chat`, and `serve` optionally accept `--worktree` in a Git workspace. Each run
 starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under
 `.cloud-harness/worktrees/<run-id>/`; files are isolated while the database

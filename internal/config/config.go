@@ -94,6 +94,8 @@ type Config struct {
 	RetentionDays int `json:"retention_days"`
 	// CommandEnvAllow lists extra environment variable names passed to run_command subprocesses.
 	CommandEnvAllow []string `json:"command_env_allow"`
+	// CommandLimits adjusts or disables the resource limits of run_command subprocesses.
+	CommandLimits CommandLimits `json:"command_limits"`
 	// DisableSnapshots opts out of automatic pre/post workspace snapshots.
 	DisableSnapshots bool `json:"disable_snapshots"`
 	// Servers declares local stdio MCP servers.
@@ -107,6 +109,66 @@ type Config struct {
 	OracleMaxCostUSD float64 `json:"oracle_max_cost_usd,omitempty"`
 	// Notify configures optional run lifecycle notifications.
 	Notify notify.Config `json:"notify,omitempty"`
+}
+
+// CommandLimits configures the Linux resource limits of run_command
+// subprocesses. An omitted field keeps the built-in default and 0 leaves that
+// resource unlimited. The defaults live in internal/tools.
+type CommandLimits struct {
+	// Disabled runs commands without any of these limits.
+	Disabled bool `json:"disabled,omitempty"`
+	// MemoryBytes caps the private writable memory of each process.
+	MemoryBytes *uint64 `json:"memory_bytes,omitempty"`
+	// AddressSpaceBytes caps the virtual address space of each process. It is
+	// unlimited by default.
+	AddressSpaceBytes *uint64 `json:"address_space_bytes,omitempty"`
+	// CPUSeconds caps the CPU time of each process.
+	CPUSeconds *uint64 `json:"cpu_seconds,omitempty"`
+	// FileSizeBytes caps the size of any file a process writes.
+	FileSizeBytes *uint64 `json:"file_size_bytes,omitempty"`
+	// OpenFiles caps the open file descriptors of each process.
+	OpenFiles *uint64 `json:"open_files,omitempty"`
+	// Processes caps the processes and threads of the user running the command.
+	Processes *uint64 `json:"processes,omitempty"`
+}
+
+// applyEnv applies CLOUD_HARNESS_COMMAND_LIMITS: "off" disables the limits,
+// otherwise a comma-separated list of name=value pairs overrides single fields.
+func (l *CommandLimits) applyEnv(value string) error {
+	invalid := func(detail string) error {
+		return domain.E(domain.CodeInvalidArgument, "CLOUD_HARNESS_COMMAND_LIMITS "+detail)
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "off") {
+		l.Disabled = true
+		return nil
+	}
+	fields := map[string]**uint64{
+		"memory_bytes":        &l.MemoryBytes,
+		"address_space_bytes": &l.AddressSpaceBytes,
+		"cpu_seconds":         &l.CPUSeconds,
+		"file_size_bytes":     &l.FileSizeBytes,
+		"open_files":          &l.OpenFiles,
+		"processes":           &l.Processes,
+	}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, text, ok := strings.Cut(part, "=")
+		name = strings.TrimSpace(name)
+		field := fields[name]
+		if !ok || field == nil {
+			return invalid("must be \"off\" or name=value pairs of memory_bytes, address_space_bytes, cpu_seconds, file_size_bytes, open_files, processes")
+		}
+		n, err := strconv.ParseUint(strings.TrimSpace(text), 10, 64)
+		if err != nil {
+			return invalid(name + " must be a non-negative integer")
+		}
+		*field = &n
+		l.Disabled = false
+	}
+	return nil
 }
 
 // Load reads an optional JSON file and applies environment overrides.
@@ -232,6 +294,11 @@ func Load(path string, env func(string) string) (Config, error) {
 			}
 		}
 		cfg.CommandEnvAllow = allow
+	}
+	if v := env("CLOUD_HARNESS_COMMAND_LIMITS"); v != "" {
+		if err := cfg.CommandLimits.applyEnv(v); err != nil {
+			return Config{}, err
+		}
 	}
 	if v := env("CLOUD_HARNESS_ORACLE_MAX_COST_USD"); v != "" {
 		limit, err := strconv.ParseFloat(v, 64)

@@ -55,6 +55,7 @@ func (b *Broker) ForkWorkspace(root string, reset ...string) (*Broker, error) {
 	fork := NewBroker(b.charge, b.grants)
 	fork.now = b.now
 	fork.CommandEnvAllow = append([]string(nil), b.CommandEnvAllow...)
+	fork.commandLimits = b.commandLimits
 	for name, spec := range b.reg {
 		fork.reg[name] = spec
 	}
@@ -879,7 +880,8 @@ func runCommandSpec(b *Broker, abs string) Spec {
 			stderr.limit = maxFileBytes
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
-			err = cmd.Run()
+			guard := guardCommand(cmd, b.CommandLimits())
+			err = guard.Run()
 			exitCode := 0
 			if err != nil {
 				var exitErr *exec.ExitError
@@ -906,6 +908,14 @@ func runCommandSpec(b *Broker, abs string) Spec {
 				if !errors.As(err, &exitErr) || cctx.Err() != nil {
 					raw, _ := json.Marshal(out)
 					return raw, domain.E(domain.CodeToolError, err.Error())
+				}
+				if hit := guard.limitHit(err, stderr.String()); hit != nil {
+					out["resource_limit"] = hit
+					if hit.Certain {
+						out["error"] = hit.Message
+						raw, _ := json.Marshal(out)
+						return raw, domain.E(domain.CodeResourceLimit, hit.Message)
+					}
 				}
 			}
 			return json.Marshal(out)

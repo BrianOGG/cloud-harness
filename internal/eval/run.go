@@ -203,6 +203,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	useScripted := shouldUseScripted(opt)
 	broker := tools.NewBroker(db, db)
 	broker.SetCommandEnvAllow(opt.Config.CommandEnvAllow)
+	broker.SetCommandLimits(tools.CommandLimits(opt.Config.CommandLimits))
 	if err := tools.RegisterLocal(broker, abs); err != nil {
 		return out, err
 	}
