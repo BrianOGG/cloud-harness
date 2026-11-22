@@ -1,18 +1,27 @@
 # Cloud Harness Web UI
 
-The browser app that `cloud-harness serve` hosts at `/ui`. It starts sessions,
-sends messages, shows run events, traces, and budgets, answers approvals and
-questions, and shows the stats and doctor checks on the observability page.
-[FRONTEND_MODULES.md](FRONTEND_MODULES.md) lists the pages and the HTTP API
+The browser app that `cloud-harness serve` hosts at `/ui`. It is a chat
+interface: a sidebar of conversations, a thread where each message is one run,
+and a composer. A turn shows the run's model steps and tool calls above its
+Markdown answer, and asks for approvals, answers, and budget in place. A drawer
+shows a run's budget, trace, and events. Approvals and observability (stats and
+doctor checks) are sidebar pages.
+[FRONTEND_MODULES.md](FRONTEND_MODULES.md) lists the modules and the HTTP API
 each one uses.
 
-React 19, TypeScript, Vite, Ant Design, and `@lobehub/ui`. Node.js 22 (22.12 or
-later, see `.nvmrc`) and npm.
+React 19, TypeScript, Vite, and `react-markdown`. Node.js 22 (22.12 or later,
+see `.nvmrc`) and npm.
 
 ## Layout
 
 ```text
-src/            app source: App.tsx, Observability.tsx, RunBudget.tsx, api.ts, budget.ts
+src/            app source
+  App.tsx         state, sidebar, pages, run details drawer
+  Chat.tsx        a turn (work block, wait cards, answer) and the composer
+  Markdown.tsx    Markdown rendering for model output
+  timeline.ts     run events -> the rows of a turn's work block
+  api.ts          HTTP client and event stream reader
+  Observability.tsx, RunBudget.tsx, budget.ts, format.ts, Icon.tsx
 public/         files copied into dist/ unchanged
 scripts/        unit tests, the dist check, and the browser acceptance scripts
 screenshots/    acceptance screenshots, by milestone
@@ -48,25 +57,59 @@ localStorage.setItem('cloud-harness.http-token', 'TOKEN')
 The app is built with `base: '/ui/'`, so asset URLs in `dist/index.html` start
 with `/ui/`.
 
+### Without a model key
+
+The default `mock` provider answers in one step by repeating the message.
+`scripts/demo-provider.py` is an OpenAI-compatible provider with canned replies
+that exercises tool calls, approval, `ask_user`, a child run, and a failed run,
+picked by words in the message (the welcome screen suggests one of each):
+
+```bash
+python3 web/scripts/demo-provider.py          # listens on 127.0.0.1:19422
+
+CLOUD_HARNESS_PROVIDER=openai OPENAI_API_KEY=demo OPENAI_MODEL=demo \
+OPENAI_BASE_URL=http://127.0.0.1:19422/v1 ./cloud-harness serve
+```
+
+## How a run is followed
+
+- `POST /v1/sessions/{id}/runs` can return only when the run stops. While it
+  is pending the app polls the session's run list, adopts the new run, and
+  follows it, so steps show up before the POST returns. A response that
+  arrives while the run is still `RUNNING` is followed the same way.
+- Each unfinished run of the open conversation has one open
+  `GET /v1/runs/{id}/events` stream, reconnected with `Last-Event-ID`, and its
+  run view is polled once a second. If the stream is silent while the run's
+  version changes (a proxy that buffers), the events are read with short
+  requests instead.
+- A `stream.delta` block (no `id`, payload `{"text": "..."}`) is appended to
+  the turn as it arrives and replaced by `final_answer` when the run ends.
+- serve does not return message text. The app keeps what this browser sent in
+  `localStorage` (`cloud-harness.web-messages`, `-answers`, `-titles`); a run
+  started elsewhere shows a note in place of its message.
+- Runs with a `parent_id` are child runs. They are not turns; the parent turn
+  lists them.
+
 ## Checks
 
 ```bash
 npm run lint         # oxlint src
-npm test             # tsx scripts/test-events.ts and scripts/test-observability.ts
+npm test             # tsx scripts/test-*.ts
 npm run build        # tsc -b, then vite build into dist/
 npm run check:dist   # build, then fail if dist/ differs from what git has
 ```
 
 `npm test` runs plain Node scripts that stub `fetch` and `localStorage`. They
-cover event-stream parsing, API request headers, budget counters, and the
-observability page states. They need no browser and no running `serve`.
+cover event-stream parsing and following, the work block built from run
+events, API request headers, budget counters, and the observability page
+states. They need no browser and no running `serve`.
 
 CI runs `npm ci`, `npm run lint`, `npm test`, and `npm run check:dist` on
 Node.js 22 for every pull request and for pushes to `main` and `dev`.
 
 `scripts/acceptance.sh` is the manual end-to-end pass. It builds the binary,
 starts a real `serve` with a scripted provider, drives headless Firefox through
-the pages, and writes screenshots under `screenshots/`. It installs Firefox and
+the pages, and writes screenshots under `screenshots/chat/`. It installs Firefox and
 geckodriver on first use and is not part of CI.
 
 ## `dist/` is checked in

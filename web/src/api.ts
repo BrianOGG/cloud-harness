@@ -13,9 +13,12 @@ export interface Budget {
 
 export interface PendingInvocation {
   id?: string;
+  invocation_id?: string;
   name?: string;
   tool?: string;
+  args_summary?: string;
   arguments?: unknown;
+  resources?: string[];
   status?: string;
   ordinal?: number;
   warnings?: string[];
@@ -24,6 +27,8 @@ export interface PendingInvocation {
 export interface RunView {
   id: string;
   session_id: string;
+  // Set on a child run started by delegate_task.
+  parent_id?: string;
   status: 'RUNNING' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string;
   wait_reason?: 'USER' | 'APPROVAL' | 'CHILD' | 'BUDGET' | 'RECONCILIATION' | string;
   wait_kind?: string;
@@ -33,6 +38,8 @@ export interface RunView {
   final_answer?: string;
   error?: { code?: string; message?: string };
   version: number;
+  // Not sent by serve today. Shown instead of the locally saved text when present.
+  message?: string;
 }
 
 export interface SessionView {
@@ -137,6 +144,18 @@ export function parseEventStream(text: string): HarnessEvent[] {
   return events;
 }
 
+const TOKEN_HINT = '需要有效的 HTTP token。请在浏览器 localStorage 设置 cloud-harness.http-token。';
+
+function eventsRequest(runId: string, after: number, signal: AbortSignal): Promise<Response> {
+  const headers = new Headers({ Accept: 'text/event-stream' });
+  if (after > 0) headers.set('Last-Event-ID', String(after));
+  return fetchWithToken(`/v1/runs/${encodeURIComponent(runId)}/events`, { headers, signal });
+}
+
+function eventsError(response: Response): Error {
+  return new Error(response.status === 401 ? TOKEN_HINT : `${response.status} ${response.statusText || '请求失败'}`);
+}
+
 function fetchWithToken(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   const token = localStorage.getItem('cloud-harness.http-token');
@@ -157,7 +176,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Keep the HTTP status when the error response is not JSON.
     }
-    if (response.status === 401) message = '需要有效的 HTTP token。请在浏览器 localStorage 设置 cloud-harness.http-token。';
+    if (response.status === 401) message = TOKEN_HINT;
     throw new Error(message);
   }
   if (response.status === 204) return undefined as T;
@@ -187,18 +206,16 @@ export const api = {
     }),
   cancel: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
   getTrace: (runId: string) => req<TraceView>(`/v1/runs/${encodeURIComponent(runId)}/trace`),
+  // One short read of the persistent events after `after`. serve keeps the
+  // stream of a live run open, so the read stops at the first complete block
+  // or after 750 ms.
   fetchEvents: async (runId: string, after: number): Promise<HarnessEvent[]> => {
-    const headers = new Headers();
-    if (after > 0) headers.set('Last-Event-ID', String(after));
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 750);
-    const response = await fetchWithToken(`/v1/runs/${encodeURIComponent(runId)}/events`, { headers, signal: controller.signal });
+    const response = await eventsRequest(runId, after, controller.signal);
     if (!response.ok) {
       window.clearTimeout(timeout);
-      const message = response.status === 401
-        ? '需要有效的 HTTP token。请在浏览器 localStorage 设置 cloud-harness.http-token。'
-        : `${response.status} ${response.statusText || '请求失败'}`;
-      throw new Error(message);
+      throw eventsError(response);
     }
     if (!response.body) {
       window.clearTimeout(timeout);
@@ -223,6 +240,33 @@ export const api = {
     } finally {
       window.clearTimeout(timeout);
       controller.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+  },
+  // Follows the event stream until serve closes it or `signal` aborts, calling
+  // `onEvent` for each block as it arrives. Stream deltas come through with seq 0.
+  streamEvents: async (runId: string, after: number, onEvent: (event: HarnessEvent) => void, signal: AbortSignal): Promise<void> => {
+    const response = await eventsRequest(runId, after, signal);
+    if (!response.ok) throw eventsError(response);
+    if (!response.body) {
+      parseEventStream(await response.text()).forEach(onEvent);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        const cut = buffer.lastIndexOf('\n\n');
+        if (cut < 0) continue;
+        parseEventStream(buffer.slice(0, cut)).forEach(onEvent);
+        buffer = buffer.slice(cut + 2);
+      }
+      parseEventStream(buffer + decoder.decode()).forEach(onEvent);
+    } finally {
       await reader.cancel().catch(() => undefined);
     }
   },

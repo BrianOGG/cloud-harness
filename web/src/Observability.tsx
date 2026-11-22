@@ -134,9 +134,9 @@ export function Observability({ onOpenRun }: { onOpenRun: (runId: string) => voi
   const failures = stats?.data?.recent_errors;
 
   return (
-    <main className="page observability-page">
+    <div className="page observability-page">
       <div className="page-heading observability-heading">
-        <div><p className="eyebrow">SYSTEM HEALTH</p><h1>观测</h1></div>
+        <div><h2>运行状况</h2><p className="page-subtitle">用量、策略判定和 doctor 检查。</p></div>
         <button type="button" className="button secondary" onClick={refresh} disabled={loading}>
           <ReloadOutlined spin={loading} aria-hidden="true" /> {loading ? '正在刷新…' : '刷新数据'}
         </button>
@@ -199,6 +199,6 @@ export function Observability({ onOpenRun }: { onOpenRun: (runId: string) => voi
           ) : <div className="panel-message clean-message"><span aria-hidden="true">✓</span><strong>暂无运行错误</strong></div>}
         </section>
       </div>
-    </main>
+    </div>
   );
 }

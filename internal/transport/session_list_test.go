@@ -134,6 +134,39 @@ func TestListSessionRunsUsesRunViewAndIsolatesSessions(t *testing.T) {
 	}
 }
 
+func TestRunViewNamesParentRun(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	base := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	createTestSession(t, db, "ses_parent", base, base)
+	createTestRun(t, db, "run_parent", "ses_parent", domain.RunCompleted, base.Add(time.Minute))
+	child := storage.Run{
+		ID: "run_child", SessionID: "ses_parent", ParentRunID: "run_parent", Status: domain.RunCompleted,
+		Budget: domain.DefaultBudget(), Version: 1, CreatedAt: base.Add(2 * time.Minute), UpdatedAt: base.Add(2 * time.Minute),
+	}
+	if err := db.CreateRun(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+
+	h := (&Server{Manager: &agent.Manager{Store: db, Provider: &provider.Mock{}, OwnerID: "api"}}).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sessions/ses_parent/runs", nil))
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("list runs %d: %v (%s)", rec.Code, err, rec.Body)
+	}
+	if _, ok := got[0]["parent_id"]; ok {
+		t.Fatalf("top-level run has parent_id: %v", got[0])
+	}
+	if got[1]["id"] != "run_child" || got[1]["parent_id"] != "run_parent" {
+		t.Fatalf("child run does not name its parent: %v", got[1])
+	}
+}
+
 func TestListSessionRunsEmptyReturnsArray(t *testing.T) {
 	ctx := context.Background()
 	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "empty-runs.db"))

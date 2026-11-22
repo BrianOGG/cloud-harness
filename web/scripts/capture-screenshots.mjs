@@ -40,13 +40,13 @@ async function assertMobileLayout(view, screen, theme) {
         const { left, right } = button.getBoundingClientRect();
         return left < 0 || right > viewport || button.scrollWidth > button.clientWidth + 1;
       }).map((button) => button.textContent.trim());
-      const grids = [...document.querySelectorAll('.run-page, .budget-grid, .conversation-layout, .stat-grid, .observability-strip, .observation-columns')];
+      const grids = [...document.querySelectorAll('.stat-grid, .observability-strip, .observation-columns')];
       return {
         width: window.innerWidth,
         viewport,
         matches: matchMedia('(max-width: 768px)').matches,
         scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-        sidebar: [...document.querySelectorAll('.run-sidebar')].some(visible),
+        sidebar: [...document.querySelectorAll('.sidebar')].some(visible),
         multiColumn: grids.filter((grid) => getComputedStyle(grid).gridTemplateColumns.includes(' ')).map((grid) => grid.className),
         outOfBounds,
       };
@@ -57,7 +57,7 @@ async function assertMobileLayout(view, screen, theme) {
     assert.deepEqual(measures.multiColumn, [], detail);
     assert.deepEqual(measures.outOfBounds, [], detail);
     console.log(`MOBILE_CHECK ${screen} theme=${theme} width=${width} viewport=${measures.viewport} scrollWidth=${measures.scrollWidth} sidebar=collapsed columns=single buttons=contained result=PASS`);
-    if (mobileDir && width === 390 && theme === 'dark' && ['sessions', 'run', 'approvals', 'observability'].includes(screen)) {
+    if (mobileDir && width === 390 && theme === 'dark' && ['welcome', 'chat', 'approvals', 'observability'].includes(screen)) {
       await mkdir(mobileDir, { recursive: true });
       await save(`${screen}-mobile-dark.png`, mobileDir, width);
     }
@@ -130,9 +130,28 @@ async function instrumentHTTP() {
   await driver.executeScript(`window.__m11HttpResults=[]; if (!window.__m11OriginalFetch) window.__m11OriginalFetch=window.fetch.bind(window); window.fetch=window.__m11OriginalFetch; const original=window.__m11OriginalFetch; window.fetch=(url,init)=>{const start=performance.now(); return original(url,init).then(response=>{window.__m11HttpResults.push({url:String(url),status:response.status,duration_ms:Math.round(performance.now()-start)}); return response;});};`);
 }
 
-async function closeFlash() {
-  const controls = await driver.findElements(By.css('.flash button'));
-  if (controls.length) await controls[0].click();
+const sessionItem = (id) => `.session-item[data-session-id="${id}"]`;
+const approvalCard = (runId) => `.approval-card[data-run-id="${runId}"]`;
+
+// On a narrow window the sidebar is an overlay that has to be opened first.
+async function openSidebar() {
+  const toggles = await driver.findElements(By.css('[aria-label="展开侧栏"]'));
+  if (toggles.length) await toggles[0].click();
+}
+
+async function nav(page) {
+  await openSidebar();
+  const index = { approvals: 2, observability: 3 }[page];
+  await driver.findElement(By.css(`.sidebar-nav .nav-item:nth-child(${index})`)).click();
+}
+
+async function openSession(id) {
+  await openSidebar();
+  await (await waitFor(sessionItem(id))).click();
+}
+
+async function waitGone(selector) {
+  await driver.wait(async () => (await driver.findElements(By.css(selector))).length === 0, 12000);
 }
 
 async function main() {
@@ -146,10 +165,10 @@ try {
   if (mode === 'empty') {
     await driver.navigate().refresh();
     await waitFor('.topbar');
-    await driver.findElements(By.css('.nav-link')).then((buttons) => buttons[1].click());
-    await waitFor('.large-empty');
-    const observationNav = await driver.findElements(By.css('.nav-link'));
-    await observationNav[2].click();
+    await waitFor('.welcome');
+    await nav('approvals');
+    await waitFor('.page-empty');
+    await nav('observability');
     await waitFor('.observability-page');
     await waitFor('.clean-message');
     await checkObservation();
@@ -160,8 +179,7 @@ try {
     await driver.executeScript('localStorage.removeItem("cloud-harness.http-token")');
     await driver.navigate().refresh();
     await waitFor('.topbar');
-    const errorObservationNav = await driver.findElements(By.css('.nav-link'));
-    await errorObservationNav[2].click();
+    await nav('observability');
     await waitFor('.observability-error');
     await waitFor('.error-message');
     assert.match(await driver.findElement(By.css('.observability-error')).getText(), /统计数据加载失败/);
@@ -172,157 +190,130 @@ try {
 
   await populateMessages({ [approvalRun]: approvalMessage, [pendingRun]: pendingMessage, [askRun]: askMessage });
   await driver.navigate().refresh();
-  await waitFor('.session-card');
-  await captureScreen(view, 'sessions');
+  await waitFor('.welcome');
+  await waitFor(sessionItem(approvalSession));
+  await captureScreen(view, 'welcome');
 
-  const findSession = async (id) => {
-    for (const button of await driver.findElements(By.css('.session-card'))) {
-      if ((await button.getText()).includes(id.slice(0, 12))) return button;
-    }
-    throw new Error(`Session ${id} was not listed`);
-  };
-  const findRun = async (marker) => {
-    for (const button of await driver.findElements(By.css('.run-row'))) {
-      if ((await button.getText()).includes(marker)) return button;
-    }
-    throw new Error(`Run with marker ${marker} was not listed`);
-  };
-
-  await (await findSession(approvalSession)).click();
-  await waitFor('.run-row');
-  await assertMobileLayout(view, 'session', 'dark');
-  await (await findRun('M11_APPROVAL_CHILD')).click();
-  await waitFor('.run-summary-card');
-  await driver.wait(async () => (await driver.findElement(By.css('.run-page')).getText()).includes('等待审批'), 8000);
+  // A waiting run shows its approval card in the thread and in the queue.
+  await openSession(approvalSession);
+  await waitFor(`.turn[data-run-id="${approvalRun}"] .wait-card`);
+  assert.match(await driver.findElement(By.css('.turn .user-bubble')).getText(), /M11_APPROVAL_CHILD/);
+  assert.match(await driver.findElement(By.css('.wait-card')).getText(), /write_file/);
+  await assertMobileLayout(view, 'chat-waiting-approval', 'dark');
   await setTheme('light');
-
-  const navButtons = await driver.findElements(By.css('.nav-link'));
-  await navButtons[1].click();
-  await waitFor('.approval-card');
+  await nav('approvals');
+  await waitFor(approvalCard(approvalRun));
+  await waitFor(approvalCard(pendingRun));
   await captureScreen(view, 'approvals');
 
-  let mainApprovalCard;
-  for (const card of await driver.findElements(By.css('.approval-card'))) {
-    if ((await card.getText()).includes(approvalSession.slice(0, 12))) mainApprovalCard = card;
-  }
-  if (!mainApprovalCard) throw new Error('The main run is missing from the approval queue');
   await instrumentHTTP();
-  await mainApprovalCard.findElement(By.css('.approval-actions .button.primary')).click();
-  await waitFor('.success-flash');
+  await driver.findElement(By.css(`${approvalCard(approvalRun)} .approval-actions .button.primary`)).click();
+  await waitGone(approvalCard(approvalRun));
   const approveRequests = await drainHTTP();
   if (!approveRequests.some((row) => row.url.includes(`/v1/runs/${approvalRun}/responses`) && row.status === 200 && row.duration_ms < 1000)) throw new Error(`Queue approve API failed or exceeded one second: ${JSON.stringify(approveRequests)}`);
   console.log(`UI queue Approve HTTP ${JSON.stringify(approveRequests)}`);
 
-  await driver.findElement(By.css('.brand')).click();
-  await (await findSession(approvalSession)).click();
-  await waitFor('.run-row');
-  await (await findRun('M11_APPROVAL_CHILD')).click();
-  await waitFor('.answer-card');
-  await waitFor('.timeline-title strong');
-  await waitFor('.child-card');
+  // The approved run finishes: answer, work block, and the run details drawer.
+  await openSession(approvalSession);
+  const turn = `.turn[data-run-id="${approvalRun}"]`;
+  await waitFor(`${turn}[data-status="COMPLETED"] .answer`);
+  assert.match(await driver.findElement(By.css(`${turn} .answer`)).getText(), /parent task completed after approval/);
+  await driver.findElement(By.css(`${turn} .work-toggle`)).click();
+  await waitFor(`${turn} .work-list .work-tool`);
+  const workTools = await driver.executeScript((selector) => [...document.querySelectorAll(`${selector} .work-tool`)].map((node) => node.textContent), turn);
+  assert.deepEqual(workTools, ['write_file', 'list_files', 'delegate_task']);
+  await driver.findElement(By.xpath(`//article[@data-run-id='${approvalRun}']//div[contains(@class,'turn-actions')]/button[contains(.,'运行详情')]`)).click();
+  await waitFor('.inspector .trace-call');
   const runTrace = await serveJSON(`/v1/runs/${approvalRun}/trace`);
-  const renderedSteps = await driver.executeScript(() => [...document.querySelectorAll('.timeline-title')].map((node) => ({
-    title: node.querySelector('strong').textContent,
-    actions: [...node.querySelectorAll('.action-chip')].map((chip) => chip.textContent),
-  })));
-  assert.equal(renderedSteps.length, runTrace.run.steps.length);
-  let emptyActions = 0;
-  runTrace.run.steps.forEach((step, index) => {
-    const action = step.action?.trim();
-    assert.deepEqual(renderedSteps[index].actions, action ? [action] : []);
-    if (!action) {
-      assert.equal(renderedSteps[index].title, `步骤 ${index + 1}`);
-      emptyActions++;
-    }
+  const rendered = await driver.executeScript(() => ({
+    id: document.querySelector('.inspector-head code').textContent,
+    steps: [...document.querySelectorAll('.inspector .trace > li')].map((node) => ({
+      title: node.querySelector('.trace-title strong').textContent,
+      calls: [...node.querySelectorAll('.trace-call code')].map((call) => call.textContent),
+    })),
+    budget: [...document.querySelectorAll('.inspector .budget-value')].map((node) => node.textContent.replace(/\s+/g, ' ').trim()),
+  }));
+  assert.equal(rendered.id, approvalRun);
+  const traceSteps = runTrace.run.steps;
+  assert.equal(rendered.steps.length, traceSteps.length + runTrace.run.children.length);
+  traceSteps.forEach((step, index) => {
+    assert.deepEqual(rendered.steps[index].calls, (step.batches || []).flatMap((batch) => (batch.calls || []).map((call) => call.name)));
+    // serve leaves a step's action empty; a step without a batch has only its number to show.
+    if (!step.action?.trim() && !(step.batches || []).length) assert.equal(rendered.steps[index].title, `步骤 ${index + 1}`);
   });
-  assert.ok(emptyActions, 'the real serve trace must exercise an empty action');
-  console.log(`empty action trace regression: ${emptyActions} real serve steps show fallback titles without action chips`);
-  await closeFlash();
-  await captureScreen(view, 'run');
+  assert.equal(rendered.steps[rendered.steps.length - 1].title, '子任务');
+  const runView = await serveJSON(`/v1/runs/${approvalRun}`);
+  assert.deepEqual(rendered.budget, [
+    `${runView.budget.used_model_calls} / ${runView.budget.max_model_calls}`, `${runView.budget.used_tool_calls} / ${runView.budget.max_tool_calls}`,
+    `${runView.budget.used_script_calls} / ${runView.budget.max_script_calls}`, `${runView.budget.used_child_runs} / ${runView.budget.max_child_runs}`,
+  ]);
+  console.log(`run details match real serve: ${traceSteps.length} steps, ${runTrace.run.children.length} child run, tools ${workTools.join(', ')}`);
+  await captureScreen(view, 'chat');
+  await driver.findElement(By.css('.inspector [role="tab"]:nth-child(2)')).click();
+  await waitFor('.inspector .events li');
+  const eventTypes = await driver.executeScript(() => [...document.querySelectorAll('.inspector .events summary strong')].map((node) => node.textContent));
+  assert.ok(eventTypes.includes('run.created') && eventTypes.includes('run.completed') && eventTypes.includes('child.finished'), eventTypes.join(','));
+  // The child run shares the session but is not a turn of the conversation.
+  assert.equal((await driver.findElements(By.css('.turn'))).length, 1);
 
-  await driver.findElements(By.css('.nav-link')).then((buttons) => buttons[1].click());
-  await waitFor('.approval-card');
-  await driver.findElement(By.css('.brand')).click();
-  await (await findSession(pendingSession)).click();
-  await waitFor('.run-row');
-  await (await findRun('M11_PENDING_APPROVAL')).click();
-  await waitFor('.run-summary-card');
-  await driver.wait(async () => (await driver.findElement(By.css('.run-page')).getText()).includes('等待审批'), 8000);
-  const pendingNavButtons = await driver.findElements(By.css('.nav-link'));
-  await pendingNavButtons[1].click();
-  const queueCards = await driver.findElements(By.css('.approval-card'));
-  let pendingCard;
-  for (const card of queueCards) {
-    if ((await card.getText()).includes(pendingSession.slice(0, 12))) pendingCard = card;
-  }
-  if (!pendingCard) throw new Error('The pending approval queue entry is unavailable');
-  const oldFlashClose = await driver.findElements(By.css('.flash button'));
-  if (oldFlashClose.length) await oldFlashClose[0].click();
+  // Deny from the queue.
+  await nav('approvals');
+  await waitFor(approvalCard(pendingRun));
   await instrumentHTTP();
-  await pendingCard.findElement(By.css('.approval-actions .button.secondary')).click();
-  await driver.wait(async () => await driver.findElements(By.css('.success-flash, .error-flash')).then((elements) => elements.length > 0), 12000);
+  await driver.findElement(By.css(`${approvalCard(pendingRun)} .approval-actions .button:not(.primary)`)).click();
+  await waitGone(approvalCard(pendingRun));
   const denyRequests = await drainHTTP();
-  const denyFlash = await driver.findElement(By.css('.flash')).getText();
-  console.log(`UI queue Deny message ${denyFlash}`);
-  if (!(await driver.findElements(By.css('.success-flash'))).length) throw new Error(`Queue deny operation did not succeed: ${denyFlash} ${JSON.stringify(denyRequests)}`);
   if (!denyRequests.some((row) => row.url.includes(`/v1/runs/${pendingRun}/responses`) && row.status === 200 && row.duration_ms < 1000)) throw new Error(`Queue deny API failed or exceeded one second: ${JSON.stringify(denyRequests)}`);
   console.log(`UI queue Deny HTTP ${JSON.stringify(denyRequests)}`);
-  await driver.wait(async () => {
-    for (const card of await driver.findElements(By.css('.approval-card'))) {
-      if ((await card.getText()).includes(pendingSession.slice(0, 12))) return false;
-    }
-    return true;
-  }, 6000);
+  assert.equal((await driver.findElements(By.css('.flash'))).length, 0, 'deny left an error message');
 
-  await driver.findElement(By.css('.brand')).click();
-  await (await findSession(askSession)).click();
-  await waitFor('.run-row');
-  await (await findRun('M11_ASK_USER')).click();
-  await waitFor('.answer-row input');
-  await assertMobileLayout(view, 'run-waiting-user', 'dark');
+  // ask_user: the composer answers the question.
+  await openSession(askSession);
+  await waitFor('.question');
+  assert.match(await driver.findElement(By.css('.question')).getText(), /Which deployment region/);
+  await assertMobileLayout(view, 'chat-waiting-user', 'dark');
   await instrumentHTTP();
-  const answerInput = await driver.findElement(By.css('.answer-row input'));
-  await answerInput.sendKeys('staging-ui');
-  await driver.findElement(By.css('.answer-row .button.primary')).click();
-  await waitFor('.answer-card');
-  if (!(await driver.findElement(By.css('.answer-card')).getText()).includes('staging-ui')) throw new Error('Final answer is not visible after the ask_user response');
+  await driver.findElement(By.css('.composer textarea')).sendKeys('staging-ui');
+  await driver.findElement(By.css('.composer .send')).click();
+  await waitFor(`.turn[data-run-id="${askRun}"][data-status="COMPLETED"] .answer`);
+  if (!(await driver.findElement(By.css('.answer')).getText()).includes('staging-ui')) throw new Error('Final answer is not visible after the ask_user response');
+  assert.match(await driver.findElement(By.css('.exchange')).getText(), /Which deployment region[\s\S]*staging-ui/);
   const answerRequests = await drainHTTP();
   if (!answerRequests.some((row) => row.url.includes(`/v1/runs/${askRun}/responses`) && row.status === 200 && row.duration_ms < 1000)) throw new Error(`ask_user response API failed or exceeded one second: ${JSON.stringify(answerRequests)}`);
   console.log(`UI ask_user answer HTTP ${JSON.stringify(answerRequests)}`);
 
-  await closeFlash();
-  const browserEmptyNav = await driver.findElements(By.css('.nav-link'));
-  await browserEmptyNav[1].click();
-  await waitFor('.large-empty');
+  await nav('approvals');
+  await waitFor('.page-empty');
 
-  await driver.findElement(By.css('.brand')).click();
-  await driver.findElement(By.css('.page-heading .button.primary')).click();
-  await waitFor('.composer-card textarea');
+  // A new conversation from the welcome screen.
+  await driver.findElement(By.css('.nav-item.new-chat')).click();
+  await waitFor('.welcome .composer textarea');
   await instrumentHTTP();
-  await driver.findElement(By.css('.composer-card textarea')).sendKeys('M11_BROWSER_SMOKE Confirm the real UI can send a live request.');
-  await driver.findElement(By.css('.composer-footer .button.primary')).click();
-  await waitFor('.answer-card');
+  await driver.findElement(By.css('.composer textarea')).sendKeys('M11_BROWSER_SMOKE Confirm the real UI can send a live request.');
+  await driver.findElement(By.css('.composer .send')).click();
+  await waitFor('.turn[data-status="COMPLETED"] .answer');
+  assert.match(await driver.findElement(By.css('.session-item.current')).getText(), /M11_BROWSER_SMOKE/);
   const browserSendRequests = await drainHTTP();
   if (!browserSendRequests.some((row) => row.url.includes('/v1/sessions') && row.status === 201) || !browserSendRequests.some((row) => row.url.includes('/runs') && row.status === 201)) {
     throw new Error(`Browser send flow failed: ${JSON.stringify(browserSendRequests)}`);
   }
   console.log(`UI create session and send HTTP ${JSON.stringify(browserSendRequests)}`);
 
-  const observationNav = await driver.findElements(By.css('.nav-link'));
-  await observationNav[2].click();
+  await nav('observability');
   await checkObservation();
   await captureScreen(view, 'observability');
   const failedDoctorRow = await waitFor('.doctor-list .doctor-fail:has(.link-button)');
   assert.match(await failedDoctorRow.getText(), /失败运行/);
   const assertFailedRun = async (source) => {
-    assert.equal(await (await waitFor('.run-title-row .run-id')).getText(), failedRun);
-    assert.match(await (await waitFor('.error-card')).getText(), /scripted planned failure/);
+    await waitFor(`.turn[data-run-id="${failedRun}"] .error-card`);
+    assert.equal(await (await waitFor('.inspector-head code')).getText(), failedRun);
+    assert.match(await driver.findElement(By.css('.error-card')).getText(), /scripted planned failure/);
     console.log(`observability ${source} link: opened real failed run ${failedRun}`);
   };
   await failedDoctorRow.findElement(By.css('.link-button')).click();
   await assertFailedRun('doctor');
-  await assertMobileLayout(view, 'run-failed', 'dark');
-  await observationNav[2].click();
+  await assertMobileLayout(view, 'chat-failed', 'dark');
+  await nav('observability');
   await waitFor('.failure-copy code');
   const failedErrorRow = await driver.findElement(By.xpath(`//li[contains(@class,'failure-row')][.//code[text()='${failedRun}']]`));
   await failedErrorRow.findElement(By.css('.link-button')).click();

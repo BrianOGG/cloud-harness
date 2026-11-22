@@ -16,7 +16,7 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WEB = ROOT / "web"
-SCREENSHOTS = WEB / "screenshots" / "m11-15"
+SCREENSHOTS = WEB / "screenshots" / "chat"
 TOKEN = "m11-15-acceptance-token-20261119"
 
 
@@ -313,7 +313,7 @@ def main():
 
             log("regressions: /approval unchanged (200), protected /v1 routes authenticate (401 without token)")
             expected_screenshots = {
-                "sessions-light.png", "sessions-dark.png", "run-light.png", "run-dark.png",
+                "welcome-light.png", "welcome-dark.png", "chat-light.png", "chat-dark.png",
                 "approvals-light.png", "approvals-dark.png", "observability-light.png", "observability-dark.png",
             }
             actual_screenshots = {path.name for path in SCREENSHOTS.glob("*.png")}

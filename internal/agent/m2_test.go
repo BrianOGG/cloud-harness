@@ -133,6 +133,28 @@ func TestApprovalDenyPairsTheWholeBatch(t *testing.T) {
 	if got[0].Status != domain.InvSucceeded || got[1].Status != domain.InvDenied || got[2].Status != domain.InvSkipped {
 		t.Fatalf("statuses %s %s %s", got[0].Status, got[1].Status, got[2].Status)
 	}
+	// The event log reports the denial too: a client that follows events
+	// must not keep showing the call as waiting for approval.
+	events, err := db.ListEvents(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last struct {
+		Status string `json:"status"`
+		Calls  []struct {
+			Status string `json:"status"`
+		} `json:"calls"`
+	}
+	for _, event := range events {
+		if event.Type == "tool.batch" {
+			if err := json.Unmarshal(event.Payload, &last); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(last.Calls) != 3 || last.Calls[1].Status != string(domain.InvDenied) || last.Calls[2].Status != string(domain.InvSkipped) {
+		t.Fatalf("last tool.batch event %+v", last)
+	}
 	var toolMsgs int
 	for _, msg := range mock.Requests[len(mock.Requests)-1].Messages {
 		if msg.Role == "tool" {

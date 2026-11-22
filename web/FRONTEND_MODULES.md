@@ -12,7 +12,7 @@
 | `POST /v1/sessions` | 新建会话，返回 `{id}` |
 | `GET /v1/sessions/{id}/runs` | 列出该会话全部 runs |
 | `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图 |
-| `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, status, wait_reason, budget{...}, final_answer, error, version}` |
+| `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, parent_id, status, wait_reason, budget{...}, final_answer, error, version}`；子 run 才有 `parent_id` |
 | `GET /v1/runs/{id}/events` | SSE 格式一次性倒出该 run 的持久事件；带 `Last-Event-ID` 请求头可增量拉取（倒完即断开，需客户端重连/轮询） |
 | `GET /v1/runs/{id}/trace` | 执行轨迹：`{session_id, run:{status, wait_reason, steps[], children[]}}`；step = 一次模型响应 `{id, action, batches[]}`；batch = 一批工具调用 `{id, status, action, calls[]}`；call = `{id, name, status, ordinal, provider_call_id}` |
 | `POST /v1/runs/{id}/responses` | 恢复等待中的 run，body 可带 `{decision}` / `{answer}` / `{extra_model_calls}` |
@@ -50,7 +50,7 @@
 - 数据：`GET /v1/sessions`、`POST /v1/sessions`、`GET /v1/sessions/{id}/runs`；run 状态按需轮询。
 
 ### 3. 布局壳
-- 职责：三栏——左会话列表 / 中对话 / 右过程面板（事件流与轨迹切换）。纯前端，无数据。
+- 职责：左侧栏（新对话、审批、观测、对话列表）/ 中间对话 / 右侧可开关的运行详情（预算、执行步骤、事件）。窄屏下侧栏和详情变成浮层。纯前端，无数据。
 
 ## B. 对话层
 
@@ -113,7 +113,7 @@
 ### 15. 错误与终态呈现
 - 职责：`FAILED` 时展示 run 的 `error{code,message}`；`CANCELLED` 有明确终态样式；接口报错（4xx 的 `{error:{code,message}}`）统一 toast/条幅呈现。
 
-## M11-8：Web 真 serve 全流程
+## M11-8：Web 真 serve 全流程（旧界面的验收记录）
 
 - 会话列表、运行记录、审批队列均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
 - 事件请求携带 `Last-Event-ID`；客户端短轮询 SSE 并重连，事件按 seq 合并。可见轨迹只包含编排层状态，不展示模型思维链。
@@ -121,7 +121,7 @@
 - token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
 - `npm test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。
 
-## M11-15：观测与响应式布局
+## M11-15：观测与响应式布局（旧界面的验收记录）
 
 - 「观测」从同源的 `GET /v1/stats` 和 `GET /v1/doctor` 读取数据。检查项按失败、警告、通过排列；失败运行和最近错误可直接打开运行详情。没有用量、缺少价格、接口失败各有明确提示。
 - 深色主题覆盖四个主屏。宽度 ≤768px 时隐藏运行侧栏，卡片改为单列。没有 action 的轨迹步骤用「步骤 N」作标题。
@@ -135,4 +135,24 @@
 - **Demo 2（过程可视化）**：模块 6、7、8、9——步骤时间线 + 工具调用 + 事件流 + 子任务。需要脚本化场景造数据（多步、带工具调用、带子任务各一条）。
 - **Demo 3（人机协同）**：模块 10、11、12、13、14——四种等待态的操作条与恢复。需要能稳定触发 APPROVAL / USER / BUDGET / RECONCILIATION 的场景各一条。
 
-现成参考：同目录 `src/` 是 Muse 已跑通的一版三栏实现（Lobe UI v6），可直接借结构与接口调用代码；注意其中工具参数/结果、每步文本受上述后端字段限制未做。
+## 对话式界面（当前实现）
+
+`src/` 是对话式界面，上面各模块在其中的位置：
+
+| 模块 | 位置 |
+| --- | --- |
+| 1 连接状态、2 会话管理 | 侧栏：底部连接状态和 provider，按日期分组的对话列表，标题取首条消息 |
+| 4 对话框 | 对话区：用户消息在右，回答按 Markdown 渲染；底部输入框，回车发送，运行中变成停止按钮 |
+| 5 状态与预算、14 取消 | 顶栏状态徽标、输入框的停止按钮；预算在运行详情里 |
+| 6 步骤、7 工具调用、9 子任务 | 每轮回答上方可折叠的过程块，由事件流生成（`timeline.ts`）；运行中展开，结束后折叠 |
+| 8 事件流 | 运行详情的「事件」页签 |
+| 10 审批、12 补预算、13 对账 | 对话里的操作卡片；审批也在「审批」页 |
+| 11 回答提问 | 问题显示为 agent 的消息，在输入框里回答 |
+| 15 错误与终态 | 对话里的失败卡片和「已取消」，接口错误显示在顶部 |
+
+- `POST /v1/sessions/{id}/runs` 可能要等到 run 停下才返回。等待期间前端轮询会话的 run 列表，找到新 run 后立即跟随它的事件流；接口改成立即返回后同样适用。
+- `stream.delta`（没有 `id`，payload `{"text": "..."}`）到达时逐段显示在回答位置，run 结束后以 `final_answer` 为准。约束 3 在 serve 发出 delta 之前仍然成立。
+- 带 `parent_id` 的 run 是子 run，不作为对话轮次显示。
+- 没有模型 key 时用 `scripts/demo-provider.py` 演示工具调用、审批、提问、子任务和失败。
+- 验收：从仓库根目录运行 `bash web/scripts/acceptance.sh`，它用脚本化 provider 对真实 serve 走完审批、拒绝、提问、子任务、失败和新对话，截图写入 `web/screenshots/chat/`。
+- 工具参数只有待审批的那次调用能看到（run 视图的 `pending_invocation`）；其余调用的参数和结果仍受模块 7 的字段限制。
