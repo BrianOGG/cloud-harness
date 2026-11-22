@@ -213,6 +213,9 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
 		return result, errors.Join(err, finishErr)
 	}
+	if err := m.noteUntrusted(ctx, run.ID, hookConfig.WorkspaceTrust, policy.WorkspaceTrust); err != nil {
+		return storage.Run{}, err
+	}
 	engine := hooks.New(hookConfig)
 	ctx = withHooks(ctx, run, engine)
 	now := m.now()

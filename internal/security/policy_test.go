@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 )
@@ -16,6 +17,16 @@ func writePolicyFile(t *testing.T, file, body string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// trustPolicyFile writes the workspace policy.json and records the user's
+// trust in that exact content, as `cloud-harness trust approve` does.
+func trustPolicyFile(t *testing.T, workspace, configDir, body string) {
+	t.Helper()
+	writePolicyFile(t, filepath.Join(workspace, ControlDir, TrustPolicyFile), body)
+	if err := TrustContent(workspace, configDir, map[string][]byte{TrustPolicyFile: []byte(body)}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -37,6 +48,16 @@ func TestPolicyEvaluationMatrix(t *testing.T) {
 		{"env example variant remains protected", "", "", PolicyRequest{Tool: "read_file", Paths: []string{".env.example.local"}, FileRead: true}, EffectDeny, "builtin"},
 		{"write outside", "", "", PolicyRequest{Tool: "write_file", Paths: []string{"../out.txt"}, FileWrite: true}, EffectDeny, "builtin"},
 		{"write inside", "", "", PolicyRequest{Tool: "write_file", Paths: []string{"new/deep/out.txt"}, FileWrite: true}, EffectAsk, "default"},
+		{"control read", "", "", PolicyRequest{Tool: "read_file", Paths: []string{".cloud-harness/policy.json"}, FileRead: true}, EffectDeny, "builtin"},
+		{"control database read", "", "", PolicyRequest{Tool: "read_file", Paths: []string{".cloud-harness/harness.db"}, FileRead: true}, EffectDeny, "builtin"},
+		{"control write", "", "", PolicyRequest{Tool: "write_file", Paths: []string{".cloud-harness/hooks.json"}, FileWrite: true}, EffectDeny, "builtin"},
+		{"control edit of worktree metadata", "", "", PolicyRequest{Tool: "edit_file", Paths: []string{"./.cloud-harness/worktrees/run_1/a.go"}, FileWrite: true}, EffectDeny, "builtin"},
+		{"control directory listing", "", "", PolicyRequest{Tool: "list_files", Paths: []string{".cloud-harness"}, FileRead: true}, EffectDeny, "builtin"},
+		{"control name ignores case", "", "", PolicyRequest{Tool: "read_file", Paths: []string{".Cloud-Harness/policy.json"}, FileRead: true}, EffectDeny, "builtin"},
+		{"control baseline cannot be allowed", `{"rules":[{"tool":"*","effect":"allow"}]}`, `{"rules":[{"tool":"*","path_glob":".cloud-harness/**","effect":"allow"}]}`, PolicyRequest{Tool: "write_file", Paths: []string{".cloud-harness/policy.json"}, FileWrite: true}, EffectDeny, "builtin"},
+		{"control lookalike is ordinary", "", "", PolicyRequest{Tool: "read_file", Paths: []string{".cloud-harness-notes/a.md"}, FileRead: true}, EffectAsk, "default"},
+		{"nested control name is ordinary", "", "", PolicyRequest{Tool: "read_file", Paths: []string{"vendor/.cloud-harness/a.md"}, FileRead: true}, EffectAsk, "default"},
+		{"command cwd is not a file access", "", "", PolicyRequest{Tool: "run_command", Paths: []string{".cloud-harness"}, Command: "ls"}, EffectAsk, "default"},
 		{"command prefix", `{"rules":[{"tool":"run_command","command_prefix":"go test","effect":"allow"}]}`, "", PolicyRequest{Tool: "run_command", Command: "  go test ./..."}, EffectAllow, "workspace"},
 		{"command boundary", `{"rules":[{"tool":"run_command","command_prefix":"go test","effect":"allow"}]}`, "", PolicyRequest{Tool: "run_command", Command: "go testevil ./..."}, EffectAsk, "default"},
 		{"command tool required", `{"rules":[{"tool":"*","command_prefix":"go test","effect":"allow"}]}`, "", PolicyRequest{Tool: "read_file", Command: "go test ./..."}, EffectAsk, "default"},
@@ -48,7 +69,7 @@ func TestPolicyEvaluationMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace, global := t.TempDir(), t.TempDir()
 			if tc.workspace != "" {
-				writePolicyFile(t, filepath.Join(workspace, ".cloud-harness", "policy.json"), tc.workspace)
+				trustPolicyFile(t, workspace, global, tc.workspace)
 			}
 			if tc.global != "" {
 				writePolicyFile(t, filepath.Join(global, "policy.json"), tc.global)

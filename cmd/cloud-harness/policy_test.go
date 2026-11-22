@@ -192,6 +192,7 @@ func TestDoctorPolicyLayersAndDecisions(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				approveWorkspaceTrust(t, workspace)
 				for i, effect := range []security.Effect{security.EffectAllow, security.EffectAsk, security.EffectDeny} {
 					appendCLIPolicyDecision(t, db, string(effect), "run-a", i, security.PolicyDecision{Tool: "write_file", Effect: effect, Source: "workspace", Rule: "tool=write_file effect=" + string(effect)})
 				}
@@ -224,7 +225,7 @@ func TestDoctorPolicyLayersAndDecisions(t *testing.T) {
 					}
 					detail = item.Detail
 				}
-				want := []string{"builtin: embedded (2 rules, loaded)"}
+				want := []string{"builtin: embedded (3 rules, loaded)"}
 				if populated {
 					want = append(want, "workspace: "+workspacePolicy+" (2 rules, loaded)", "global: "+globalPolicy+" (1 rules, loaded)", "decisions: allow=1 ask=1 deny=1")
 				} else {

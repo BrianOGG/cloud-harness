@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/cloud-harness/cloud-harness/internal/security"
 )
 
 func putFile(t *testing.T, path, body string) {
@@ -13,6 +16,16 @@ func putFile(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// putTrusted writes the workspace hooks.json and records the user's trust in
+// that exact content, as `cloud-harness trust approve` does.
+func putTrusted(t *testing.T, workspace, global, body string) {
+	t.Helper()
+	putFile(t, filepath.Join(workspace, ".cloud-harness", "hooks.json"), body)
+	if err := security.TrustContent(workspace, global, map[string][]byte{security.TrustHooksFile: []byte(body)}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -27,16 +40,49 @@ func TestLoadMissingAndLayerOverrides(t *testing.T) {
 		"SessionStart":[{"type":"command","command":"echo global"}],
 		"PreToolUse":[{"type":"command","command":"exit 2"}],
 		"Stop":[{"type":"command","command":"echo stop"}]}}`)
-	putFile(t, filepath.Join(workspace, ".cloud-harness", "hooks.json"), `{"hooks":{
+	putTrusted(t, workspace, global, `{"hooks":{
 		"SessionStart":[{"type":"command","command":"echo workspace"}],"PreToolUse":[]}}`)
 	cfg, err = LoadFrom(workspace, global)
 	if err != nil || cfg.Hooks[SessionStart][0].Command != "echo workspace" || len(cfg.Hooks[PreToolUse]) != 0 || len(cfg.Hooks[Stop]) != 1 || New(cfg).GoCheckEnabled() {
 		t.Fatalf("merged config: %+v, %v", cfg, err)
 	}
-	putFile(t, filepath.Join(workspace, ".cloud-harness", "hooks.json"), `{"go_check":true}`)
+	putTrusted(t, workspace, global, `{"go_check":true}`)
 	cfg, err = LoadFrom(workspace, global)
 	if err != nil || !New(cfg).GoCheckEnabled() {
 		t.Fatalf("workspace boolean override: %+v, %v", cfg, err)
+	}
+}
+
+// A workspace hooks.json contributes nothing until the user trusts its exact
+// content, and a later edit needs a new decision.
+func TestWorkspaceHooksRequireTrust(t *testing.T) {
+	workspace, global := t.TempDir(), t.TempDir()
+	file := filepath.Join(workspace, ".cloud-harness", "hooks.json")
+	putFile(t, filepath.Join(global, "hooks.json"), `{"hooks":{"SessionStart":[{"type":"command","command":"echo global"}]}}`)
+	body := `{"go_check":false,"hooks":{"SessionStart":[{"type":"command","command":"touch pwned.txt"}],"Stop":[{"type":"command","command":"echo stop"}]}}`
+	putFile(t, file, body)
+	load := func(state security.TrustState, start string, stops int, goCheck bool) {
+		t.Helper()
+		cfg, err := LoadFrom(workspace, global)
+		if err != nil || cfg.WorkspaceTrust == nil || cfg.WorkspaceTrust.State != state || cfg.WorkspaceTrust.Path != file ||
+			cfg.Hooks[SessionStart][0].Command != start || len(cfg.Hooks[Stop]) != stops || New(cfg).GoCheckEnabled() != goCheck {
+			t.Fatalf("want %s/%q: %+v trust=%+v err=%v", state, start, cfg, cfg.WorkspaceTrust, err)
+		}
+	}
+	load(security.TrustUntrusted, "echo global", 0, true)
+	if err := security.TrustContent(workspace, global, map[string][]byte{security.TrustHooksFile: []byte(body)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	load(security.TrustTrusted, "touch pwned.txt", 1, false)
+	putFile(t, file, strings.Replace(body, "pwned", "again", 1))
+	load(security.TrustChanged, "echo global", 0, true)
+	putFile(t, file, body)
+	load(security.TrustTrusted, "touch pwned.txt", 1, false)
+
+	// An untrusted file is still validated, so a broken one is reported.
+	putFile(t, file, `{"hooks":{"Unknown":[]}}`)
+	if _, err := LoadFrom(workspace, global); err == nil || !strings.Contains(err.Error(), file) {
+		t.Fatalf("invalid untrusted file: %v", err)
 	}
 }
 
