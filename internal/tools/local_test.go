@@ -828,6 +828,24 @@ func TestListDirEntries(t *testing.T) {
 	if err != nil || controlRes.OK || controlRes.Error == nil || controlRes.Error.Code != domain.CodeAuthDenied {
 		t.Fatalf("list_dir control path should be denied: %+v %v", controlRes, err)
 	}
+
+	write(" reports/inside.txt", "x")
+	spaceRes, err := b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{"path":" reports"}`)})
+	if err != nil || !spaceRes.OK {
+		t.Fatalf("list_dir whitespace path: %+v %v", spaceRes, err)
+	}
+	var spaceGot struct {
+		Path    string `json:"path"`
+		Entries []struct {
+			Name string `json:"name"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(spaceRes.Data, &spaceGot); err != nil {
+		t.Fatal(err)
+	}
+	if spaceGot.Path != " reports" || len(spaceGot.Entries) != 1 || spaceGot.Entries[0].Name != "inside.txt" {
+		t.Fatalf("unexpected list_dir whitespace result: %+v", spaceGot)
+	}
 }
 
 func TestRunCommandEnvWhitelist(t *testing.T) {

@@ -561,7 +561,7 @@ func listDirSpec(abs string) Spec {
 }
 
 func listDirPath(abs, raw string) (string, error) {
-	target := strings.TrimSpace(raw)
+	target := raw
 	if target == "" {
 		target = "."
 	}
