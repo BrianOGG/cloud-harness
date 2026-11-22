@@ -80,13 +80,13 @@ func TestBatchThreeReadsStreamingOpenAI(t *testing.T) {
 				"data: [DONE]",
 			}
 			for _, c := range chunks {
-				io.WriteString(w, c+"\n\n")
+				_, _ = io.WriteString(w, c+"\n\n")
 			}
 			return
 		}
-		io.WriteString(w, `data: {"id":"chatcmpl_2","choices":[{"index":0,"delta":{"content":"alpha, beta, and gamma were read."}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl_2","choices":[{"index":0,"delta":{"content":"alpha, beta, and gamma were read."}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 	result, err := Run(context.Background(), Options{

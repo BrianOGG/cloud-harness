@@ -195,7 +195,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if err != nil {
 		return out, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	prov := opt.Provider
 	if prov == nil {
 		prov, err = build(opt.Config)
@@ -379,7 +379,7 @@ func registerHTTPFetch(broker *tools.Broker, client *http.Client) {
 			if err != nil {
 				return nil, domain.E(domain.CodeToolError, err.Error())
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			return json.Marshal(map[string]any{
 				"url":         u,

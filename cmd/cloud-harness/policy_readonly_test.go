@@ -67,7 +67,7 @@ func TestPolicyAuditReadsOnlyDecisionBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	for _, stmt := range []string{
 		`CREATE TABLE sessions(id TEXT)`,
 		`CREATE TABLE runs(id TEXT, session_id TEXT)`,
@@ -85,7 +85,7 @@ func TestPolicyAuditReadsOnlyDecisionBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	summary, err := agent.SummarizePolicy(t.Context(), t.TempDir(), reader)
 	if err != nil || summary.Decisions != (agent.PolicyDecisionCounts{Ask: 1}) {
 		t.Fatalf("summary read sensitive tables or non-policy body: %+v, %v", summary, err)

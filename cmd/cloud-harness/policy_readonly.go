@@ -58,7 +58,7 @@ func (r *policyAuditReader) ListSessions(ctx context.Context) ([]storage.Session
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.SessionSummary
 	for rows.Next() {
 		var session storage.SessionSummary
@@ -75,7 +75,7 @@ func (r *policyAuditReader) ListRuns(ctx context.Context, sessionID string) ([]s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Run
 	for rows.Next() {
 		var run storage.Run
@@ -94,7 +94,7 @@ func (r *policyAuditReader) ListEvents(ctx context.Context, runID string, afterS
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Event
 	for rows.Next() {
 		var event storage.Event
@@ -121,7 +121,7 @@ func (r *policyAuditReader) ListOracleEvents(ctx context.Context) ([]storage.Eve
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Event
 	for rows.Next() {
 		var event storage.Event

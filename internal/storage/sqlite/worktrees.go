@@ -18,7 +18,7 @@ func ReadWorktreeRuns(ctx context.Context, path string) ([]storage.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	query := worktreeRunsQuery
 	var version int
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
@@ -31,7 +31,7 @@ func ReadWorktreeRuns(ctx context.Context, path string) ([]storage.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []storage.Run{}
 	for rows.Next() {
 		r, err := scanRun(rows, "")

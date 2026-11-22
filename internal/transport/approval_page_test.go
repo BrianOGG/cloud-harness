@@ -194,7 +194,7 @@ func TestApprovalPageNotificationToResume(t *testing.T) {
 			}
 			read := func(response *http.Response, status int, dest any) {
 				t.Helper()
-				defer response.Body.Close()
+				defer func() { _ = response.Body.Close() }()
 				body, err := io.ReadAll(response.Body)
 				if err != nil || response.StatusCode != status {
 					t.Fatalf("%s %s: got %d %s (%v), want %d", response.Request.Method, response.Request.URL.Path, response.StatusCode, body, err, status)
@@ -251,7 +251,7 @@ func TestApprovalPageNotificationToResume(t *testing.T) {
 			}
 
 			stream := request(ctx, http.MethodGet, runPath+"/events", approvalTestToken, "")
-			defer stream.Body.Close()
+			defer func() { _ = stream.Body.Close() }()
 			if stream.StatusCode != http.StatusOK || stream.Header.Get("Content-Type") != "text/event-stream" {
 				t.Fatalf("event stream: %d %v", stream.StatusCode, stream.Header)
 			}

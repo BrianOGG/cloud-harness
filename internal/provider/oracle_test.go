@@ -20,7 +20,7 @@ func TestOracleCompletionUsesDefaultModelWithoutEmittingDeltas(t *testing.T) {
 		BaseURL: "http://fixture.invalid/v1", APIKey: "fixture", Model: "default-model",
 		OnDelta: func(string) { t.Error("consultation advice leaked into main model deltas") },
 		Client: &http.Client{Transport: oracleRoundTrip(func(req *http.Request) (*http.Response, error) {
-			defer req.Body.Close()
+			defer func() { _ = req.Body.Close() }()
 			var body chatRequest
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				return nil, err
@@ -55,7 +55,7 @@ func TestOracleCompletionPreservesProviderTimeouts(t *testing.T) {
 					BaseURL: "http://fixture.invalid/v1", APIKey: "fixture", Model: "test",
 					ResponseHeaderTimeout: time.Second, IdleTimeout: time.Second,
 					Client: &http.Client{Transport: oracleRoundTrip(func(req *http.Request) (*http.Response, error) {
-						defer req.Body.Close()
+						defer func() { _ = req.Body.Close() }()
 						if stage == "headers" {
 							<-req.Context().Done()
 							return nil, req.Context().Err()

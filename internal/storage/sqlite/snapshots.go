@@ -36,7 +36,7 @@ func (db *DB) ListWorkspaceSnapshots(ctx context.Context, workspaceID string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.WorkspaceSnapshot
 	for rows.Next() {
 		rec, err := scanWorkspaceSnapshot(rows)

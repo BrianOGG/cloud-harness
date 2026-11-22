@@ -559,7 +559,7 @@ func TestRetainPruneRunsDays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		now := time.Now().UTC()
 		tOld := now.AddDate(0, 0, -30)
@@ -676,7 +676,7 @@ func TestRetainPruneRunsDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer postDB.Close()
+	defer func() { _ = postDB.Close() }()
 
 	// Overdue terminal run and all associated rows must be deleted
 	if _, err := postDB.GetRun(ctx, "run_overdue_done"); err == nil {
@@ -751,7 +751,7 @@ func TestRetainPruneRunsDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer finalDB.Close()
+	defer func() { _ = finalDB.Close() }()
 	for _, s := range survivors {
 		if _, err := finalDB.GetRun(ctx, s.id); err != nil {
 			t.Fatalf("run %s must remain after retain without prune-runs-days: %v", s.id, err)

@@ -53,7 +53,7 @@ func (p *Anthropic) Probe(ctx context.Context) error {
 	if err != nil {
 		return domain.E(domain.CodeProviderHTTP, scrubProviderKey(err.Error(), p.APIKey))
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
 		return domain.E(domain.CodeProviderHTTP, scrubProviderKey("GET /v1/models returned "+res.Status+": "+truncateProviderMessage(string(body), 400), p.APIKey))

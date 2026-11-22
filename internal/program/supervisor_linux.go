@@ -55,7 +55,7 @@ func supervise(ctx context.Context, msg wire, invoke Invoker) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	cmd.Dir = dir
 	applySysProc(cmd)
 	cmd.Cancel = func() error { return killGroup(cmd) }

@@ -344,7 +344,7 @@ func TestServeWorktreeHTTPApprovalAndSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mgr.SkipPlanner = true
 	mgr.Provider = &provider.Mock{Responses: []domain.ModelResponse{lifecycleTool("write", "write_file", map[string]string{"path": "note.txt", "content": "http\n"}), lifecycleFinish("http done")}}
 	handler := (&transport.Server{Manager: mgr}).Handler()
@@ -449,7 +449,7 @@ func TestM1024ConcurrentWorktreeMilestone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mgr.SkipPlanner = true
 	mgr.Provider = &concurrentWorktreeMock{ready: make(chan struct{})}
 	type result struct {
@@ -660,8 +660,11 @@ func TestServeWorktreeCLIProcessWithHTTP(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
 	var stopOnce sync.Once
 	stop := func() {
 		stopOnce.Do(func() {
@@ -710,7 +713,7 @@ func TestServeWorktreeCLIProcessWithHTTP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatal(err)

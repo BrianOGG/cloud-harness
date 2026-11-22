@@ -19,7 +19,7 @@ func TestOpenManagerAppliesCommandLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	limits := mgr.Broker.CommandLimits().Effective()
 	if limits["cpu_seconds"] != 7 || limits["open_files"] != tools.DefaultCommandOpenFiles {
 		t.Fatalf("broker command limits = %v", limits)
@@ -31,7 +31,7 @@ func TestOpenManagerAppliesCommandLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 	if limits := mgr.Broker.CommandLimits().Effective(); len(limits) != 0 {
 		t.Fatalf("disabled command limits = %v, want none", limits)
 	}

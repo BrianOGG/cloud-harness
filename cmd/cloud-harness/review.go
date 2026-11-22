@@ -81,20 +81,20 @@ func cmdReview(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: cloud-harness review [--workspace dir] [--json] [--diff]")
+		_, _ = fmt.Fprintln(stderr, "usage: cloud-harness review [--workspace dir] [--json] [--diff]")
 		return 2
 	}
 	key := os.Getenv("OPENAI_API_KEY")
 	report, err := collectReview(*workspace, key, *includeDiff)
 	if err != nil {
-		fmt.Fprintln(stderr, "review:", redactReviewLines(err.Error(), key))
+		_, _ = fmt.Fprintln(stderr, "review:", redactReviewLines(err.Error(), key))
 		return 1
 	}
 	if *jsonOutput {
 		return writeJSON(stdout, report)
 	}
 	if err := writeReviewMarkdown(stdout, report); err != nil {
-		fmt.Fprintln(stderr, "review:", err)
+		_, _ = fmt.Fprintln(stderr, "review:", err)
 		return 1
 	}
 	return 0
@@ -205,7 +205,7 @@ func (r *reviewReport) inspect(git reviewGit, key string) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	for i := range r.Files {
 		f := &r.Files[i]
@@ -279,7 +279,7 @@ func (r *reviewReport) inspectWorktree(git reviewGit, root *os.Root, f *reviewFi
 		if err != nil {
 			return 0, err
 		}
-		defer contents.Close()
+		defer func() { _ = contents.Close() }()
 		if err := r.scanSecrets(contents, f.Path, source, key); err != nil {
 			return 0, err
 		}
@@ -682,7 +682,7 @@ func (g reviewGit) scanBlob(oid string, scan func(io.Reader) error) error {
 		return err
 	}
 	scanErr := scan(contents)
-	contents.Close()
+	_ = contents.Close()
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git cat-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}

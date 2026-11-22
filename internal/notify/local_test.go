@@ -153,7 +153,7 @@ func captureStderr(t *testing.T, send func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	body, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)

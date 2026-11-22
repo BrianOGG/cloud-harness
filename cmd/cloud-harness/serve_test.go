@@ -55,7 +55,7 @@ func TestServeRejectsExternalBeforeListening(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer reserved.Close()
+			defer func() { _ = reserved.Close() }()
 			_, port, err := net.SplitHostPort(reserved.Addr().String())
 			if err != nil {
 				t.Fatal(err)
@@ -267,7 +267,7 @@ func TestServeShutdownClosesPendingConnections(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			// Synchronize on the server's state rather than sleeping: a successful
 			// Dial alone does not prove that Serve has accepted the connection.
 			select {

@@ -37,10 +37,10 @@ func startMCP(ctx context.Context, cfg config.Config, mgr *agent.Manager, stderr
 	set := tools.StartMCPServers(ctx, mgr.Broker, mcpServerConfigs(cfg.Servers), mcpStartTimeout)
 	for _, st := range set.Status() {
 		if st.State != tools.MCPStateRunning {
-			fmt.Fprintf(stderr, "warning: mcp server %q is unavailable, its tools are not registered: %s\n", st.Name, scrubDoctor(st.Error))
+			_, _ = fmt.Fprintf(stderr, "warning: mcp server %q is unavailable, its tools are not registered: %s\n", st.Name, scrubDoctor(st.Error))
 		}
 		for _, w := range st.Warnings {
-			fmt.Fprintf(stderr, "warning: mcp server %q: %s\n", st.Name, scrubDoctor(w))
+			_, _ = fmt.Fprintf(stderr, "warning: mcp server %q: %s\n", st.Name, scrubDoctor(w))
 		}
 	}
 	return set

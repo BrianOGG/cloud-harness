@@ -100,16 +100,16 @@ func (db *DB) SearchHistory(ctx context.Context, sessionID, query string, limit 
 		for rows.Next() {
 			var id, raw string
 			if err := rows.Scan(&id, &raw); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			add(id, raw, "exact")
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	if !plan.ExactOnly && plan.FTSMatch != "" {
 		rows, err := db.sql.QueryContext(ctx, `
@@ -122,16 +122,16 @@ func (db *DB) SearchHistory(ctx context.Context, sessionID, query string, limit 
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			ids = append(ids, id)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 		for _, id := range ids {
 			if _, ok := seen[id]; ok {
 				continue
@@ -162,16 +162,16 @@ func (db *DB) RebuildHistory(ctx context.Context, sessionID string) error {
 	for rows.Next() {
 		var d doc
 		if err := rows.Scan(&d.id, &d.raw); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		docs = append(docs, d)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -206,16 +206,16 @@ func (db *DB) PruneHistory(ctx context.Context, before time.Time) (int, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return 0, err
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(ids) == 0 {
 		return 0, nil
 	}

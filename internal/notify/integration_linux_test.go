@@ -54,7 +54,7 @@ func TestManagerMissingDesktopCommandIsIsolated(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	delivered := make(chan notify.Event, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var event notify.Event
 		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 			t.Errorf("decode webhook payload: %v", err)
@@ -72,7 +72,7 @@ func TestManagerMissingDesktopCommandIsIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m := &agent.Manager{Store: db, Provider: &provider.Mock{}, Notifier: n, DisableSnapshots: true}
 	session, err := m.CreateSession(ctx)
 	if err != nil {

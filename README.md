@@ -253,9 +253,8 @@ The Go jobs read the Go version from `go.mod`; the web job reads the Node.js ver
 
 ### Lint baseline
 
-`.golangci.yml` enables `govet`, `ineffassign`, `staticcheck`, and `unused`. The tree had not been linted before, so the config leaves these out instead of changing `internal/` and `cmd/`:
+`.golangci.yml` enables `govet`, `ineffassign`, `staticcheck`, `unused`, and `errcheck`. `errcheck` reports unchecked `fmt.Fprint*`/`io.WriteString` to CLI writers, deferred `Close` calls, and `rows.Close` calls; those are now assigned to `_` explicitly so the linter gates new code. The config still leaves these out:
 
-- `errcheck` is off. It reports 399 findings, mostly unchecked `fmt.Fprint*` and `io.WriteString` to CLI writers and deferred `Close` calls.
 - `staticcheck` quick-fix suggestions (`QF*`) are off. They report 11 style suggestions.
 - 13 existing findings are excluded by file and message under `linters.exclusions.rules`: four uses of the deprecated `runtime.GOROOT` in `internal/hooks`, three unused declarations, two ineffectual assignments, and four smaller `staticcheck` findings. The same finding in any other file still fails. Delete a rule when its finding is fixed.
 

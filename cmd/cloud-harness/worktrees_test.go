@@ -26,7 +26,7 @@ func TestChatWorktreeMultipleTurnsWithApprovedMockWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	response := func(call domain.ToolCall) domain.ModelResponse {
 		return domain.ModelResponse{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemToolCall, ToolCall: &call}}}
 	}
@@ -101,7 +101,7 @@ func TestRunAndChatWorktreeCLI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			runs, err := db.ListRuns(context.Background(), "")
 			if err != nil || len(runs) != 1 {
 				t.Fatalf("runs: %+v, %v", runs, err)
@@ -174,7 +174,7 @@ func TestWorktreeCLIRejectsNonGitBeforeOpeningStore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			stdout.Reset()
 			stderr.Reset()
 			if code := MainWithIO([]string{command, "--worktree", "--workspace", root, "--db", dbPath, "--message", "hello"}, strings.NewReader(""), &stdout, &stderr); code == 0 {
@@ -229,7 +229,7 @@ func TestNoWorktreeFlagPreservesRunAndChatWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			runs, err := db.ListRuns(context.Background(), "")
 			if err != nil || len(runs) != 1 || runs[0].WorktreePath != "" || runs[0].WorktreeBaseSHA != "" || runs[0].WorktreeBranch != "" {
 				t.Fatalf("ordinary run: %+v, %v", runs, err)
