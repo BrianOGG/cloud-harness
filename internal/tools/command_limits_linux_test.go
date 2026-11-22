@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -459,5 +460,52 @@ func TestRunCommandMasksMissingControlDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".cloud-harness")); !os.IsNotExist(err) {
 		t.Fatalf("temporary control mask was not cleaned up: %v", err)
+	}
+}
+
+func TestRunCommandMasksOriginalControlInWorktree(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"probe-worktree": "set +e\npwd\ncat ../../harness.db\nprintf x > ../../harness.db\n"})
+	orig := t.TempDir()
+	control := filepath.Join(orig, ".cloud-harness")
+	worktree := filepath.Join(control, "worktrees", "run1")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "note.txt"), []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := runLimited(t, context.Background(), worktree, CommandLimits{}, "probe-worktree")
+	combined := out.Stdout + out.Stderr
+	if got := strings.TrimSpace(strings.SplitN(out.Stdout, "\n", 2)[0]); got != worktree {
+		t.Fatalf("command cwd = %q, want worktree %q", got, worktree)
+	}
+	if strings.Contains(combined, "DB_SECRET") {
+		t.Fatalf("command read the original control database:\n%s", combined)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "harness.db")); err != nil || string(body) != "DB_SECRET" {
+		t.Fatalf("original control database changed: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".cloud-harness")); !os.IsNotExist(err) {
+		t.Fatalf("worktree control mask leaked: %v", err)
+	}
+}
+
+func TestRunCommandFailsClosedWhenConfigContainsWorkspace(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	root := t.TempDir()
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(root, "settings.json"))
+
+	guard := guardCommand(exec.CommandContext(context.Background(), "pwd"), CommandLimits{}, root, false)
+	if guard.failErr == nil {
+		t.Fatal("expected run_command to fail closed when the configuration directory contains the workspace")
 	}
 }

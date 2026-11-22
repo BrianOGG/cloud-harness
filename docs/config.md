@@ -188,9 +188,12 @@ What the limits do and do not cover:
   masked by empty tmpfs mounts, even when `disabled` is true; a timeout or
   cancellation kills the whole process group.
 - macOS and Windows run commands without these limits or the control-directory
-  mask. On a restricted Linux kernel where the mask cannot be applied, safe
-  commands keep the rlimits-only path while approved dangerous commands are not
-  started.
+  mask. For `--worktree` runs on Linux, the original workspace `.cloud-harness`
+  is masked while the run worktree is preserved. If the configuration directory
+  contains the workspace, `run_command` fails closed because the mask would hide
+  the workspace. On a restricted Linux kernel where the mask cannot be applied,
+  safe commands keep the rlimits-only path while approved dangerous commands are
+  not started.
 
 How a limit shows up in the `run_command` result is described in
 [tools.md](tools.md).

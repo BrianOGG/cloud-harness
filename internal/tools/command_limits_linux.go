@@ -182,21 +182,57 @@ type commandSandboxPath struct {
 }
 
 type commandSandboxSpec struct {
-	Enabled bool                 `json:"enabled"`
-	Paths   []commandSandboxPath `json:"paths,omitempty"`
+	Enabled  bool                 `json:"enabled"`
+	Paths    []commandSandboxPath `json:"paths,omitempty"`
+	Preserve string               `json:"preserve,omitempty"`
 }
 
-// commandControlPaths returns the control directories for this workspace and
-// the harness configuration directory. The command sees them as empty tmpfs
-// mounts, so reads and writes cannot reach hooks, policy, snapshots, the run
-// database, or the trust store.
-func commandControlPaths(root string) []commandSandboxPath {
-	path := filepath.Join(filepath.Clean(root), security.ControlDir)
-	paths := []commandSandboxPath{controlSandboxPath(path)}
-	if config, ok := commandConfigPath(root); ok {
-		paths = append(paths, controlSandboxPath(config))
+// commandSandboxSpecFor returns the mount-namespace mask for a command rooted
+// at root. Run worktrees live inside the original workspace's control directory,
+// so that directory is masked while the worktree itself is preserved. A
+// configuration directory that contains the workspace cannot be masked without
+// hiding the workspace, so commands fail closed there instead.
+func commandSandboxSpecFor(root string) (commandSandboxSpec, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return commandSandboxSpec{}, err
 	}
-	return paths
+	spec := commandSandboxSpec{Enabled: true}
+	preserve := ""
+	if control, ok := worktreeControlDir(abs); ok {
+		spec.Paths = append(spec.Paths, commandSandboxPath{Path: control})
+		preserve = abs
+	}
+	workspaceControl := controlSandboxPath(filepath.Join(abs, security.ControlDir))
+	if preserve != "" {
+		// Creating .cloud-harness inside a retained worktree would write into
+		// the original control directory on the host.
+		workspaceControl.Create = false
+	}
+	spec.Paths = append(spec.Paths, workspaceControl)
+	config, ok, contains := commandConfigPath(abs)
+	if contains {
+		return commandSandboxSpec{}, errors.New("command sandbox cannot mask a configuration directory that contains the workspace")
+	}
+	if ok {
+		spec.Paths = append(spec.Paths, controlSandboxPath(config))
+	}
+	spec.Preserve = preserve
+	return spec, nil
+}
+
+// worktreeControlDir reports the original control directory when root is a
+// retained run worktree at <workspace>/.cloud-harness/worktrees/<run>.
+func worktreeControlDir(root string) (string, bool) {
+	parent := filepath.Dir(root)
+	if filepath.Base(parent) != "worktrees" {
+		return "", false
+	}
+	control := filepath.Dir(parent)
+	if filepath.Base(control) != security.ControlDir {
+		return "", false
+	}
+	return control, true
 }
 
 func controlSandboxPath(path string) commandSandboxPath {
@@ -204,32 +240,61 @@ func controlSandboxPath(path string) commandSandboxPath {
 	return commandSandboxPath{Path: path, Create: os.IsNotExist(err)}
 }
 
-func commandConfigPath(root string) (string, bool) {
+func commandConfigPath(root string) (string, bool, bool) {
 	dir, err := security.ConfigDirectory()
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	rel, err := filepath.Rel(absDir, absRoot)
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		// Masking the configuration directory would also hide the workspace.
-		return "", false
+		return "", false, true
 	}
-	return absDir, true
+	return absDir, true, false
+}
+
+func pathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func applyCommandSandbox(spec commandSandboxSpec) error {
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make mounts private: %w", err)
 	}
-	seen := map[string]bool{}
+	preserve := filepath.Clean(spec.Preserve)
+	preserved := ""
+	if preserve != "" {
+		for _, entry := range spec.Paths {
+			resolved, err := resolveSandboxMask(entry.Path)
+			if err != nil || !pathWithin(preserve, resolved) {
+				continue
+			}
+			if resolved == preserve {
+				return errors.New("refusing to mask the command workspace")
+			}
+			if preserved != "" && preserved != resolved {
+				return errors.New("multiple control masks contain the command workspace")
+			}
+			preserved = resolved
+		}
+		if preserved != "" {
+			if err := maskPreservedControl(preserved, preserve); err != nil {
+				return err
+			}
+		}
+	}
+	seen := map[string]bool{preserved: true}
 	for _, entry := range spec.Paths {
 		path := filepath.Clean(entry.Path)
 		if entry.Create {
@@ -263,6 +328,51 @@ func applyCommandSandbox(spec commandSandboxSpec) error {
 			return fmt.Errorf("mask %s: %w", resolved, err)
 		}
 	}
+	return nil
+}
+
+func resolveSandboxMask(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// maskPreservedControl hides an ancestor control directory while keeping the
+// command workspace reachable: the workspace is bind-mounted aside, the control
+// directory is replaced with an empty tmpfs, and the workspace is bound back at
+// its original path inside that tmpfs.
+func maskPreservedControl(mask, preserve string) error {
+	info, err := os.Stat(mask)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("control mask %s is not a directory", mask)
+	}
+	tmp, err := os.MkdirTemp("", "cloud-harness-preserve-*")
+	if err != nil {
+		return err
+	}
+	cleanup := func() {
+		_ = unix.Unmount(tmp, unix.MNT_DETACH)
+		_ = os.Remove(tmp)
+	}
+	if err := unix.Mount(preserve, tmp, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		cleanup()
+		return fmt.Errorf("preserve command workspace: %w", err)
+	}
+	if err := unix.Mount("tmpfs", mask, "tmpfs", 0, "mode=0755"); err != nil {
+		cleanup()
+		return fmt.Errorf("mask %s: %w", mask, err)
+	}
+	if err := os.MkdirAll(preserve, 0o755); err != nil {
+		cleanup()
+		return fmt.Errorf("restore command workspace: %w", err)
+	}
+	if err := unix.Mount(tmp, preserve, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		cleanup()
+		return fmt.Errorf("restore command workspace: %w", err)
+	}
+	cleanup()
 	return nil
 }
 
@@ -376,10 +486,13 @@ func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string, require
 		return g
 	}
 	if commandSandboxAvailable() {
-		g.sandbox.Enabled = true
-		control := commandControlPaths(workspace)
-		g.sandbox.Paths = control
-		for _, entry := range control {
+		spec, err := commandSandboxSpecFor(workspace)
+		if err != nil {
+			g.failErr = err
+			return g
+		}
+		g.sandbox = spec
+		for _, entry := range spec.Paths {
 			if entry.Create {
 				g.created = append(g.created, entry.Path)
 			}
