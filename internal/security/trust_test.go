@@ -273,3 +273,49 @@ func TestControlPathFollowsSymlinkedControlDirectory(t *testing.T) {
 		}
 	}
 }
+
+// Approvals and revocations from separate processes must not overwrite each
+// other's read-modify-write of the shared store.
+func TestTrustStoreSerializesConcurrentChanges(t *testing.T) {
+	global := t.TempDir()
+	const workspaces = 12
+	dirs := make([]string, workspaces)
+	for i := range dirs {
+		dirs[i] = t.TempDir()
+		writePolicyFile(t, filepath.Join(dirs[i], ControlDir, TrustHooksFile), `{}`)
+		if i%2 == 1 {
+			if err := TrustContent(dirs[i], global, map[string][]byte{TrustHooksFile: []byte(`{}`)}, time.Unix(1700000000, 0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Even workspaces are approved while odd ones are revoked.
+	errs := make(chan error, workspaces)
+	for i, dir := range dirs {
+		go func() {
+			if i%2 == 0 {
+				errs <- TrustContent(dir, global, map[string][]byte{TrustHooksFile: []byte(`{}`)}, time.Unix(1700000000, 0))
+				return
+			}
+			_, err := RevokeTrust(dir, global)
+			errs <- err
+		}()
+	}
+	for range dirs {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, dir := range dirs {
+		want := TrustTrusted
+		if i%2 == 1 {
+			want = TrustUntrusted
+		}
+		if got := trustState(t, dir, global, TrustHooksFile); got.State != want {
+			t.Fatalf("workspace %d = %s, want %s", i, got.State, want)
+		}
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(global, "trust.json.*")); len(leftovers) != 0 {
+		t.Fatalf("lock or temporary files left behind: %v", leftovers)
+	}
+}

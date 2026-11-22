@@ -22,6 +22,7 @@ const (
 	TrustPolicyFile = "policy.json"
 	trustStoreFile  = "trust.json"
 	maxTrustedBytes = 1 << 20
+	trustLockWait   = 5 * time.Second
 )
 
 // TrustedFiles are the workspace files that change later runs' authority and
@@ -186,6 +187,11 @@ func TrustContent(workspace, configDir string, files map[string][]byte, now time
 	if reason := trustStoreExposed(key, configDir); reason != "" {
 		return errors.New(reason)
 	}
+	unlock, err := lockTrustStore(configDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	store, err := readTrustStore(configDir)
 	if err != nil {
 		return err
@@ -209,6 +215,11 @@ func RevokeTrust(workspace, configDir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	unlock, err := lockTrustStore(configDir)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 	store, err := readTrustStore(configDir)
 	if err != nil {
 		return 0, err
@@ -237,6 +248,33 @@ func trustStoreExposed(workspaceKey, configDir string) string {
 		return "trust store " + TrustStorePath(abs) + " is inside the workspace; move the configuration directory outside it"
 	}
 	return ""
+}
+
+// lockTrustStore serializes the read-modify-write of the store between
+// processes, so a concurrent approval cannot write back a decision another
+// process just revoked. The lock is a file created exclusively next to the
+// store; a process that dies while holding it leaves the file behind, and the
+// error names it rather than guessing that it is stale.
+func lockTrustStore(configDir string) (func(), error) {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return nil, err
+	}
+	lock := TrustStorePath(configDir) + ".lock"
+	deadline := time.Now().Add(trustLockWait)
+	for {
+		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("trust store lock %s: %w", lock, err)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("trust store is locked by another cloud-harness process; retry, or remove %s if none is running", lock)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func readTrustStore(configDir string) (trustStore, error) {
