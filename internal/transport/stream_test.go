@@ -117,7 +117,7 @@ func (f *streamFixture) createRun(t *testing.T, query string) view {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create run: status %d", resp.StatusCode)
 	}
@@ -178,7 +178,7 @@ func (f *streamFixture) subscribe(t *testing.T, runID, lastEventID string) *sseS
 	t.Cleanup(cancel)
 	go func() {
 		defer close(s.ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		reader := bufio.NewReader(resp.Body)
 		var ev sseEvent
 		for {
@@ -618,7 +618,7 @@ func TestFallbackReadFindsEventsFromAnotherProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.Close()
+	defer func() { _ = other.Close() }()
 	if _, err := other.AppendEvent(context.Background(), storage.Event{RunID: runID, Type: "run.resumed", Persistent: true, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

@@ -456,7 +456,7 @@ func stopRuns(mgr *agent.Manager, stderr io.Writer) {
 	ctx, cancel := context.WithTimeout(context.Background(), serveRunStopTimeout)
 	defer cancel()
 	if err := mgr.Shutdown(ctx); err != nil {
-		fmt.Fprintln(stderr, "stopping runs:", err)
+		_, _ = fmt.Fprintln(stderr, "stopping runs:", err)
 	}
 }
 

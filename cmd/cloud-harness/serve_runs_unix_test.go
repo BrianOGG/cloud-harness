@@ -32,7 +32,7 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	stalled := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"thinking\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"thinking\"}}]}\n\n")
 		w.(http.Flusher).Flush()
 		select {
 		case <-stalled:
@@ -65,8 +65,12 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	var processErr error
+	go func() {
+		processErr = cmd.Wait()
+		close(done)
+	}()
 	exited := false
 	defer func() {
 		if !exited {
@@ -86,9 +90,9 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 			break
 		}
 		select {
-		case err := <-done:
+		case <-done:
 			exited = true
-			t.Fatalf("serve exited before listening: %v stderr=%s", err, stderr.String())
+			t.Fatalf("serve exited before listening: %v stderr=%s", processErr, stderr.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
@@ -102,7 +106,7 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("POST %s: status %d stderr=%s", path, resp.StatusCode, stderr.String())
 		}
@@ -134,7 +138,7 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Body.Close()
+	defer func() { _ = stream.Body.Close() }()
 	lines := bufio.NewScanner(stream.Body)
 	sawDelta := false
 	for !sawDelta && lines.Scan() {
@@ -148,10 +152,10 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-done:
+	case <-done:
 		exited = true
-		if err != nil {
-			t.Fatalf("serve did not shut down cleanly on SIGTERM: %v stderr=%s", err, stderr.String())
+		if processErr != nil {
+			t.Fatalf("serve did not shut down cleanly on SIGTERM: %v stderr=%s", processErr, stderr.String())
 		}
 	case <-time.After(serveRunStopTimeout + serveStopGrace):
 		t.Fatal("serve still running after SIGTERM")
@@ -169,7 +173,7 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	stored, err := db.GetRun(context.Background(), run.ID)
 	if err != nil {
 		t.Fatal(err)
