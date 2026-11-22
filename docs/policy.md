@@ -85,7 +85,9 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
 3. 文件工具读取或写入执行工作区的 `.cloud-harness/**` 时拒绝。该目录保存 harness 的
    控制文件：`hooks.json`、`policy.json`、默认数据库 `harness.db`、快照和 worktree
    元数据。目录名不区分大小写，路径先规范化并解析符号链接，因此 `a/../.cloud-harness/x`
-   和指向该目录的符号链接同样被拒绝。结果为
+   和指向该目录的符号链接同样被拒绝；`.cloud-harness` 本身是符号链接时，它指向的目录按真实
+   路径同样受保护。`list_files` 和 `grep` 遍历工作区时跳过该目录，以及解析后位于该目录内
+   的符号链接。结果为
    `policy deny (builtin): file access to .cloud-harness/** (harness control files)`。
 
 第 1、2 条位于用户规则之后，用户规则可以显式覆盖，比如示例中的 `fixtures/.env`。
@@ -114,7 +116,9 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
   （包括空白字符）后，状态变为 `changed`，需要重新确认；改回已信任的内容则恢复为
   `trusted`。
 - 记录保存在 `<配置目录>/trust.json`（权限 `0600`），与全局 `policy.json`、`hooks.json`
-  同目录，位于工作区之外，文件工具无法写入。如果配置目录位于工作区内部，信任记录会
+  同目录，位于工作区之外，文件工具无法写入。`trust approve` 和 `trust revoke` 修改记录时
+  通过同目录的 `trust.json.lock` 串行化，并发执行不会互相覆盖；如果进程异常退出留下该
+  锁文件，命令会在 5 秒后报错并给出锁文件路径，确认没有其他进程后手动删除即可。如果配置目录位于工作区内部，信任记录会
   暴露给 agent，此时工作区文件一律视为未信任，`trust approve` 也会拒绝写入，并提示把
   配置目录移到工作区之外。
 - 使用 `--worktree` 时，run 的 worktree 位于 `<workspace>/.cloud-harness/worktrees/<run>`，
