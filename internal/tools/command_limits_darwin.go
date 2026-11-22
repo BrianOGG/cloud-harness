@@ -115,8 +115,7 @@ func (g *commandGuard) Run() error {
 	if g.sandbox == nil {
 		return g.cmd.Run()
 	}
-	plan, held, err := planSeatbelt(*g.sandbox, canonicalPath)
-	defer releaseSeatbeltMasks(held)
+	plan, err := planSeatbelt(*g.sandbox, canonicalPath)
 	if err != nil {
 		return sandboxNotApplied(err.Error())
 	}

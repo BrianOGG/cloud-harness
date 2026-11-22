@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -68,6 +70,15 @@ func wantFile(t *testing.T, path, body string) {
 	t.Helper()
 	if got, err := os.ReadFile(path); err != nil || string(got) != body {
 		t.Errorf("%s changed: %q %v", path, got, err)
+	}
+}
+
+func wantEmptyDir(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		if entries, err := os.ReadDir(path); err != nil || len(entries) != 0 {
+			t.Errorf("%s is not an empty directory after the command: %v %v", path, entries, err)
+		}
 	}
 }
 
@@ -210,10 +221,105 @@ printf x > "$cfg/trust.json"
 	if !strings.Contains(out.Stderr, "Operation not permitted") {
 		t.Fatalf("command was not denied:\n%s", out.Stdout+out.Stderr)
 	}
-	// Absent again afterwards: the command created nothing there, and the
-	// directories held for the run were removed. On a case-insensitive volume
-	// this also covers every other spelling of the name.
-	wantAbsent(t, filepath.Join(root, ".cloud-harness"), config, filepath.Dir(config))
+	// The harness created both directories and they are still empty. On a
+	// case-insensitive volume this also covers every other spelling.
+	wantEmptyDir(t, filepath.Join(root, ".cloud-harness"), config)
+}
+
+// TestRunCommandSurvivorCannotCreateControlFiles covers a process the command
+// leaves running: it keeps its sandbox, and the control directories created
+// for the command must still be there when it acts.
+func TestRunCommandSurvivorCannotCreateControlFiles(t *testing.T) {
+	needSeatbelt(t)
+	config := filepath.Join(tempDir(t), "missing", "config")
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(config, "settings.json"))
+	root := tempDir(t)
+	other := filepath.Join(filepath.Dir(config), "Config")
+	release, done := filepath.Join(root, "survivor.go"), filepath.Join(root, "survivor.done")
+	limitHelpers(t, map[string]string{"leave-survivor": fmt.Sprintf(`(
+	while [ ! -e %q ]; do sleep 0.1; done
+	mkdir -p .Cloud-Harness %q
+	printf PLANTED > .Cloud-Harness/policy.json
+	printf PLANTED > .cloud-harness/policy.json
+	printf PLANTED > %q
+	printf PLANTED > %q
+	printf done > %q
+) </dev/null >/dev/null 2>&1 &
+echo STARTED
+`, release, other, filepath.Join(other, "trust.json"), filepath.Join(config, "trust.json"), done)})
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "leave-survivor")
+	if !strings.Contains(out.Stdout, "STARTED") {
+		t.Fatalf("command did not run: %+v", out)
+	}
+	// The command has returned; only now does the survivor act.
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(done); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("survivor did not finish")
+		}
+	}
+	// Read the way the harness would, whatever the volume's case rules.
+	wantAbsent(t, filepath.Join(root, ".cloud-harness", "policy.json"), filepath.Join(config, "trust.json"))
+	wantEmptyDir(t, filepath.Join(root, ".cloud-harness"), config)
+}
+
+// TestRunCommandCancelKillsSandboxedCommand covers a cancelled run: the kill
+// has to reach the command through sandbox-exec and the trampoline, which
+// replace each other in one process.
+func TestRunCommandCancelKillsSandboxedCommand(t *testing.T) {
+	needSeatbelt(t)
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(t.TempDir(), "settings.json"))
+	root := tempDir(t)
+	pidFile := filepath.Join(root, "command.pid")
+	limitHelpers(t, map[string]string{"sleep-long": fmt.Sprintf("echo $$ > %q\nexec sleep 60", pidFile)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer cancel()
+		for i := 0; i < 1000; i++ {
+			if body, err := os.ReadFile(pidFile); err == nil && strings.HasSuffix(string(body), "\n") {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	started := time.Now()
+	runLimited(t, ctx, root, CommandLimits{}, "sleep-long")
+	if elapsed := time.Since(started); elapsed > 30*time.Second {
+		t.Fatalf("cancelled command returned after %v", elapsed)
+	}
+	body, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("command did not start: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// run_command waited for the process, so the pid is gone, not a zombie.
+	if err := unix.Kill(pid, 0); !errors.Is(err, unix.ESRCH) {
+		t.Fatalf("command %d survived cancellation: %v", pid, err)
+	}
+	wantEmptyDir(t, filepath.Join(root, ".cloud-harness"))
+}
+
+// TestRunCommandVolumeCaseSensitivity only records what the isolation tests ran on.
+func TestRunCommandVolumeCaseSensitivity(t *testing.T) {
+	dir := tempDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "CaseProbe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err == nil {
+		t.Log("test volume is case-insensitive: other spellings name the same control directory")
+	} else {
+		t.Log("test volume is case-sensitive: other spellings name different directories")
+	}
 }
 
 func TestRunCommandRefusedWhenMissingConfigDirectoryCannotBeHeld(t *testing.T) {
@@ -227,7 +333,7 @@ func TestRunCommandRefusedWhenMissingConfigDirectoryCannotBeHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(locked, "config", "settings.json"))
-	// Without a held directory the rule names a path that does not exist, and
+	// Without the directory the rule names a path that does not exist, and
 	// on a case-insensitive volume this would plant a policy the harness reads.
 	limitHelpers(t, map[string]string{"plant-config": fmt.Sprintf(`set +e
 chmod u+w %[1]q
@@ -319,7 +425,7 @@ ls ../..
 		t.Fatalf("command read the original control directory:\n%s", combined)
 	}
 	wantFile(t, filepath.Join(control, "harness.db"), "DB_SECRET")
-	wantAbsent(t, filepath.Join(worktree, ".cloud-harness"))
+	wantEmptyDir(t, filepath.Join(worktree, ".cloud-harness"))
 }
 
 func TestRunCommandDeniesControlThroughSymlinkedWorkspace(t *testing.T) {

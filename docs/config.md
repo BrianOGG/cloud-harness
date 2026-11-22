@@ -208,13 +208,18 @@ with `Operation not permitted`. Linux shows the command an empty directory
 instead; on macOS the directory is visible in its parent's listing but cannot be
 opened.
 
-- A directory that does not exist yet is created for the duration of the
-  command and removed afterwards. On a case-insensitive volume this is what
-  stops a command from creating `.Cloud-Harness` and having the harness read
-  it later. If the harness cannot create it (the parent is not writable), the
-  command is not started, since a command running as the same user could make
-  the parent writable and create the other spelling itself. A read-only volume
-  is the exception.
+- The first `run_command` on macOS creates the workspace `.cloud-harness`
+  and the configuration directory, empty and with mode `0700`, if they do not
+  exist yet, and leaves them in place; in a `--worktree` run that includes a
+  `.cloud-harness` in the run worktree. On a case-insensitive volume this is
+  what stops a command, or a background process it leaves running, from
+  creating `.Cloud-Harness` and having the harness read it later. An empty
+  directory changes nothing on the next start: nothing in it is trusted, and
+  hooks, policy and trust load as if it were absent. Git does not show empty
+  directories. If the harness cannot create one (the parent is not writable),
+  the command is not started, since a command running as the same user could
+  make the parent writable and create the other spelling itself. A read-only
+  volume is the exception.
 - For `--worktree` runs the original workspace `.cloud-harness` is denied
   while the run worktree inside it stays usable. The two directories above the
   worktree answer `stat` so its path can be resolved, and nothing else.
@@ -231,6 +236,8 @@ opened.
   `run_command`. When the harness itself already runs inside a sandbox, no
   profile can be applied: safe commands run unprotected and approved dangerous
   commands are not started, as on a restricted Linux kernel.
+- As on Linux, a process the command leaves running stays under the same
+  restrictions for as long as it lives.
 - As on Linux, the protection covers the command's own process tree. A command
   that asks a service outside it to touch the files (launchd, an application
   started with `open`, Apple events, `ssh localhost`, a Docker daemon) is not

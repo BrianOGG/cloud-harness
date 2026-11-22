@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -67,71 +66,32 @@ type seatbeltPlan struct {
 	Pinned []string `json:"pinned,omitempty"`
 }
 
-// seatbeltMasks counts the runs that rely on a directory created only to be
-// masked, so one command finishing does not remove it under another.
-var seatbeltMasks = struct {
-	sync.Mutex
-	refs map[string]int
-}{refs: map[string]int{}}
-
-// holdSeatbeltMask makes sure path exists as a directory, creating it and any
-// missing parents. On a case-insensitive volume a rule for a path that does
-// not exist yet would not cover a differently-cased spelling of it, so the
-// name is fixed before the command runs. It returns the directories to release
-// afterwards. A directory the harness may not create is an error, not a reason
-// to go without: the command runs as the same user and could make the parent
-// writable first. Only a read-only volume is left alone.
-func holdSeatbeltMask(path string) ([]string, error) {
-	seatbeltMasks.Lock()
-	defer seatbeltMasks.Unlock()
-	var chain []string
-	for dir := path; ; dir = filepath.Dir(dir) {
-		_, err := os.Lstat(dir)
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		if err == nil && seatbeltMasks.refs[dir] == 0 {
-			break
-		}
-		chain = append(chain, dir)
-		if filepath.Dir(dir) == dir {
-			break
-		}
+// ensureSeatbeltMask makes sure path exists as a directory, creating it and
+// any missing parents. On a case-insensitive volume a rule for a path that
+// does not exist would not cover a differently-cased spelling of it, so the
+// name is fixed before the command runs. The directory stays afterwards: a
+// process the command leaves running keeps its sandbox, and would be free to
+// create the other spelling once the directory was removed again. A directory
+// the harness may not create is an error, not a reason to go without: the
+// command runs as the same user and could make the parent writable first.
+// Only a read-only volume is left alone.
+func ensureSeatbeltMask(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	var held []string
-	for i := len(chain) - 1; i >= 0; i-- {
-		dir := chain[i]
-		if seatbeltMasks.refs[dir] == 0 {
-			if err := os.Mkdir(dir, 0o700); err != nil {
-				if errors.Is(err, syscall.EROFS) {
-					return held, nil
-				}
-				return held, fmt.Errorf("create control mask %s: %w", dir, err)
-			}
-		}
-		seatbeltMasks.refs[dir]++
-		held = append([]string{dir}, held...)
+	if err := os.MkdirAll(path, 0o700); err != nil && !errors.Is(err, syscall.EROFS) {
+		return fmt.Errorf("create control mask %s: %w", path, err)
 	}
-	return held, nil
-}
-
-func releaseSeatbeltMasks(held []string) {
-	seatbeltMasks.Lock()
-	defer seatbeltMasks.Unlock()
-	for _, dir := range held {
-		if seatbeltMasks.refs[dir]--; seatbeltMasks.refs[dir] <= 0 {
-			delete(seatbeltMasks.refs, dir)
-			_ = os.Remove(dir)
-		}
-	}
+	return nil
 }
 
 // planSeatbelt turns spec into canonical paths. canonical must return the
-// kernel's name for an existing path, following symlinks. The returned
-// directories must be passed to releaseSeatbeltMasks once the command is done.
-func planSeatbelt(spec commandSandboxSpec, canonical func(string) (string, error)) (seatbeltPlan, []string, error) {
+// kernel's name for an existing path, following symlinks. Control directories
+// that do not exist yet are created and left in place.
+func planSeatbelt(spec commandSandboxSpec, canonical func(string) (string, error)) (seatbeltPlan, error) {
 	var plan seatbeltPlan
-	var held []string
 	seen := map[string]bool{}
 	deny := func(path string) error {
 		if path == string(filepath.Separator) {
@@ -145,33 +105,31 @@ func planSeatbelt(spec commandSandboxSpec, canonical func(string) (string, error
 	}
 	for _, entry := range spec.Paths {
 		path := filepath.Clean(entry.Path)
-		more, err := holdSeatbeltMask(path)
-		held = append(held, more...)
-		if err != nil {
-			return plan, held, err
+		if err := ensureSeatbeltMask(path); err != nil {
+			return plan, err
 		}
 		// The entry under its own name, and what it resolves to when it is
 		// a symlink.
 		named, err := canonicalEntry(path, canonical)
 		if err != nil {
-			return plan, held, err
+			return plan, err
 		}
 		if err := deny(named); err != nil {
-			return plan, held, err
+			return plan, err
 		}
 		resolved, err := canonical(path)
 		switch {
 		case err == nil:
 			if err := deny(resolved); err != nil {
-				return plan, held, err
+				return plan, err
 			}
 		case !errors.Is(err, fs.ErrNotExist):
-			return plan, held, err
+			return plan, err
 		default:
 			if _, lerr := os.Lstat(path); lerr == nil {
 				// The command could create the target and have the
 				// harness read it as a control file.
-				return plan, held, fmt.Errorf("control path %s is a dangling symlink", path)
+				return plan, fmt.Errorf("control path %s is a dangling symlink", path)
 			}
 			plan.Missing = append(plan.Missing, named)
 		}
@@ -179,12 +137,12 @@ func planSeatbelt(spec commandSandboxSpec, canonical func(string) (string, error
 	if spec.Preserve != "" {
 		preserve, err := canonical(spec.Preserve)
 		if err != nil {
-			return plan, held, fmt.Errorf("resolve command workspace: %w", err)
+			return plan, fmt.Errorf("resolve command workspace: %w", err)
 		}
 		plan.Preserve = preserve
 		for _, path := range plan.Deny {
 			if path == preserve {
-				return plan, held, errors.New("refusing to mask the command workspace")
+				return plan, errors.New("refusing to mask the command workspace")
 			}
 			if !pathWithin(preserve, path) {
 				continue
@@ -201,7 +159,7 @@ func planSeatbelt(spec commandSandboxSpec, canonical func(string) (string, error
 		}
 	}
 	plan.Pinned = sortedUnique(plan.Pinned)
-	return plan, held, nil
+	return plan, nil
 }
 
 // canonicalEntry names path without following a symlink in its last element:

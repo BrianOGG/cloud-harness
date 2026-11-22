@@ -61,7 +61,8 @@ See [command resource limits](docs/config.md#command-resource-limits).
 On Linux and macOS the same processes cannot read or write `.cloud-harness`
 or the harness configuration directory; see
 [control files on macOS](docs/config.md#control-files-on-macos) for the macOS
-mechanism and its limits.
+mechanism and its limits. On macOS the first command creates both directories,
+empty, if they do not exist yet.
 
 Harness control files are protected from the agent. File tools cannot read or
 write anything under `.cloud-harness/` (hooks, policy, the default database,

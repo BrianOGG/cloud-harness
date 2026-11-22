@@ -83,7 +83,7 @@ func TestSeatbeltProfileRefusesPathsItCannotQuote(t *testing.T) {
 	}
 }
 
-func TestPlanSeatbeltCreatesAndReleasesMissingMasks(t *testing.T) {
+func TestPlanSeatbeltCreatesAndKeepsMissingMasks(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -92,16 +92,18 @@ func TestPlanSeatbeltCreatesAndReleasesMissingMasks(t *testing.T) {
 	config := filepath.Join(root, "missing", "config")
 	spec := commandSandboxSpec{Enabled: true, Paths: []commandSandboxPath{{Path: control}, {Path: config}}}
 
-	plan, held, err := planSeatbelt(spec, evalCanonical)
+	plan, err := planSeatbelt(spec, evalCanonical)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(plan.Deny, []string{control, config}) || len(plan.Missing) != 0 {
 		t.Fatalf("plan = %+v", plan)
 	}
+	// They stay after the command: a process it leaves running must not find
+	// the name free again.
 	for _, dir := range []string{control, config} {
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			t.Fatalf("%s was not created before the command: %v", dir, err)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s was not created before the command: %v %v", dir, info, err)
 		}
 	}
 	pinned := map[string]bool{}
@@ -117,20 +119,9 @@ func TestPlanSeatbeltCreatesAndReleasesMissingMasks(t *testing.T) {
 		t.Errorf("pinned = %v", plan.Pinned)
 	}
 
-	// A second command in the same workspace relies on the same directories.
-	_, heldAgain, err := planSeatbelt(spec, evalCanonical)
-	if err != nil {
-		t.Fatal(err)
-	}
-	releaseSeatbeltMasks(held)
-	if _, err := os.Stat(control); err != nil {
-		t.Fatalf("mask removed while another command still relies on it: %v", err)
-	}
-	releaseSeatbeltMasks(heldAgain)
-	for _, dir := range []string{control, config, filepath.Join(root, "missing")} {
-		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("%s was left behind: %v", dir, err)
-		}
+	again, err := planSeatbelt(spec, evalCanonical)
+	if err != nil || !reflect.DeepEqual(again, plan) {
+		t.Fatalf("second plan = %+v, err = %v", again, err)
 	}
 }
 
@@ -151,13 +142,9 @@ func TestPlanSeatbeltRefusesMaskItCannotCreate(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 	spec := commandSandboxSpec{Paths: []commandSandboxPath{{Path: filepath.Join(root, "made", ".cloud-harness")}, {Path: filepath.Join(locked, "config")}}}
-	_, held, err := planSeatbelt(spec, evalCanonical)
+	_, err = planSeatbelt(spec, evalCanonical)
 	if err == nil || !strings.Contains(err.Error(), "create control mask") || !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("expected a control directory that cannot be created to stop the plan, got %v", err)
-	}
-	releaseSeatbeltMasks(held)
-	if _, err := os.Stat(filepath.Join(root, "made")); !os.IsNotExist(err) {
-		t.Fatalf("directories created before the failure were left behind: %v", err)
 	}
 }
 
@@ -170,11 +157,9 @@ func TestPlanSeatbeltKeepsExistingControlDirectory(t *testing.T) {
 	if err := os.Mkdir(control, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, held, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical)
-	if err != nil || len(held) != 0 {
-		t.Fatalf("held = %v, err = %v", held, err)
+	if _, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical); err != nil {
+		t.Fatal(err)
 	}
-	releaseSeatbeltMasks(held)
 	if _, err := os.Stat(control); err != nil {
 		t.Fatalf("existing control directory was removed: %v", err)
 	}
@@ -193,8 +178,7 @@ func TestPlanSeatbeltDeniesSymlinkAndTarget(t *testing.T) {
 	if err := os.Symlink(target, control); err != nil {
 		t.Fatal(err)
 	}
-	plan, held, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical)
-	releaseSeatbeltMasks(held)
+	plan, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical)
 	if err != nil || !reflect.DeepEqual(plan.Deny, []string{control, target}) {
 		t.Fatalf("deny = %v, err = %v", plan.Deny, err)
 	}
@@ -202,8 +186,7 @@ func TestPlanSeatbeltDeniesSymlinkAndTarget(t *testing.T) {
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	_, held, err = planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical)
-	releaseSeatbeltMasks(held)
+	_, err = planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: control}}}, evalCanonical)
 	if err == nil || !strings.Contains(err.Error(), "dangling symlink") {
 		t.Fatalf("expected a dangling control symlink to be refused, got %v", err)
 	}
@@ -224,8 +207,7 @@ func TestPlanSeatbeltWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, held, err := planSeatbelt(spec, evalCanonical)
-	defer releaseSeatbeltMasks(held)
+	plan, err := planSeatbelt(spec, evalCanonical)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,22 +223,21 @@ func TestPlanSeatbeltWorktree(t *testing.T) {
 	// On a case-insensitive volume the worktree's own control directory
 	// must exist before the command can create a differently-cased one.
 	if _, err := os.Stat(filepath.Join(worktree, ".cloud-harness")); err != nil {
-		t.Fatalf("worktree control directory was not held: %v", err)
+		t.Fatalf("worktree control directory was not created: %v", err)
 	}
 
-	if _, _, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: worktree}}, Preserve: worktree}, evalCanonical); err == nil {
+	if _, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: worktree}}, Preserve: worktree}, evalCanonical); err == nil {
 		t.Fatal("expected a mask on the command workspace itself to be refused")
 	}
 }
 
 func TestPlanSeatbeltRefusesRootAndLookupFailures(t *testing.T) {
-	if _, _, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: "/"}}}, evalCanonical); err == nil {
+	if _, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: "/"}}}, evalCanonical); err == nil {
 		t.Fatal("expected the filesystem root to be refused")
 	}
 	root := t.TempDir()
 	broken := func(string) (string, error) { return "", syscall.EIO }
-	_, held, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: filepath.Join(root, ".cloud-harness")}}}, broken)
-	releaseSeatbeltMasks(held)
+	_, err := planSeatbelt(commandSandboxSpec{Paths: []commandSandboxPath{{Path: filepath.Join(root, ".cloud-harness")}}}, broken)
 	if !errors.Is(err, syscall.EIO) {
 		t.Fatalf("expected a failed path lookup to stop the plan, got %v", err)
 	}
