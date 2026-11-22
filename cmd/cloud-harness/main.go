@@ -107,6 +107,8 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdRepoMap(args[1:], stdout, stderr)
 	case "policy":
 		return cmdPolicy(args[1:], stdout, stderr)
+	case "trust":
+		return cmdTrust(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
@@ -139,6 +141,7 @@ const usage = `Cloud Harness M5
   cloud-harness worktrees list|diff|merge|discard [RUN_ID] [--workspace dir] [--db path]
   cloud-harness repomap [--dir path] [--max-bytes N]
   cloud-harness policy decisions [--run ID] [--tool NAME] [--effect allow|ask|deny] [--since RFC3339] [--limit N] [--db path] [--workspace dir] [--json]
+  cloud-harness trust status|approve|revoke [--workspace dir] [--yes] [--json]
   cloud-harness isolation
   cloud-harness program check
 
@@ -387,6 +390,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	warnUntrusted(stderr, mgr.Workspace)
 	if _, err := mgr.RecoverExpired(ctx); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -454,6 +458,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	warnUntrusted(stderr, mgr.Workspace)
 	mgr.DisableRepoMap = *disableRepoMap
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
@@ -956,6 +961,7 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	warnUntrusted(stderr, mgr.Workspace)
 	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
 }
 

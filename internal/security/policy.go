@@ -38,6 +38,10 @@ type Policy struct {
 	Workspace      string `json:"workspace"`
 	WorkspaceRules []Rule `json:"workspace_rules,omitempty"`
 	GlobalRules    []Rule `json:"global_rules,omitempty"`
+	// WorkspaceTrust is the trust decision for the workspace policy.json this
+	// snapshot was loaded from. Unless it is trusted, only the workspace
+	// layer's deny rules apply; a snapshot without the field is untrusted.
+	WorkspaceTrust *TrustStatus `json:"workspace_trust,omitempty"`
 }
 
 // PolicyRequest contains only selectors, never file contents. Paths are file
@@ -98,10 +102,22 @@ func LoadPolicyFrom(workspace, configDir string) (*Policy, error) {
 		return nil, err
 	}
 	p := &Policy{Workspace: filepath.Clean(abs)}
-	p.WorkspaceRules, err = loadRules(filepath.Join(abs, ".cloud-harness", "policy.json"))
+	// The bytes that are hashed for the trust check are the bytes that are
+	// parsed, so a file changed in between cannot inherit the decision.
+	raw, exists, err := ReadControlFile(abs, TrustPolicyFile)
+	if err != nil {
+		return nil, fmt.Errorf("policy %s: %w", filepath.Join(abs, ControlDir, TrustPolicyFile), err)
+	}
+	if exists {
+		if p.WorkspaceRules, err = parseRules(filepath.Join(abs, ControlDir, TrustPolicyFile), raw); err != nil {
+			return nil, err
+		}
+	}
+	status, err := CheckTrust(abs, configDir, TrustPolicyFile, raw, exists)
 	if err != nil {
 		return nil, err
 	}
+	p.WorkspaceTrust = &status
 	p.GlobalRules, err = loadRules(filepath.Join(configDir, "policy.json"))
 	if err != nil {
 		return nil, err
@@ -129,6 +145,11 @@ func loadRules(file string) ([]Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("policy %s: %w", file, err)
 	}
+	return parseRules(file, raw)
+}
+
+func parseRules(file string, raw []byte) ([]Rule, error) {
+	var err error
 	var doc struct {
 		Rules json.RawMessage `json:"rules"`
 	}
@@ -210,11 +231,28 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 	if req.Command != "" {
 		d.CommandSHA256 = policyHash(req.Command)
 	}
+	// Harness control files are not configurable: a rule that allowed them
+	// would let the agent rewrite the rules, hooks and audit data it runs under.
+	if req.FileRead || req.FileWrite {
+		for _, target := range req.Paths {
+			lexical, resolved := p.targetPaths(target)
+			if ControlPath(p.Workspace, lexical) || ControlPath(p.Workspace, resolved) {
+				d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, "builtin", 3, "file access to .cloud-harness/** (harness control files)"
+				return d
+			}
+		}
+	}
+	trusted := p.WorkspaceTrust != nil && p.WorkspaceTrust.Effective()
 	for _, layer := range []struct {
 		name  string
 		rules []Rule
 	}{{"workspace", p.WorkspaceRules}, {"global", p.GlobalRules}} {
 		for i, rule := range layer.rules {
+			// An untrusted workspace file may only restrict: its allow and ask
+			// rules could otherwise loosen the global layer or the baseline.
+			if layer.name == "workspace" && !trusted && rule.Effect != EffectDeny {
+				continue
+			}
 			if p.matches(rule, req) {
 				d.Effect, d.Source, d.RuleIndex, d.Rule = rule.Effect, layer.name, i+1, ruleSummary(rule)
 				return d

@@ -141,14 +141,14 @@ func TestPolicyAuditSummaryLayers(t *testing.T) {
 		if err != nil || len(summary.Layers) != 3 || summary.Decisions != (PolicyDecisionCounts{}) {
 			t.Fatalf("summary = %+v, %v", summary, err)
 		}
-		wantWorkspace, wantGlobal := 0, 0
+		wantWorkspace, wantGlobal, wantTrust := 0, 0, security.TrustState("")
 		if populated {
-			wantWorkspace, wantGlobal = 2, 1
+			wantWorkspace, wantGlobal, wantTrust = 2, 1, security.TrustTrusted
 		}
 		want := []PolicyLayerSummary{
-			{Source: "workspace", File: filepath.Join(workspace, ".cloud-harness", "policy.json"), Loaded: populated, Rules: wantWorkspace},
+			{Source: "workspace", File: filepath.Join(workspace, ".cloud-harness", "policy.json"), Loaded: populated, Rules: wantWorkspace, Trust: wantTrust},
 			{Source: "global", File: global, Loaded: populated, Rules: wantGlobal},
-			{Source: "builtin", File: "embedded", Loaded: true, Rules: 2},
+			{Source: "builtin", File: "embedded", Loaded: true, Rules: 3},
 		}
 		if !reflect.DeepEqual(summary.Layers, want) {
 			t.Fatalf("layers = %+v, want %+v", summary.Layers, want)

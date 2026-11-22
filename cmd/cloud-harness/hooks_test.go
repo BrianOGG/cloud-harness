@@ -47,7 +47,16 @@ func TestCLIUserPromptHookReturnsRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, stderr bytes.Buffer
-	code := Main([]string{"run", "--provider", "mock", "--workspace", workspace, "--db", filepath.Join(t.TempDir(), "h.db"), "--message", "rejected"}, &out, &stderr)
+	// Until the user trusts the file, its hook does not run and the CLI says so.
+	code := Main([]string{"run", "--provider", "mock", "--workspace", workspace, "--db", filepath.Join(t.TempDir(), "h.db"), "--message", "not rejected"}, &out, &stderr)
+	if code != 0 || !strings.Contains(out.String(), "Mock answer") || strings.Contains(stderr.String(), "submission-rejected") ||
+		!strings.Contains(stderr.String(), "hooks.json is not trusted") || !strings.Contains(stderr.String(), "cloud-harness trust approve") {
+		t.Fatalf("untrusted hook: code=%d out=%s err=%s", code, &out, &stderr)
+	}
+	approveWorkspaceTrust(t, workspace)
+	out.Reset()
+	stderr.Reset()
+	code = Main([]string{"run", "--provider", "mock", "--workspace", workspace, "--db", filepath.Join(t.TempDir(), "h.db"), "--message", "rejected"}, &out, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "submission-rejected") || out.Len() != 0 {
 		t.Fatalf("submission rejection: code=%d out=%s err=%s", code, &out, &stderr)
 	}

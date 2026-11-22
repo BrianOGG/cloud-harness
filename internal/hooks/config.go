@@ -49,6 +49,9 @@ type Config struct {
 	Workspace string             `json:"workspace"`
 	Hooks     map[Point][]Action `json:"hooks"`
 	GoCheck   *bool              `json:"go_check,omitempty"`
+	// WorkspaceTrust is the trust decision for the workspace hooks.json. The
+	// file is validated but contributes nothing unless it is trusted.
+	WorkspaceTrust *security.TrustStatus `json:"workspace_trust,omitempty"`
 }
 
 func Load(workspace string) (*Config, error) {
@@ -70,8 +73,28 @@ func LoadFrom(workspace, configDir string) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{Workspace: filepath.Clean(abs), Hooks: make(map[Point][]Action)}
-	for _, file := range []string{filepath.Join(configDir, "hooks.json"), filepath.Join(abs, ".cloud-harness", "hooks.json")} {
-		if err := mergeFile(cfg, file); err != nil {
+	if err := mergeFile(cfg, filepath.Join(configDir, "hooks.json")); err != nil {
+		return nil, fmt.Errorf("hooks %s: %w", filepath.Join(configDir, "hooks.json"), err)
+	}
+	// The bytes that are hashed for the trust check are the bytes that are
+	// parsed, so a file changed in between cannot inherit the decision.
+	file := filepath.Join(abs, security.ControlDir, security.TrustHooksFile)
+	raw, exists, err := security.ReadControlFile(abs, security.TrustHooksFile)
+	if err != nil {
+		return nil, fmt.Errorf("hooks %s: %w", file, err)
+	}
+	status, err := security.CheckTrust(abs, configDir, security.TrustHooksFile, raw, exists)
+	if err != nil {
+		return nil, err
+	}
+	cfg.WorkspaceTrust = &status
+	if exists {
+		target := cfg
+		if !status.Effective() {
+			// Validate only: nothing from an untrusted file reaches cfg.
+			target = &Config{Workspace: cfg.Workspace, Hooks: make(map[Point][]Action)}
+		}
+		if err := mergeConfig(target, raw); err != nil {
 			return nil, fmt.Errorf("hooks %s: %w", file, err)
 		}
 	}
@@ -106,6 +129,10 @@ func mergeFile(cfg *Config, file string) error {
 	if len(raw) > 1<<20 {
 		return fmt.Errorf("file exceeds 1 MiB")
 	}
+	return mergeConfig(cfg, raw)
+}
+
+func mergeConfig(cfg *Config, raw []byte) error {
 	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
 		return fmt.Errorf("configuration must be an object")
 	}

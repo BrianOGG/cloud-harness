@@ -152,7 +152,12 @@ func checkPolicy(workspace, dbPath string) doctorItem {
 		if !layer.Loaded {
 			state = "missing"
 		}
-		parts = append(parts, fmt.Sprintf("%s: %s (%d rules, %s)", layer.Source, layer.File, layer.Rules, state))
+		part := fmt.Sprintf("%s: %s (%d rules, %s)", layer.Source, layer.File, layer.Rules, state)
+		if layer.Trust == security.TrustUntrusted || layer.Trust == security.TrustChanged {
+			item.Status = "warn"
+			part += fmt.Sprintf(" [%s: allow and ask rules are not applied; run `cloud-harness trust approve`]", layer.Trust)
+		}
+		parts = append(parts, part)
 	}
 	parts = append(parts, fmt.Sprintf("decisions: allow=%d ask=%d deny=%d", summary.Decisions.Allow, summary.Decisions.Ask, summary.Decisions.Deny))
 	item.Detail = strings.Join(parts, "; ")

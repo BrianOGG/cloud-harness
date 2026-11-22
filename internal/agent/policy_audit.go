@@ -154,6 +154,8 @@ type PolicyLayerSummary struct {
 	File   string `json:"file"`
 	Loaded bool   `json:"loaded"`
 	Rules  int    `json:"rules"`
+	// Trust is set for the workspace layer when its file exists.
+	Trust security.TrustState `json:"trust,omitempty"`
 }
 
 type PolicyDecisionCounts struct {
@@ -180,12 +182,17 @@ func SummarizePolicy(ctx context.Context, workspace string, store PolicyAuditSto
 	if err != nil {
 		return PolicySummary{}, errors.New("policy configuration directory unavailable")
 	}
+	workspaceLayer := PolicyLayerSummary{Source: "workspace", File: filepath.Join(p.Workspace, ".cloud-harness", "policy.json"), Loaded: p.WorkspaceRules != nil, Rules: len(p.WorkspaceRules)}
+	if p.WorkspaceTrust != nil && p.WorkspaceTrust.State != security.TrustMissing {
+		workspaceLayer.Trust = p.WorkspaceTrust.State
+	}
 	summary := PolicySummary{Layers: []PolicyLayerSummary{
-		{Source: "workspace", File: filepath.Join(p.Workspace, ".cloud-harness", "policy.json"), Loaded: p.WorkspaceRules != nil, Rules: len(p.WorkspaceRules)},
+		workspaceLayer,
 		{Source: "global", File: filepath.Join(configDir, "policy.json"), Loaded: p.GlobalRules != nil, Rules: len(p.GlobalRules)},
-		// The existing evaluator has two embedded baseline rules: .env reads
-		// and writes outside the workspace. Neither has a rule file.
-		{Source: "builtin", File: "embedded", Loaded: true, Rules: 2},
+		// The evaluator has three embedded baseline rules: .env reads, writes
+		// outside the workspace, and .cloud-harness/** file access. None has
+		// a rule file.
+		{Source: "builtin", File: "embedded", Loaded: true, Rules: 3},
 	}}
 	if store == nil {
 		return summary, nil

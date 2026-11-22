@@ -135,6 +135,7 @@ func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, conf
 	}
 	items = append(items, checkProjectRules(ws))
 	items = append(items, checkPolicy(ws, cfg.DBPath))
+	items = append(items, checkTrust(ws))
 
 	gitBin, gitErr := exec.LookPath("git")
 	if gitErr != nil {

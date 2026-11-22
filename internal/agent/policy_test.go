@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
@@ -15,7 +16,30 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
 
+// putAgentPolicy writes a configuration file as the user would. A workspace
+// hooks.json or policy.json is also trusted, as `cloud-harness trust approve`
+// does; putUntrusted writes one without that decision.
 func putAgentPolicy(t *testing.T, file, body string) {
+	t.Helper()
+	putUntrusted(t, file, body)
+	name := filepath.Base(file)
+	if filepath.Base(filepath.Dir(file)) != security.ControlDir || name != security.TrustHooksFile && name != security.TrustPolicyFile {
+		return
+	}
+	if os.Getenv("CLOUD_HARNESS_CONFIG") == "" {
+		t.Fatal("isolatedPolicyConfig must precede a trusted workspace control file")
+	}
+	dir, err := security.ConfigDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Dir(filepath.Dir(file))
+	if err := security.TrustContent(workspace, dir, map[string][]byte{name: []byte(body)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func putUntrusted(t *testing.T, file, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		t.Fatal(err)
