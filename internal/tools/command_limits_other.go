@@ -1,11 +1,12 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package tools
 
 import "os/exec"
 
 // commandGuard runs one run_command process. Resource limits are enforced on
-// Linux only; elsewhere the command runs as it did before limits existed.
+// Linux only, and control files are hidden from the command on Linux and macOS
+// only; elsewhere the command runs as it did before either existed.
 type commandGuard struct {
 	cmd *exec.Cmd
 }

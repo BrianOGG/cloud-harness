@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package tools
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestGuardCommandIsNoOpOffLinux(t *testing.T) {
+func TestGuardCommandIsNoOpOffLinuxAndMacOS(t *testing.T) {
 	cmd := exec.Command("go", "version")
 	path, args := cmd.Path, append([]string(nil), cmd.Args...)
 	guard := guardCommand(cmd, CommandLimits{CPUSeconds: u64(1)}, t.TempDir(), false)
