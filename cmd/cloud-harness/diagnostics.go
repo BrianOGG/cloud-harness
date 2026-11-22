@@ -56,7 +56,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "doctor does not accept positional arguments")
+		_, _ = fmt.Fprintln(stderr, "doctor does not accept positional arguments")
 		return 2
 	}
 
@@ -90,7 +90,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		for _, item := range items {
-			fmt.Fprintf(stdout, "%s: %s - %s\n", item.Name, item.Status, item.Detail)
+			_, _ = fmt.Fprintf(stdout, "%s: %s - %s\n", item.Name, item.Status, item.Detail)
 		}
 	}
 	if items[len(items)-1].Status == "fail" {
@@ -327,7 +327,7 @@ func readOracleEvents(ctx context.Context, path string) ([]storage.Event, error)
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	return reader.ListOracleEvents(ctx)
 }
 
@@ -354,7 +354,7 @@ func inspectWorkspace(path string) (string, os.FileInfo, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("workspace cannot be entered: %w", err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	if _, err := dir.Readdirnames(1); err != nil && !errors.Is(err, io.EOF) {
 		return "", nil, fmt.Errorf("workspace cannot be read: %w", err)
 	}
@@ -481,25 +481,25 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "stats does not accept positional arguments")
+		_, _ = fmt.Fprintln(stderr, "stats does not accept positional arguments")
 		return 2
 	}
 	if *days < 1 {
-		fmt.Fprintln(stderr, "--days must be at least 1")
+		_, _ = fmt.Fprintln(stderr, "--days must be at least 1")
 		return 2
 	}
 	if *by != "day" && *by != "model" && *by != "run" {
-		fmt.Fprintln(stderr, "--by must be day, model, or run")
+		_, _ = fmt.Fprintln(stderr, "--by must be day, model, or run")
 		return 2
 	}
 	common := &commonFlags{db: *dbPath}
 	cfg, err := load(common)
 	if err != nil {
-		fmt.Fprintln(stderr, scrubDoctor(configErrorDetail(err)))
+		_, _ = fmt.Fprintln(stderr, scrubDoctor(configErrorDetail(err)))
 		return 1
 	}
 	if cfg.Provider != "mock" && cfg.Provider != "openai" && cfg.Provider != "openai-responses" && cfg.Provider != "anthropic" {
-		fmt.Fprintln(stderr, "field provider: must be mock, openai, openai-responses, or anthropic")
+		_, _ = fmt.Fprintln(stderr, "field provider: must be mock, openai, openai-responses, or anthropic")
 		return 1
 	}
 	since := time.Now().UTC().AddDate(0, 0, -*days)
@@ -509,7 +509,7 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 	// all-run query feeds the cumulative per-model ledger below.
 	records, err := sqlite.ReadUsage(ctx, cfg.DBPath, since)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	// time.Date(1, January, 1, ...) is Go's zero time and the SQLite helper
@@ -517,52 +517,52 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 	// bound to retain the complete history.
 	allRecords, err := sqlite.ReadUsage(ctx, cfg.DBPath, time.Date(1, time.January, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	report := aggregateStats(records, *by, *days, since, cfg)
 	report.ModelUsageByModel = aggregateModelUsage(allRecords, cfg)
 	oracleEvents, err := readOracleEvents(ctx, cfg.DBPath)
 	if err != nil {
-		fmt.Fprintln(stderr, "read oracle events:", err)
+		_, _ = fmt.Fprintln(stderr, "read oracle events:", err)
 		return 1
 	}
 	oracleSummary, err := agent.SummarizeOracleEvents(oracleEvents, cfg.ModelPrices)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	setOracleStats(&report, oracleSummary)
 	if *jsonOutput {
 		return writeJSON(stdout, report)
 	}
-	fmt.Fprintf(stdout, "Stats by %s, last %d days (since %s UTC); oracle ledger covers all runs\n", report.By, report.Days, report.Since)
-	fmt.Fprintln(stdout, "GROUP\tMODEL CALLS\tINPUT\tOUTPUT\tCACHED\tCACHE HIT\tCOST")
+	_, _ = fmt.Fprintf(stdout, "Stats by %s, last %d days (since %s UTC); oracle ledger covers all runs\n", report.By, report.Days, report.Since)
+	_, _ = fmt.Fprintln(stdout, "GROUP\tMODEL CALLS\tINPUT\tOUTPUT\tCACHED\tCACHE HIT\tCOST")
 	for _, row := range report.Results {
-		fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", row.Group, row.ModelCalls, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheHitRate*100, formatCost(row.Cost))
+		_, _ = fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", row.Group, row.ModelCalls, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheHitRate*100, formatCost(row.Cost))
 	}
-	fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
-	fmt.Fprintf(stdout, "ORACLE CONSULTATIONS\t%d\n", report.OracleConsultations)
-	fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%.4f\n", report.OracleEstimatedCostUSD)
-	fmt.Fprintln(stdout, "MODEL USAGE BY MODEL (ALL RUNS)")
-	fmt.Fprintln(stdout, "MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
+	_, _ = fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
+	_, _ = fmt.Fprintf(stdout, "ORACLE CONSULTATIONS\t%d\n", report.OracleConsultations)
+	_, _ = fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%.4f\n", report.OracleEstimatedCostUSD)
+	_, _ = fmt.Fprintln(stdout, "MODEL USAGE BY MODEL (ALL RUNS)")
+	_, _ = fmt.Fprintln(stdout, "MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
 	if len(report.ModelUsageByModel) == 0 {
-		fmt.Fprintln(stdout, "(none)\t0\t0.0000")
+		_, _ = fmt.Fprintln(stdout, "(none)\t0\t0.0000")
 	} else {
 		for _, row := range report.ModelUsageByModel {
-			fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
 		}
 	}
-	fmt.Fprintln(stdout, "ORACLE MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
+	_, _ = fmt.Fprintln(stdout, "ORACLE MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
 	if len(report.OracleByModel) == 0 {
-		fmt.Fprintln(stdout, "(none)\t0\t0.0000")
+		_, _ = fmt.Fprintln(stdout, "(none)\t0\t0.0000")
 	} else {
 		for _, row := range report.OracleByModel {
-			fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
 		}
 	}
 	for _, warning := range report.Warnings {
-		fmt.Fprintln(stdout, "warn: "+warning)
+		_, _ = fmt.Fprintln(stdout, "warn: "+warning)
 	}
 	return 0
 }

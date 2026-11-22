@@ -72,7 +72,7 @@ func (g guardedRequest) do(t *testing.T, base string) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(raw)
 }
@@ -244,7 +244,7 @@ func TestReadTimeoutClosesStalledBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	// Announce a body and never send it.
 	if _, err := io.WriteString(conn, "POST /v1/sessions/ses_x/runs HTTP/1.1\r\nHost: "+addr+"\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{"); err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestEventStreamOutlivesWriteTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("event stream: %d", resp.StatusCode)
 	}

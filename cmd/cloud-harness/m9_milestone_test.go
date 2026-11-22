@@ -34,7 +34,7 @@ func TestM9MilestoneRewindAndRetain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{
 		m9ToolResponse("write-first", "first.txt", "run one bytes\x00\n"),
 		m9TextResponse("first run done"),

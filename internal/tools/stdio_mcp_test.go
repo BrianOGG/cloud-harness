@@ -44,7 +44,7 @@ func runMockMCPServer(mode string) {
 				page = map[string]any{"tools": []any{tool("second")}}
 			}
 			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": page})
-			os.Stdout.Write(append(out, '\n'))
+			_, _ = os.Stdout.Write(append(out, '\n'))
 			continue
 		case req.Method == "tools/call" && mode == "media":
 			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
@@ -55,7 +55,7 @@ func runMockMCPServer(mode string) {
 					map[string]any{"type": "resource_link", "uri": "file:///big.log", "name": "big.log"},
 				},
 			}})
-			os.Stdout.Write(append(out, '\n'))
+			_, _ = os.Stdout.Write(append(out, '\n'))
 			continue
 		case req.Method == "tools/call" && mode == "raw":
 			var p struct {
@@ -65,7 +65,7 @@ func runMockMCPServer(mode string) {
 			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
 				"content": []any{map[string]string{"type": "text", "text": string(p.Args)}},
 			}})
-			os.Stdout.Write(append(out, '\n'))
+			_, _ = os.Stdout.Write(append(out, '\n'))
 			continue
 		}
 		switch req.Method {
@@ -101,7 +101,7 @@ func runMockMCPServer(mode string) {
 			}
 		}
 		out, _ := json.Marshal(res)
-		os.Stdout.Write(append(out, '\n'))
+		_, _ = os.Stdout.Write(append(out, '\n'))
 		if mode == "deaf" && req.Method == "tools/list" {
 			time.Sleep(time.Hour)
 		}
@@ -281,7 +281,7 @@ func TestStdioMCPDiscoverAndInvoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	if adapter.Protocol() != ProtocolMCP {
 		t.Fatalf("protocol = %s, want %s", adapter.Protocol(), ProtocolMCP)
@@ -368,7 +368,7 @@ func TestStdioMCPBrokerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	specs, err := adapter.Discover(ctx)
 	if err != nil {
@@ -485,7 +485,7 @@ func TestStdioMCPBrokerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer roAdapter.Close()
+	defer func() { _ = roAdapter.Close() }()
 	roSpecs, err := roAdapter.Discover(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +513,7 @@ func TestStdioMCPTruncateAndTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	specs, err := adapter.Discover(ctx)
 	if err != nil {
@@ -674,7 +674,7 @@ func TestStdioMCPCrashHandling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adapter.Close()
+	defer func() { _ = adapter.Close() }()
 
 	specs, err := adapter.Discover(ctx)
 	if err != nil {

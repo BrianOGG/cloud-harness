@@ -75,7 +75,7 @@ func (db *DB) ListVisibleResponses(ctx context.Context, runID string) ([]storage
 		var usage, created string
 		var complete int
 		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.StepID, &rec.Provider, &rec.ProviderResponseID, &complete, &usage, &created); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		rec.Complete = complete == 1
@@ -84,7 +84,7 @@ func (db *DB) ListVisibleResponses(ctx context.Context, runID string) ([]storage
 		out = append(out, rec)
 	}
 	err = rows.Err()
-	rows.Close()
+	_ = rows.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (db *DB) listItems(ctx context.Context, responseID string) ([]domain.Visibl
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.VisibleItem
 	for rows.Next() {
 		var raw string
@@ -264,7 +264,7 @@ func (db *DB) LoadBatches(ctx context.Context, runID string) ([]storage.StoredBa
 		var proto string
 		var status, action string
 		if err := rows.Scan(&b.ID, &b.ModelResponseID, &b.RunID, &status, &action, &b.NextOrdinal, &proto); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		b.Status = domain.BatchStatus(status)
@@ -272,7 +272,7 @@ func (db *DB) LoadBatches(ctx context.Context, runID string) ([]storage.StoredBa
 		if proto != "" {
 			var de domain.Error
 			if err := json.Unmarshal([]byte(proto), &de); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			b.ProtocolError = &de
@@ -280,7 +280,7 @@ func (db *DB) LoadBatches(ctx context.Context, runID string) ([]storage.StoredBa
 		out = append(out, b)
 	}
 	err = rows.Err()
-	rows.Close()
+	_ = rows.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func (db *DB) loadInvocations(ctx context.Context, batchID string) ([]domain.Inv
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.Invocation
 	for rows.Next() {
 		var inv domain.Invocation
@@ -360,7 +360,7 @@ func (db *DB) ListApprovals(ctx context.Context, runID string) ([]domain.Approva
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.Approval
 	for rows.Next() {
 		var a domain.Approval
@@ -397,7 +397,7 @@ func (db *DB) ListGrants(ctx context.Context, runID, sessionID string, now time.
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []domain.Grant
 	for rows.Next() {
 		var g domain.Grant

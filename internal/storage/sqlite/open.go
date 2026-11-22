@@ -135,7 +135,7 @@ func (db *DB) ForeignKeyCheck(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var violations []string
 	for rows.Next() {
 		var table, parent string

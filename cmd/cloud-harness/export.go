@@ -72,85 +72,85 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 	}
 	if runID != "" {
 		if fs.NArg() != 0 {
-			fmt.Fprintln(stderr, "exactly one run id is required")
+			_, _ = fmt.Fprintln(stderr, "exactly one run id is required")
 			return 2
 		}
 	} else if fs.NArg() == 1 {
 		runID = fs.Arg(0)
 	} else {
-		fmt.Fprintln(stderr, "run id required")
+		_, _ = fmt.Fprintln(stderr, "run id required")
 		return 2
 	}
 	if *raw && visitedFlag(fs, "sanitize") {
-		fmt.Fprintln(stderr, "--sanitize and --raw are mutually exclusive")
+		_, _ = fmt.Fprintln(stderr, "--sanitize and --raw are mutually exclusive")
 		return 2
 	}
 	if !*sanitize && !*raw {
-		fmt.Fprintln(stderr, "use --raw to disable redaction")
+		_, _ = fmt.Fprintln(stderr, "use --raw to disable redaction")
 		return 2
 	}
 	if *force && strings.TrimSpace(*outPath) == "" {
-		fmt.Fprintln(stderr, "--force requires --out")
+		_, _ = fmt.Fprintln(stderr, "--force requires --out")
 		return 2
 	}
 	redact := *sanitize && !*raw
 	if !redact {
-		fmt.Fprintln(stderr, "exporting without redaction")
+		_, _ = fmt.Fprintln(stderr, "exporting without redaction")
 	}
 
 	c := &commonFlags{db: *dbPath}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if strings.TrimSpace(*outPath) != "" && exportOutputTargetsDatabase(*outPath, cfg.DBPath) {
-		fmt.Fprintln(stderr, "--out cannot target the database or its SQLite sidecars")
+		_, _ = fmt.Fprintln(stderr, "--out cannot target the database or its SQLite sidecars")
 		return 2
 	}
 	ctx := context.Background()
 	db, cleanupSnapshot, err := openExportReadOnly(ctx, cfg.DBPath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	defer cleanupSnapshot()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	doc, err := readExport(ctx, db, runID, cfg)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if redact {
 		data, err = redactExportJSON(data, cfg.OpenAIAPIKey)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
 	if !*jsonOutput {
 		data, err = renderExportMarkdown(data)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
 	data = append(data, '\n')
 	if strings.TrimSpace(*outPath) == "" {
 		if _, err := stdout.Write(data); err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return 0
 	}
 	if err := writeExportFile(*outPath, data, *force); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0
@@ -424,16 +424,16 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 	for responseRows.Next() {
 		var row responseRow
 		if err := responseRows.Scan(&row.id, &row.provider, &row.usage, &row.createdAt); err != nil {
-			responseRows.Close()
+			_ = responseRows.Close()
 			return exportDocument{}, fmt.Errorf("read model response row: %w", err)
 		}
 		responses = append(responses, row)
 	}
 	if err := responseRows.Err(); err != nil {
-		responseRows.Close()
+		_ = responseRows.Close()
 		return exportDocument{}, err
 	}
-	responseRows.Close()
+	_ = responseRows.Close()
 	for _, response := range responses {
 		providers[response.provider] = struct{}{}
 		responseCount++
@@ -459,7 +459,7 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 			var ordinal int
 			var kind, raw string
 			if err := itemRows.Scan(&ordinal, &kind, &raw); err != nil {
-				itemRows.Close()
+				_ = itemRows.Close()
 				return exportDocument{}, err
 			}
 			var item map[string]any
@@ -493,15 +493,15 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 				data["provider"] = response.provider
 			}
 			if err := add(responseAt, 0, typ, role, content, data); err != nil {
-				itemRows.Close()
+				_ = itemRows.Close()
 				return exportDocument{}, err
 			}
 		}
 		if err := itemRows.Err(); err != nil {
-			itemRows.Close()
+			_ = itemRows.Close()
 			return exportDocument{}, err
 		}
-		itemRows.Close()
+		_ = itemRows.Close()
 	}
 	providerList := make([]string, 0, len(providers))
 	for name := range providers {
@@ -539,17 +539,17 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 		var id, invocationID, typ, payload, createdAt string
 		var seq int64
 		if err := eventRows.Scan(&id, &seq, &invocationID, &typ, &payload, &createdAt); err != nil {
-			eventRows.Close()
+			_ = eventRows.Close()
 			return exportDocument{}, err
 		}
 		at, err := parseExportTime(createdAt)
 		if err != nil {
-			eventRows.Close()
+			_ = eventRows.Close()
 			return exportDocument{}, fmt.Errorf("decode event time: %w", err)
 		}
 		value, err := decodeExportJSON([]byte(payload))
 		if err != nil {
-			eventRows.Close()
+			_ = eventRows.Close()
 			return exportDocument{}, fmt.Errorf("decode event %s: %w", id, err)
 		}
 		if invocationID != "" {
@@ -567,15 +567,15 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 			payloadMap = map[string]any{"value": value}
 		}
 		if err := add(at, seq, "event."+typ, "event", "", map[string]any{"event_id": id, "payload": payloadMap}); err != nil {
-			eventRows.Close()
+			_ = eventRows.Close()
 			return exportDocument{}, err
 		}
 	}
 	if err := eventRows.Err(); err != nil {
-		eventRows.Close()
+		_ = eventRows.Close()
 		return exportDocument{}, err
 	}
-	eventRows.Close()
+	_ = eventRows.Close()
 
 	invRows, err := db.QueryContext(ctx, `
 		SELECT id, batch_id, provider_call_id, tool_name, args_json, class, status, dispatched, result_json
@@ -591,16 +591,16 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 	for invRows.Next() {
 		var row invocationRow
 		if err := invRows.Scan(&row.id, &row.batchID, &row.callID, &row.name, &row.args, &row.class, &row.status, &row.dispatched, &row.result); err != nil {
-			invRows.Close()
+			_ = invRows.Close()
 			return exportDocument{}, err
 		}
 		invocations = append(invocations, row)
 	}
 	if err := invRows.Err(); err != nil {
-		invRows.Close()
+		_ = invRows.Close()
 		return exportDocument{}, err
 	}
-	invRows.Close()
+	_ = invRows.Close()
 	for _, inv := range invocations {
 		at := invocationTimes[inv.id]
 		if at == "" {
@@ -640,7 +640,7 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 	for batchRows.Next() {
 		var batchID, protocol string
 		if err := batchRows.Scan(&batchID, &protocol); err != nil {
-			batchRows.Close()
+			_ = batchRows.Close()
 			return exportDocument{}, err
 		}
 		if protocol == "" || protocol == "null" {
@@ -655,15 +655,15 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 			at = updatedAt
 		}
 		if err := add(at, 0, "tool.protocol_error", "event", "", map[string]any{"batch_id": batchID, "error": value}); err != nil {
-			batchRows.Close()
+			_ = batchRows.Close()
 			return exportDocument{}, err
 		}
 	}
 	if err := batchRows.Err(); err != nil {
-		batchRows.Close()
+		_ = batchRows.Close()
 		return exportDocument{}, err
 	}
-	batchRows.Close()
+	_ = batchRows.Close()
 
 	approvalRows, err := db.QueryContext(ctx, `
 		SELECT id, invocation_id, tool, resource_scope, state, valid_until, created_at
@@ -674,19 +674,19 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 	for approvalRows.Next() {
 		var id, invocationID, tool, scope, state, validUntil, approvalCreated string
 		if err := approvalRows.Scan(&id, &invocationID, &tool, &scope, &state, &validUntil, &approvalCreated); err != nil {
-			approvalRows.Close()
+			_ = approvalRows.Close()
 			return exportDocument{}, err
 		}
 		at, err := parseExportTime(approvalCreated)
 		if err != nil {
-			approvalRows.Close()
+			_ = approvalRows.Close()
 			return exportDocument{}, fmt.Errorf("decode approval time: %w", err)
 		}
 		until := ""
 		if validUntil != "" {
 			until, err = parseExportTime(validUntil)
 			if err != nil {
-				approvalRows.Close()
+				_ = approvalRows.Close()
 				return exportDocument{}, fmt.Errorf("decode approval expiry: %w", err)
 			}
 		}
@@ -694,15 +694,15 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 			"id": id, "invocation_id": invocationID, "tool": tool,
 			"resource_scope": scope, "state": state, "valid_until": until,
 		}); err != nil {
-			approvalRows.Close()
+			_ = approvalRows.Close()
 			return exportDocument{}, err
 		}
 	}
 	if err := approvalRows.Err(); err != nil {
-		approvalRows.Close()
+		_ = approvalRows.Close()
 		return exportDocument{}, err
 	}
-	approvalRows.Close()
+	_ = approvalRows.Close()
 
 	sort.SliceStable(doc.Events, func(i, j int) bool {
 		if !doc.Events[i].sortTime.Equal(doc.Events[j].sortTime) {

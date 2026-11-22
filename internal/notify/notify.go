@@ -241,7 +241,7 @@ func postJSON(ctx context.Context, target string, payload any, bearer string) er
 	if err != nil {
 		return fmt.Errorf("request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("http status %d", resp.StatusCode)
 	}

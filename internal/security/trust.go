@@ -105,7 +105,7 @@ func ReadControlFile(workspace, name string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(f, maxTrustedBytes+1))
 	if err != nil {
 		return nil, false, err
@@ -325,7 +325,7 @@ func writeTrustStore(configDir string, store trustStore) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.Write(append(raw, '\n')); err != nil {
 		_ = tmp.Close()
 		return err

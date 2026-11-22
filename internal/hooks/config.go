@@ -121,7 +121,7 @@ func mergeFile(cfg *Config, file string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
 	if err != nil {
 		return err

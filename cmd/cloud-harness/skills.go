@@ -19,7 +19,7 @@ func cmdSkill(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("skill", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() { fmt.Fprintln(stderr, skillUsage) }
+	fs.Usage = func() { _, _ = fmt.Fprintln(stderr, skillUsage) }
 	workspace := fs.String("workspace", ".", "workspace root for .agents/skills")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -42,7 +42,7 @@ func runChatSkillCommand(workspace, input string, stdout, stderr io.Writer) (boo
 		return false, 0
 	}
 	if len(fields) != 2 {
-		fmt.Fprintln(stderr, "usage: /skill NAME")
+		_, _ = fmt.Fprintln(stderr, "usage: /skill NAME")
 		return true, 2
 	}
 	return true, printSkill(workspace, fields[1], stdout, stderr)
@@ -54,7 +54,7 @@ func printSkill(workspace, name string, stdout, stderr io.Writer) int {
 		_, err = io.WriteString(stdout, skill.Content)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0

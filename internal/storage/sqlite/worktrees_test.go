@@ -22,7 +22,7 @@ func TestMigration007PreservesExistingRunsAndWorktreeBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	if _, err := raw.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestMigration007PreservesExistingRunsAndWorktreeBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}

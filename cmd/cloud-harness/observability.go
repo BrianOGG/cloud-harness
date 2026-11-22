@@ -34,7 +34,7 @@ func (d serveDiagnostics) stats(w http.ResponseWriter, r *http.Request) {
 		writeHTTPJSON(w, http.StatusInternalServerError, map[string]string{"error": "统计数据库无法读取：" + scrubDoctor(err.Error())})
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	summary, err := readStoreSummary(ctx, db)
 	if err != nil {
@@ -206,7 +206,7 @@ func readHookSummary(ctx context.Context, db *sql.DB, out *hookSummary) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var typ, payload string
 		if err := rows.Scan(&typ, &payload); err != nil {
@@ -244,7 +244,7 @@ func readRecentFailures(ctx context.Context, db *sql.DB) ([]recentFailure, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]recentFailure, 0)
 	for rows.Next() {
 		var row recentFailure
@@ -303,7 +303,7 @@ func readFailedRunSummary(ctx context.Context, path string) (int, string, error)
 	if err != nil {
 		return 0, "", err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var count int
 	var id sql.NullString
 	err = db.QueryRowContext(ctx, `SELECT COUNT(*), (SELECT id FROM runs WHERE status = 'FAILED' ORDER BY updated_at DESC, id DESC LIMIT 1) FROM runs WHERE status = 'FAILED'`).Scan(&count, &id)

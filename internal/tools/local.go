@@ -694,7 +694,7 @@ func grepSpec(abs string) Spec {
 				if oerr != nil {
 					return nil
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				scanner := bufio.NewScanner(f)
 				scanner.Buffer(make([]byte, 0, 64*1024), maxFileBytes)
 				lineNum := 0

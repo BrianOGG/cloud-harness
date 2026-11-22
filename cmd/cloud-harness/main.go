@@ -57,15 +57,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 // MainWithIO runs one CLI invocation with an injectable stdin reader.
 func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, usage)
+		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	switch args[0] {
 	case "version", "-v", "--version":
-		fmt.Fprintf(stdout, "cloud-harness %s %s\n", version, config.DefaultListen)
+		_, _ = fmt.Fprintf(stdout, "cloud-harness %s %s\n", version, config.DefaultListen)
 		return 0
 	case "help", "-h", "--help":
-		fmt.Fprintln(stdout, usage)
+		_, _ = fmt.Fprintln(stdout, usage)
 		return 0
 	case "serve":
 		return cmdServe(args[1:], stdout, stderr)
@@ -110,7 +110,7 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "trust":
 		return cmdTrust(args[1:], stdin, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n%s\n", args[0], usage)
 		return 2
 	}
 }
@@ -167,23 +167,23 @@ func cmdCompact(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if strings.TrimSpace(*session) == "" {
-		fmt.Fprintln(stderr, "--session is required")
+		_, _ = fmt.Fprintln(stderr, "--session is required")
 		return 2
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	mgr, db, err := openManager(context.Background(), cfg, c.workspaceOrDot())
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	summary, err := mgr.CompactSession(context.Background(), *session)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	_ = writeJSON(stdout, map[string]any{"session_id": *session, "summary": summary})
@@ -281,7 +281,7 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if c.provider == "" && !*live {
@@ -295,7 +295,7 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	if hasCompare {
 		baseline, err = eval.LoadSuiteReport(*comparePath)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
@@ -309,7 +309,7 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 		if report.Tasks > 0 {
 			_ = writeJSON(stdout, report)
 		}
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	var cmp eval.SuiteComparison
@@ -318,13 +318,13 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	}
 	if strings.TrimSpace(*outPath) != "" {
 		if werr := eval.WriteSuiteReport(*outPath, report); werr != nil {
-			fmt.Fprintln(stderr, werr)
+			_, _ = fmt.Fprintln(stderr, werr)
 			return 1
 		}
 	}
 	if hasCompare {
 		report.Comparison = &cmp
-		fmt.Fprintln(stderr, cmp.Summary)
+		_, _ = fmt.Fprintln(stderr, cmp.Summary)
 	}
 	_ = writeJSON(stdout, report)
 	if hasCompare {
@@ -386,22 +386,22 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if *allowedHosts != "" {
 		if cfg.HTTPAllowedHosts, err = config.ParseHTTPAllowedHosts(strings.Split(*allowedHosts, ",")); err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
 	if err := cfg.ValidateBind(); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	loopback, err := config.IsLoopback(cfg.ListenAddr)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	// On Windows, SIGTERM is delivered for console close, logoff, and shutdown.
@@ -409,15 +409,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	mgr, db, err := openRunManager(ctx, cfg, c.workspace, *useWorktree)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	warnUntrusted(stderr, mgr.Workspace)
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
-	defer mcpSet.Close()
+	defer func() { _ = mcpSet.Close() }()
 	if _, err := mgr.RecoverExpired(ctx); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if *useWorktree {
@@ -431,14 +431,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	safe, _ := json.Marshal(cfg.Redacted())
-	fmt.Fprintf(stdout, "listening on http://%s %s\n", cfg.ListenAddr, safe)
+	_, _ = fmt.Fprintf(stdout, "listening on http://%s %s\n", cfg.ListenAddr, safe)
 	select {
 	case <-ctx.Done():
 		shutdownServe(srv)
 		return 0
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return 0
@@ -467,39 +467,39 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *message == "" {
-		fmt.Fprintln(stderr, "--message is required")
+		_, _ = fmt.Fprintln(stderr, "--message is required")
 		return 2
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, stop := runWorktreeContext(*useWorktree)
 	defer stop()
 	mgr, db, err := openRunManager(ctx, cfg, c.workspaceOrDot(), *useWorktree)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	warnUntrusted(stderr, mgr.Workspace)
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
-	defer mcpSet.Close()
+	defer func() { _ = mcpSet.Close() }()
 	mgr.DisableRepoMap = *disableRepoMap
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ses, err := mgr.CreateSession(ctx)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	run, err := mgr.RunMessageWithOptions(ctx, ses.ID, userText, agent.RunOptions{Images: images, Plan: *planMode})
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	enc := json.NewEncoder(stdout)
@@ -524,7 +524,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 
 func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runs requires list, inspect, cancel, recover, or resume")
+		_, _ = fmt.Fprintln(stderr, "runs requires list, inspect, cancel, recover, or resume")
 		return 2
 	}
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
@@ -550,55 +550,55 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx := context.Background()
 	mgr, db, err := openManager(ctx, cfg, c.workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if args[0] == "recover" || args[0] == "resume" {
 		// These continue a run, so a pending MCP call must find its tool registered.
 		mcpSet := startMCP(ctx, cfg, mgr, stderr)
-		defer mcpSet.Close()
+		defer func() { _ = mcpSet.Close() }()
 	}
 	switch args[0] {
 	case "list":
 		runs, err := db.ListRuns(ctx, *session)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return writeJSON(stdout, runs)
 	case "recover":
 		if *allExpired {
 			if len(posArgs) != 0 {
-				fmt.Fprintln(stderr, "cannot combine --all-expired with a run id")
+				_, _ = fmt.Fprintln(stderr, "cannot combine --all-expired with a run id")
 				return 2
 			}
 			runs, err := mgr.RecoverExpired(ctx)
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return 1
 			}
 			return writeJSON(stdout, runs)
 		}
 		if len(posArgs) != 1 {
-			fmt.Fprintln(stderr, "run id or --all-expired required")
+			_, _ = fmt.Fprintln(stderr, "run id or --all-expired required")
 			return 2
 		}
 		run, err := mgr.Recover(ctx, posArgs[0])
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return writeJSON(stdout, run)
 	case "inspect", "cancel", "resume":
 		if len(posArgs) != 1 {
-			fmt.Fprintln(stderr, "run id required")
+			_, _ = fmt.Fprintln(stderr, "run id required")
 			return 2
 		}
 		id := posArgs[0]
@@ -606,28 +606,28 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 		case "inspect":
 			run, err := db.GetRun(ctx, id)
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return 1
 			}
 			return writeJSON(stdout, run)
 		case "cancel":
 			run, err := mgr.Cancel(ctx, id)
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return 1
 			}
 			return writeJSON(stdout, run)
 		default:
 			run, err := mgr.Resume(ctx, id, agent.ResumeInput{Decision: *decision, Answer: *answer, ExtraModelCalls: *extra})
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				_ = writeJSON(stdout, run)
 				return 1
 			}
 			return writeJSON(stdout, run)
 		}
 	default:
-		fmt.Fprintf(stderr, "unknown runs subcommand %q\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "unknown runs subcommand %q\n", args[0])
 		return 2
 	}
 }
@@ -640,40 +640,40 @@ func cmdTrace(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "run id required")
+		_, _ = fmt.Fprintln(stderr, "run id required")
 		return 2
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx := context.Background()
 	_, db, err := openManager(ctx, cfg, c.workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	id := fs.Arg(0)
 	run, err := db.GetRun(ctx, id)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	responses, err := db.ListVisibleResponses(ctx, id)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	batches, err := db.LoadBatches(ctx, id)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	siblings, err := db.ListRuns(ctx, run.SessionID)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	var children []trace.Node
@@ -709,7 +709,7 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if root, pathErr := filepath.Abs(c.workspaceOrDot()); pathErr == nil {
@@ -722,10 +722,10 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	_, db, err := openManager(ctx, cfg, c.workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if n <= 0 && *pruneRunsDays <= 0 {
 		return writeJSON(stdout, map[string]any{"pruned": 0, "retention_days": n})
@@ -737,7 +737,7 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 		cutHistory = time.Now().UTC().AddDate(0, 0, -n)
 		pruned, err := db.PruneHistory(ctx, cutHistory)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		prunedHistory = pruned
@@ -745,7 +745,7 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 		cutHistory = time.Now().UTC().AddDate(0, 0, -n)
 		prunedHistory, err = db.PreviewPruneHistory(ctx, cutHistory)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
@@ -766,7 +766,7 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 		pruneRes, err = db.PruneRuns(ctx, cutRuns)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 
@@ -807,7 +807,7 @@ func cmdRetainUnlocked(args []string, stdout, stderr io.Writer) int {
 		}
 		if report.Error != "" {
 			if !*dryRun {
-				fmt.Fprintf(stderr, "warning: snapshot object reclamation failed for workspace %s (%s): %s\n", workspaceID, workspacePath, report.Error)
+				_, _ = fmt.Fprintf(stderr, "warning: snapshot object reclamation failed for workspace %s (%s): %s\n", workspaceID, workspacePath, report.Error)
 			}
 		} else if !*dryRun {
 			reclaimedWorkspaces++
@@ -875,7 +875,7 @@ func cmdIsolation(stdout, stderr io.Writer) int {
 	_ = writeJSON(stdout, probe)
 	if err != nil || !probe.ProgrammaticEnabled {
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 		}
 		return 1
 	}
@@ -884,7 +884,7 @@ func cmdIsolation(stdout, stderr io.Writer) int {
 
 func cmdProgram(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(stderr, "program check runs one pre-approved echo script in the worker")
+		_, _ = fmt.Fprintln(stderr, "program check runs one pre-approved echo script in the worker")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -919,7 +919,7 @@ def main():
 	_ = writeJSON(stdout, map[string]any{"ok": res.OK, "data": json.RawMessage(res.Data), "error": res.Error, "hash": res.Hash, "probe": res.Probe})
 	if err != nil || !res.OK {
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 		}
 		return 1
 	}
@@ -928,7 +928,7 @@ def main():
 
 func cmdEval(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || (args[0] != "run" && args[0] != "suite") {
-		fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite [--live]")
+		_, _ = fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite [--live]")
 		return 2
 	}
 	if args[0] == "suite" {
@@ -942,12 +942,12 @@ func cmdEval(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *task == "" {
-		fmt.Fprintln(stderr, "--task is required")
+		_, _ = fmt.Fprintln(stderr, "--task is required")
 		return 2
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if c.db == "" {
@@ -957,7 +957,7 @@ func cmdEval(args []string, stdout, stderr io.Writer) int {
 	result, err := eval.Run(ctx, eval.Options{Task: *task, Config: cfg, Workspace: c.workspace})
 	_ = writeJSON(stdout, result)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if !result.Pass {
@@ -982,20 +982,20 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, stop := runWorktreeContext(*useWorktree)
 	defer stop()
 	mgr, db, err := openRunManager(ctx, cfg, c.workspaceOrDot(), *useWorktree)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	warnUntrusted(stderr, mgr.Workspace)
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
-	defer mcpSet.Close()
+	defer func() { _ = mcpSet.Close() }()
 	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
 }
 
@@ -1007,14 +1007,14 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 	if sessionID == "" {
 		ses, err := mgr.CreateSession(ctx)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		sessionID = ses.ID
 	} else if _, err := mgr.Store.GetSession(ctx, sessionID); err != nil {
 		now := time.Now().UTC()
 		if cerr := mgr.Store.CreateSession(ctx, storage.Session{ID: sessionID, CreatedAt: now, UpdatedAt: now}); cerr != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
@@ -1033,7 +1033,7 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 	for {
 		line, eof, err := readChatLine(reader)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		msg := strings.TrimSpace(line)
@@ -1062,11 +1062,11 @@ func runChat(ctx context.Context, mgr *agent.Manager, sessionID, initialMessage 
 func runChatCompact(ctx context.Context, mgr *agent.Manager, sessionID string, stdout, stderr io.Writer) int {
 	summary, err := mgr.CompactSession(ctx, sessionID)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if summary != "" {
-		fmt.Fprintln(stdout, "session compacted")
+		_, _ = fmt.Fprintln(stdout, "session compacted")
 	}
 	return 0
 }
@@ -1074,27 +1074,27 @@ func runChatCompact(ctx context.Context, mgr *agent.Manager, sessionID string, s
 func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message string, reader *bufio.Reader, stdout, stderr io.Writer) (storage.Run, int, bool) {
 	userText, images, err := imageinput.ParseAndLoad(message, mgr.Workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return storage.Run{}, 1, false
 	}
 	run, err := mgr.RunMessageWithImages(ctx, sessionID, userText, images)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return run, 1, false
 	}
 	for {
 		run, err = pollRunState(ctx, mgr, run.ID, 5*time.Millisecond)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return run, 1, false
 		}
 		if domain.TerminalRun(run.Status) {
 			if run.FinalAnswer != "" {
-				fmt.Fprintln(stdout, run.FinalAnswer)
+				_, _ = fmt.Fprintln(stdout, run.FinalAnswer)
 			}
 			if run.Status == domain.RunFailed {
 				if run.Error != nil {
-					fmt.Fprintln(stderr, run.Error)
+					_, _ = fmt.Fprintln(stderr, run.Error)
 				}
 				return run, 1, false
 			}
@@ -1105,7 +1105,7 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 		}
 		info, err := mgr.WaitInfo(ctx, run)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return run, 1, false
 		}
 		switch run.WaitReason {
@@ -1114,12 +1114,12 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			if question == "" {
 				question = "Input required:"
 			}
-			fmt.Fprintln(stdout, question)
+			_, _ = fmt.Fprintln(stdout, question)
 			var answer string
 			for {
 				line, eof, rerr := readChatLine(reader)
 				if rerr != nil {
-					fmt.Fprintln(stderr, rerr)
+					_, _ = fmt.Fprintln(stderr, rerr)
 					return run, 1, false
 				}
 				answer = strings.TrimSpace(line)
@@ -1136,12 +1136,12 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			}
 			answerText, answerImages, err := imageinput.ParseAndLoad(answer, workspace)
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return run, 1, false
 			}
 			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Answer: answerText, Images: answerImages})
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return run, 1, false
 			}
 		case domain.WaitApproval:
@@ -1159,18 +1159,18 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 					resources = info.PendingInvocation.ResourceScope
 				}
 			}
-			fmt.Fprintf(stdout, "Approval required: tool=%s args=%s resources=%s\n", toolName, argsSummary, resources)
+			_, _ = fmt.Fprintf(stdout, "Approval required: tool=%s args=%s resources=%s\n", toolName, argsSummary, resources)
 			if info.PendingInvocation != nil {
 				for _, warning := range info.PendingInvocation.Warnings {
-					fmt.Fprintln(stdout, "!!! "+warning)
+					_, _ = fmt.Fprintln(stdout, "!!! "+warning)
 				}
 			}
 			var decision string
 			for {
-				fmt.Fprint(stdout, "Approve? [y/n]: ")
+				_, _ = fmt.Fprint(stdout, "Approve? [y/n]: ")
 				line, eof, rerr := readChatLine(reader)
 				if rerr != nil {
-					fmt.Fprintln(stderr, rerr)
+					_, _ = fmt.Fprintln(stderr, rerr)
 					return run, 1, false
 				}
 				if d, ok := parseApprovalDecision(line); ok {
@@ -1183,11 +1183,11 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			}
 			run, err = mgr.Resume(ctx, run.ID, agent.ResumeInput{Decision: decision})
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				_, _ = fmt.Fprintln(stderr, err)
 				return run, 1, false
 			}
 		default:
-			fmt.Fprintf(stdout, "run %s waiting (%s)\n", run.ID, run.WaitReason)
+			_, _ = fmt.Fprintf(stdout, "run %s waiting (%s)\n", run.ID, run.WaitReason)
 			return run, 0, true
 		}
 	}

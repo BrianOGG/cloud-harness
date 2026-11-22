@@ -157,7 +157,7 @@ func Summarize(ctx context.Context, info Info) (Summary, error) {
 	if err != nil {
 		return summary, err
 	}
-	defer os.RemoveAll(temp)
+	defer func() { _ = os.RemoveAll(temp) }()
 	env := []string{"GIT_INDEX_FILE=" + filepath.Join(temp, "index")}
 	if _, err := git(ctx, info.Path, env, "read-tree", "HEAD"); err != nil {
 		return summary, err

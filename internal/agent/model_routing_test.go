@@ -351,7 +351,7 @@ func modelHTTPProvider(t *testing.T, reply func(model string) (int, string)) *pr
 	return &provider.OpenAICompatible{
 		BaseURL: "http://fixture.invalid/v1", APIKey: "fixture-key", Model: "legacy-default",
 		Client: &http.Client{Transport: modelRoundTrip(func(req *http.Request) (*http.Response, error) {
-			defer req.Body.Close()
+			defer func() { _ = req.Body.Close() }()
 			var body struct {
 				Model string `json:"model"`
 			}

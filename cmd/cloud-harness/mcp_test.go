@@ -74,7 +74,7 @@ func runMCPTestServer(mode, state string) {
 			_ = json.Unmarshal(req.Params, &p)
 			f, err := os.OpenFile(state, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 			if err == nil {
-				fmt.Fprintf(f, "%s %s\n", p.Name, p.Args.Msg)
+				_, _ = fmt.Fprintf(f, "%s %s\n", p.Name, p.Args.Msg)
 				_ = f.Close()
 			}
 			result = map[string]any{"content": []any{map[string]string{"type": "text", "text": "echoed:" + p.Args.Msg}}}
@@ -313,7 +313,7 @@ func TestMCPToolRunsThroughApprovalEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	run, err := db.GetRun(ctx, runID)
 	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "model saw tool result" {
 		t.Fatalf("run after approval: %+v %v", run, err)
@@ -369,7 +369,7 @@ func TestMCPApprovalSurvivesResumeWhileServerIsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, err := db.GetRun(ctx, runID)
-	db.Close()
+	_ = db.Close()
 	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
 		t.Fatalf("run must keep waiting for approval while the server is down: %+v %v", run, err)
 	}
@@ -387,7 +387,7 @@ func TestMCPApprovalSurvivesResumeWhileServerIsDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	run, err = db.GetRun(ctx, runID)
 	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "model saw tool result" {
 		t.Fatalf("run after approval: %+v %v", run, err)
@@ -583,10 +583,10 @@ func TestServeDoctorReportsLiveMCPState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var warnings bytes.Buffer
 	set := startMCP(context.Background(), cfg, mgr, &warnings)
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	if warnings.Len() != 0 || !mgr.Broker.Has("mcp.files.echo") {
 		t.Fatalf("startup warnings %q, registered=%t", warnings.String(), mgr.Broker.Has("mcp.files.echo"))
 	}
@@ -689,7 +689,7 @@ func TestServeRunsMCPToolAndStopsServerOnShutdown(t *testing.T) {
 		if err != nil {
 			return 0
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, _ := io.ReadAll(resp.Body)
 		if dest != nil {
 			if err := json.Unmarshal(raw, dest); err != nil {

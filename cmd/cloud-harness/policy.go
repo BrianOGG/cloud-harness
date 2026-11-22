@@ -20,11 +20,11 @@ const policyUsage = "usage: cloud-harness policy decisions [--run ID] [--tool NA
 
 func cmdPolicy(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
-		fmt.Fprintln(stdout, policyUsage)
+		_, _ = fmt.Fprintln(stdout, policyUsage)
 		return 0
 	}
 	if len(args) == 0 || args[0] != "decisions" {
-		fmt.Fprintln(stderr, policyUsage)
+		_, _ = fmt.Fprintln(stderr, policyUsage)
 		return 2
 	}
 	fs := flag.NewFlagSet("policy decisions", flag.ContinueOnError)
@@ -44,49 +44,49 @@ func cmdPolicy(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, policyUsage)
+		_, _ = fmt.Fprintln(stderr, policyUsage)
 		return 2
 	}
 	q := agent.PolicyDecisionQuery{RunID: *run, Tool: *tool, Effect: security.Effect(*effect), Limit: *limit}
 	if err := q.Validate(); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if *limit == 0 {
-		fmt.Fprintln(stderr, "limit must be positive")
+		_, _ = fmt.Fprintln(stderr, "limit must be positive")
 		return 2
 	}
 	if *since != "" {
 		var err error
 		q.Since, err = time.Parse(time.RFC3339Nano, *since)
 		if err != nil {
-			fmt.Fprintln(stderr, "since must be an RFC3339 timestamp")
+			_, _ = fmt.Fprintln(stderr, "since must be an RFC3339 timestamp")
 			return 2
 		}
 	}
 	cfg, err := load(&commonFlags{db: *dbPath})
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	absWorkspace, err := filepath.Abs(*workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	reader, err := openPolicyAudit(ctx, worktreeDBPath(cfg, absWorkspace))
 	if err != nil {
-		fmt.Fprintln(stderr, "policy:", err)
+		_, _ = fmt.Fprintln(stderr, "policy:", err)
 		return 1
 	}
 	records := make([]agent.PolicyDecisionRecord, 0)
 	if reader != nil {
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		records, err = agent.ListPolicyDecisions(ctx, reader, q)
 		if err != nil {
-			fmt.Fprintln(stderr, "policy:", err)
+			_, _ = fmt.Fprintln(stderr, "policy:", err)
 			return 1
 		}
 	}
@@ -94,7 +94,7 @@ func cmdPolicy(args []string, stdout, stderr io.Writer) int {
 		return writeJSON(stdout, records)
 	}
 	if err := writePolicyDecisions(stdout, records); err != nil {
-		fmt.Fprintln(stderr, "policy:", err)
+		_, _ = fmt.Fprintln(stderr, "policy:", err)
 		return 1
 	}
 	return 0
@@ -138,7 +138,7 @@ func checkPolicy(workspace, dbPath string) doctorItem {
 	}
 	var store agent.PolicyAuditStore
 	if reader != nil {
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		store = reader
 	}
 	summary, err := agent.SummarizePolicy(ctx, workspace, store)
