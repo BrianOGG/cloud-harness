@@ -17,7 +17,7 @@ Every failure the harness returns is a `domain.Error`: a stable `code`, a short 
 | `script_syntax` | Starlark rejected the script |
 | `script_error` | The script ran and returned an error |
 | `script_policy` | The allowlist or a side-effect confirmation was missing |
-| `resource_limit` | The worker hit the step cap or the CPU limit |
+| `resource_limit` | The worker hit the step cap or the CPU limit, or the kernel killed a `run_command` process at its CPU time or file size limit |
 | `worker_crashed` | The worker exited without a result. Unsafe scripts are not replayed |
 | `tool_error` | The executor failed after it was entered |
 | `invalid_argument` | Arguments or a flag value are not usable |

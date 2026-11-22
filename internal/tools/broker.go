@@ -91,6 +91,7 @@ type Broker struct {
 	grants          GrantSource
 	now             func() time.Time
 	CommandEnvAllow []string
+	commandLimits   CommandLimits
 }
 
 // NewBroker builds a broker. charge and grants are required so a call cannot skip them.

@@ -258,6 +258,7 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 	}
 	broker := tools.NewBroker(db, db)
 	broker.SetCommandEnvAllow(cfg.CommandEnvAllow)
+	broker.SetCommandLimits(tools.CommandLimits(cfg.CommandLimits))
 	if err := tools.RegisterLocal(broker, abs); err != nil {
 		_ = db.Close()
 		return nil, nil, err

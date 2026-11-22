@@ -238,6 +238,101 @@ func TestCommandEnvAllowConfig(t *testing.T) {
 	}
 }
 
+func TestCommandLimitsConfig(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	cfg, err := Load("", noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := cfg.CommandLimits; l.Disabled || l.MemoryBytes != nil || l.AddressSpaceBytes != nil || l.CPUSeconds != nil || l.FileSizeBytes != nil || l.OpenFiles != nil || l.Processes != nil {
+		t.Fatalf("default command_limits = %+v, want every field unset", l)
+	}
+
+	dir := t.TempDir()
+	write := func(body string) string {
+		t.Helper()
+		path := filepath.Join(dir, "harness.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := write(`{"command_limits":{"memory_bytes":1073741824,"address_space_bytes":0,"cpu_seconds":30,"file_size_bytes":1048576,"open_files":256,"processes":512}}`)
+	cfg, err = Load(path, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := cfg.CommandLimits
+	if l.Disabled || l.MemoryBytes == nil || *l.MemoryBytes != 1<<30 || l.AddressSpaceBytes == nil || *l.AddressSpaceBytes != 0 ||
+		l.CPUSeconds == nil || *l.CPUSeconds != 30 || l.FileSizeBytes == nil || *l.FileSizeBytes != 1<<20 ||
+		l.OpenFiles == nil || *l.OpenFiles != 256 || l.Processes == nil || *l.Processes != 512 {
+		t.Fatalf("command_limits = %+v", l)
+	}
+
+	// The environment overrides single fields and keeps the rest of the file.
+	cfg, err = Load(path, func(key string) string {
+		if key == "CLOUD_HARNESS_COMMAND_LIMITS" {
+			return "cpu_seconds=0, memory_bytes=2147483648"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l = cfg.CommandLimits
+	if l.Disabled || *l.CPUSeconds != 0 || *l.MemoryBytes != 2<<30 || *l.OpenFiles != 256 {
+		t.Fatalf("command_limits after environment override = %+v", l)
+	}
+
+	cfg, err = Load(path, func(key string) string {
+		if key == "CLOUD_HARNESS_COMMAND_LIMITS" {
+			return "off"
+		}
+		return ""
+	})
+	if err != nil || !cfg.CommandLimits.Disabled {
+		t.Fatalf("CLOUD_HARNESS_COMMAND_LIMITS=off: %+v %v", cfg.CommandLimits, err)
+	}
+
+	cfg, err = Load(write(`{"command_limits":{"disabled":true}}`), noEnv)
+	if err != nil || !cfg.CommandLimits.Disabled {
+		t.Fatalf("disabled in file: %+v %v", cfg.CommandLimits, err)
+	}
+	// Limits named in the environment apply even when the file disables them.
+	cfg, err = Load(path, func(key string) string {
+		if key == "CLOUD_HARNESS_COMMAND_LIMITS" {
+			return "open_files=64"
+		}
+		return ""
+	})
+	if err != nil || cfg.CommandLimits.Disabled || *cfg.CommandLimits.OpenFiles != 64 {
+		t.Fatalf("environment limits over a disabled file: %+v %v", cfg.CommandLimits, err)
+	}
+
+	for _, body := range []string{
+		`{"command_limits":{"cpu_seconds":-1}}`,
+		`{"command_limits":{"cpu_seconds":1.5}}`,
+		`{"command_limits":{"cpu_seconds":"30"}}`,
+		`{"command_limits":{"cpu":30}}`,
+		`{"command_limits":"off"}`,
+	} {
+		if _, err := Load(write(body), noEnv); err == nil {
+			t.Fatalf("accepted invalid config %s", body)
+		}
+	}
+	for _, value := range []string{"cpu_seconds", "cpu_seconds=-1", "cpu_seconds=abc", "cpu=30", "disabled=true"} {
+		_, err := Load("", func(key string) string {
+			if key == "CLOUD_HARNESS_COMMAND_LIMITS" {
+				return value
+			}
+			return ""
+		})
+		if !domain.IsCode(err, domain.CodeInvalidArgument) {
+			t.Fatalf("CLOUD_HARNESS_COMMAND_LIMITS=%q: err = %v, want invalid_argument", value, err)
+		}
+	}
+}
+
 func TestModelPricesConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "harness.json")
