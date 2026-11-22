@@ -629,6 +629,9 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			return nil, domain.E(domain.CodeAuthDenied, "approval required")
 		}
 		if res.Error != nil {
+			if res.UncertainOutcome {
+				return nil, domain.ErrUncertainOutcome
+			}
 			if inv.Name == tools.ToolAskOracle && !res.Dispatched && res.Error.Code == domain.CodeBudget {
 				return nil, m.oracleFailure(ctx, run.ID, res.Error)
 			}

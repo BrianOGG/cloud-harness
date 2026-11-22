@@ -96,9 +96,9 @@ Lifecycle:
 - A discovered tool is skipped with a warning when its name contains characters
   other than letters, digits, `_`, `-`, and `.`, or when the name is already
   registered.
-- Servers are not restarted. If one exits later, its tools stay listed and each
-  call fails with a tool error until the harness process is restarted. A server
-  that stops reading its stdin is killed when a call's time limit passes.
+- If a server exits later, its tools stay listed and the next call restarts the
+  subprocess and repeats the initialize handshake. A server that stops reading
+  its stdin is killed when a call's time limit passes.
 - Approving a call whose tool is not registered in the current process (for
   example `runs resume --decision approve` while the server cannot start) is
   rejected and the run keeps waiting for approval, so the approval can be
@@ -121,9 +121,10 @@ resources are passed on. Image, audio, and binary resource blocks are replaced
 by a note with the kind, MIME type, and size, because the bytes are not
 forwarded to the model.
 
-A call that times out is recorded as a failed tool call. For a non-readonly
-server the error says the outcome is unknown, since the server may have carried
-out the request anyway; the run is not paused for reconciliation.
+A call that times out before the request was sent is recorded as a failed tool
+call. For a non-readonly server, a call that was sent but did not return a
+confirmed result is marked UNKNOWN and the run waits for reconciliation rather
+than being recorded as an ordinary failure or replayed automatically.
 
 | Server setting | Tool class | Default without a policy rule |
 | --- | --- | --- |

@@ -306,6 +306,36 @@ func TestCrashRecoveryDoesNotReplaySucceededOrUnknown(t *testing.T) {
 	}
 }
 
+func TestUncertainOutcomeMarksUnknownAndStopsBatch(t *testing.T) {
+	resp := ModelResponse{
+		Provider: "mock", Complete: true,
+		Items: []ResponseItem{
+			toolItem(0, "c1", "write_file", `{"path":"a"}`),
+			toolItem(1, "c2", "read_file", `{"path":"b"}`),
+		},
+	}
+	batch, err := PlanBatch("run_1", resp, seqID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	if err := Drive(&batch, func(Invocation) GateDecision { return GateAllow }, func(Invocation) (json.RawMessage, error) {
+		ran++
+		return nil, ErrUncertainOutcome
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ran != 1 {
+		t.Fatalf("executed %d calls, want 1", ran)
+	}
+	if batch.Invocations[0].Status != InvUnknown || batch.Status != BatchNeedsReconciliation {
+		t.Fatalf("first %s batch %s", batch.Invocations[0].Status, batch.Status)
+	}
+	if batch.Invocations[1].Status != InvPending {
+		t.Fatalf("second was started: %s", batch.Invocations[1].Status)
+	}
+}
+
 func TestIncompleteAndBadArgumentsDoNotDispatch(t *testing.T) {
 	cases := []ModelResponse{
 		{Provider: "mock", Complete: false, Items: []ResponseItem{toolItem(0, "c1", "read_file", `{"path":"a"}`)}},

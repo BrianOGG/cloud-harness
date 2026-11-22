@@ -62,6 +62,9 @@ type Result struct {
 	Error         *domain.Error
 	Dispatched    bool
 	NeedsApproval bool
+	// UncertainOutcome is true when Execute may have run but returned no
+	// confirmed result. The agent must reconcile instead of recording failure.
+	UncertainOutcome bool
 }
 
 // Request is one invocation.
@@ -401,7 +404,7 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 	execCtx := context.WithValue(ctx, requestKey, req)
 	data, err := spec.Execute(execCtx, req.Args)
 	if err != nil {
-		return Result{Dispatched: true, Data: data, Error: asDomain(err)}, nil
+		return Result{Dispatched: true, Data: data, Error: asDomain(err), UncertainOutcome: errors.Is(err, domain.ErrUncertainOutcome)}, nil
 	}
 	if req.IdempotencyKey != "" {
 		if store, ok := b.charge.(idempotencyStore); ok && len(data) > 0 {
