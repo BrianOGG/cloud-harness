@@ -414,17 +414,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if cur, gerr := s.Manager.Store.GetRun(r.Context(), id); gerr == nil {
 		run = cur
 	}
-	// A terminal run that is still executing has events to come.
+	live := &liveStream{store: s.Manager.Store, executing: s.Manager.Executing, w: w, sub: sub, runID: id, after: after}
+	// A terminal run that is still executing has events to come. One that is
+	// not may have ended since the replay above, with its last text and
+	// events queued for this subscriber in the meantime.
 	if domain.TerminalRun(run.Status) && !s.Manager.Executing(id) {
-		if tail, lerr := s.Manager.Store.ListEvents(r.Context(), id, after); lerr == nil && len(tail) > 0 {
-			for _, ev := range tail {
-				if err := trace.WriteSSE(w, ev); err != nil {
-					return
-				}
-				if ev.Seq > after {
-					after = ev.Seq
-				}
-			}
+		if err := live.catchUp(r.Context()); err == nil {
 			flushSSE(w)
 		}
 		return
@@ -433,7 +428,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	live := &liveStream{store: s.Manager.Store, executing: s.Manager.Executing, w: w, sub: sub, runID: id, after: after}
 	hbTicker := time.NewTicker(s.heartbeatInterval())
 	defer hbTicker.Stop()
 	pollTicker := time.NewTicker(s.pollInterval())
