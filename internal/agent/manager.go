@@ -200,7 +200,6 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 			return storage.Run{}, err
 		}
 	}
-	signalStarted(ctx, run)
 	return executor.runPreparedWithOptions(ctx, run, message, opts)
 }
 
@@ -212,6 +211,17 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, message string, opts RunOptions) (result storage.Run, err error) {
 	defer m.finishWorktreeExecution(ctx, run, &result, &err)
 	defer m.releaseRunSnapshotter(ctx, run.ID)
+	// Cancel must be able to stop this execution from the moment a caller
+	// can learn the run id.
+	ctx, cancel := context.WithCancel(ctx)
+	m.trackCancel(run.ID, cancel)
+	defer func() {
+		cancel()
+		m.untrackCancel(run.ID)
+	}()
+	if run.ParentRunID == "" {
+		signalStarted(ctx, run)
+	}
 	policy, err := security.LoadPolicy(m.Workspace)
 	if err != nil {
 		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
@@ -232,13 +242,9 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 	if err != nil {
 		return storage.Run{}, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	m.trackCancel(run.ID, cancel)
-	defer func() {
-		cancel()
-		m.untrackCancel(run.ID)
-	}()
-	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
+	// The context is taken here, as the direct defer did: a closure reading
+	// ctx when it runs would see whatever ctx has become by then.
+	defer func(releaseCtx context.Context) { _ = m.Store.ReleaseLease(releaseCtx, run.ID, m.owner()) }(ctx)
 	m.ensureTools()
 	if err := m.installGrants(ctx, run); err != nil {
 		return storage.Run{}, err
