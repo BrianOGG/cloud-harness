@@ -46,17 +46,22 @@ func (m *Manager) compactionModel(ctx context.Context, runID string, leaseVersio
 // as they were. The structural fallback runs when there is nothing a summary
 // can replace, when the summary call fails, or when the context is still
 // over the limit afterwards. After a failed summary call the run does not
-// try another until it is resumed.
-func (m *Manager) compactContext(ctx context.Context, run storage.Run, leaseVersion int64, messages []provider.Message, st *loopState) []provider.Message {
+// try another until it is resumed. A summary the run budget cannot pay for is
+// returned as the budget error with the context unchanged, so the run waits
+// for more budget instead of losing detail to the fallback.
+func (m *Manager) compactContext(ctx context.Context, run storage.Run, leaseVersion int64, messages []provider.Message, st *loopState) ([]provider.Message, error) {
 	limit := m.tokenLimit()
 	view := toContext(messages)
 	before := contextpkg.Estimate(view)
 	if before <= limit {
-		return messages
+		return messages, nil
 	}
 	opt := contextpkg.CompactOptions{PrefixCount: st.prefixN, KeepIndex: st.userAt, TokenLimit: limit, Refs: st.toolRefs}
 	if start, end, ok := contextpkg.SummaryRange(view, opt, max(limit/8, 64)); ok && !st.summaryOff {
 		summary, err := m.summarizeWork(ctx, run, leaseVersion, view, start, end, st)
+		if domain.IsCode(err, domain.CodeBudget) {
+			return messages, err
+		}
 		if err != nil {
 			st.summaryOff = true
 			_ = m.event(ctx, run.ID, "context.summary_failed", map[string]any{"error": asDomain(err).Message})
@@ -71,7 +76,7 @@ func (m *Manager) compactContext(ctx context.Context, run storage.Run, leaseVers
 			})
 		}
 	}
-	return maybeCompact(messages, st.prefixN, st.userAt, limit, st.toolRefs)
+	return maybeCompact(messages, st.prefixN, st.userAt, limit, st.toolRefs), nil
 }
 
 // summarizeWork asks the compaction model for a structured summary of

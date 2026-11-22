@@ -153,7 +153,9 @@ func TestHistoryLeavesOutChildRuns(t *testing.T) {
 	}
 }
 
-func summaryCompactionRun(t *testing.T, summarizer provider.Provider) (*Manager, *provider.Mock, storage.Store, storage.Run, string) {
+// summaryCompactionSetup prepares a turn whose third step is over the context
+// limit: two file reads, then the answer.
+func summaryCompactionSetup(t *testing.T, summarizer provider.Provider) (*Manager, *provider.Mock, storage.Store, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{
@@ -175,7 +177,13 @@ func summaryCompactionRun(t *testing.T, summarizer provider.Provider) (*Manager,
 		t.Fatal(err)
 	}
 	ses, _ := m.CreateSession(ctx)
-	run, err := m.RunMessage(ctx, ses.ID, "read the log then the note")
+	return m, mock, db, ses.ID, log
+}
+
+func summaryCompactionRun(t *testing.T, summarizer provider.Provider) (*Manager, *provider.Mock, storage.Store, storage.Run, string) {
+	t.Helper()
+	m, mock, db, sessionID, log := summaryCompactionSetup(t, summarizer)
+	run, err := m.RunMessage(context.Background(), sessionID, "read the log then the note")
 	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "done" || len(mock.Requests) != 3 {
 		t.Fatalf("%+v %v requests=%d", run, err, len(mock.Requests))
 	}
@@ -263,6 +271,68 @@ func TestCompactionFallsBackOnceWhenTheSummaryFails(t *testing.T) {
 	}
 	if len(eventPayloads(t, db, run.ID, "context.summarized")) != 0 {
 		t.Fatal("a failed summary was reported as done")
+	}
+}
+
+func TestStepWaitsWhenItsSummaryUsesUpTheTokenBudget(t *testing.T) {
+	ctx := context.Background()
+	summaries := 0
+	summarizer := providerFunc(func(_ context.Context, req provider.Request) (domain.ModelResponse, error) {
+		if req.Messages[0].Content != contextpkg.SummaryPrompt {
+			return textOnly("turn summary"), nil
+		}
+		summaries++
+		return withUsage(textOnly(`{"confirmed_facts":["log.txt says FACT-PAST-160 port=8443"],"in_progress":[],"pending":[],"key_files_and_decisions":[]}`), 70, 9, 0), nil
+	})
+	m, mock, db, sessionID, _ := summaryCompactionSetup(t, summarizer)
+	m.MaxRunTokens = 60
+	run, err := m.RunMessage(ctx, sessionID, "read the log then the note")
+	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitBudget {
+		t.Fatalf("run whose summary crossed the token limit: %+v err=%v", run, err)
+	}
+	// The summary spent the budget, so the step it prepared was not sent.
+	if len(mock.Requests) != 2 || summaries != 1 || run.Budget.UsedModelCalls != 3 || run.Budget.UsedTokens() != 79 {
+		t.Fatalf("requests=%d summaries=%d budget=%+v", len(mock.Requests), summaries, run.Budget)
+	}
+	run, err = m.Resume(ctx, run.ID, ResumeInput{ExtraTokens: 1000})
+	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "done" || len(mock.Requests) != 3 {
+		t.Fatalf("resume: %+v %v requests=%d", run, err, len(mock.Requests))
+	}
+	// The resumed step runs on the summary already paid for.
+	if body := messageText(mock.Requests[2].Messages); summaries != 1 || !strings.Contains(body, contextpkg.WorkSummaryPrefix) || !strings.Contains(body, "FACT-PAST-160 port=8443") {
+		t.Fatalf("summaries=%d resumed context:\n%s", summaries, body)
+	}
+	if len(eventPayloads(t, db, run.ID, "context.summary_failed")) != 0 {
+		t.Fatal("a budget wait was reported as a failed summary")
+	}
+}
+
+func TestSummaryWithoutBudgetWaitsInsteadOfClipping(t *testing.T) {
+	ctx := context.Background()
+	summaries := 0
+	summarizer := providerFunc(func(_ context.Context, req provider.Request) (domain.ModelResponse, error) {
+		if req.Messages[0].Content == contextpkg.SummaryPrompt {
+			summaries++
+		}
+		return textOnly(`{"confirmed_facts":["summary"],"in_progress":[],"pending":[],"key_files_and_decisions":[]}`), nil
+	})
+	m, mock, db, sessionID, _ := summaryCompactionSetup(t, summarizer)
+	m.UseBudget, m.InitialBudget = true, domain.DefaultBudget()
+	m.InitialBudget.MaxModelCalls = 2
+	run, err := m.RunMessage(ctx, sessionID, "read the log then the note")
+	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitBudget || len(mock.Requests) != 2 || summaries != 0 {
+		t.Fatalf("%+v err=%v requests=%d summaries=%d", run, err, len(mock.Requests), summaries)
+	}
+	run, err = m.Resume(ctx, run.ID, ResumeInput{ExtraModelCalls: 5})
+	if err != nil || run.Status != domain.RunCompleted || len(mock.Requests) != 3 || summaries != 1 {
+		t.Fatalf("resume: %+v %v requests=%d summaries=%d", run, err, len(mock.Requests), summaries)
+	}
+	// The wait kept the context whole, so the summary was written from it.
+	if body := messageText(mock.Requests[2].Messages); !strings.Contains(body, contextpkg.WorkSummaryPrefix) || strings.Contains(body, `"compacted":true`) {
+		t.Fatalf("resumed context:\n%s", body)
+	}
+	if len(eventPayloads(t, db, run.ID, "context.summary_failed")) != 0 {
+		t.Fatal("a budget wait was reported as a failed summary")
 	}
 }
 
