@@ -635,6 +635,22 @@ func (m *Manager) untrackCancel(id string) {
 	delete(m.cancels, id)
 }
 
+// onStop arranges for fn to run when Cancel stops id's tracked execution.
+func (m *Manager) onStop(id string, fn func()) {
+	if m.cancelOwner != nil {
+		m.cancelOwner.onStop(id, fn)
+		return
+	}
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	if cancel := m.cancels[id]; cancel != nil {
+		m.cancels[id] = func() {
+			fn()
+			cancel()
+		}
+	}
+}
+
 func (m *Manager) stopRun(id string) bool {
 	if m.cancelOwner != nil {
 		return m.cancelOwner.stopRun(id)

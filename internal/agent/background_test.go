@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
@@ -107,6 +108,28 @@ func TestBackgroundExecutionErrorFailsRun(t *testing.T) {
 	got := statusOf(t, m, ex.Run.ID)
 	if got.Status != domain.RunFailed || got.Error == nil {
 		t.Fatalf("status = %s, error = %v", got.Status, got.Error)
+	}
+}
+
+// Cancel runs Stop hooks before it records CANCELLED, so the execution can
+// return its context error while the run is still RUNNING. That is a cancel
+// in progress, not a failure.
+func TestCancelWithSlowStopHookEndsCancelled(t *testing.T) {
+	prov := newBlockingProvider(nil)
+	m, session := backgroundManager(t, prov)
+	putAgentHooks(t, m.Workspace, map[hooks.Point][]hooks.Action{hooks.Stop: {{Type: "command", Command: "sleep 0.3"}}}, false)
+	ex, err := m.StartMessage(t.Context(), session.ID, "hello", RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-prov.blocked
+	cancelled, err := m.Cancel(t.Context(), ex.Run.ID)
+	if err != nil || cancelled.Status != domain.RunCancelled {
+		t.Fatalf("cancel: %s, %v", cancelled.Status, err)
+	}
+	waitDone(t, ex)
+	if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunCancelled {
+		t.Fatalf("status = %s", got.Status)
 	}
 }
 

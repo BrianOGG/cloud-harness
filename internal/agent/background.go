@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
@@ -17,8 +18,8 @@ var startedKey startedKeyType
 // signalStarted reports that a background execution has recorded its run and
 // is about to execute it. It does nothing for a caller that runs in place.
 func signalStarted(ctx context.Context, run storage.Run) {
-	if fn, ok := ctx.Value(startedKey).(func(storage.Run)); ok {
-		fn(run)
+	if fn, ok := ctx.Value(startedKey).(func(context.Context, storage.Run)); ok {
+		fn(ctx, run)
 	}
 }
 
@@ -103,7 +104,10 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 	ex := &Execution{done: make(chan struct{})}
 	started := make(chan storage.Run, 1)
 	var runID string
-	runCtx := context.WithValue(context.WithoutCancel(ctx), startedKey, func(run storage.Run) {
+	// stopped is set when Cancel stops this execution. Cancel then records
+	// the run as CANCELLED, possibly after the execution has returned.
+	var stopped atomic.Bool
+	runCtx := context.WithValue(context.WithoutCancel(ctx), startedKey, func(execCtx context.Context, run storage.Run) {
 		m.bgMu.Lock()
 		if m.bgRuns == nil {
 			m.bgRuns = map[string]struct{}{}
@@ -111,6 +115,10 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 		runID = run.ID
 		m.bgRuns[runID] = struct{}{}
 		m.bgMu.Unlock()
+		m.onStop(runID, func() { stopped.Store(true) })
+		if execCtx.Err() != nil {
+			stopped.Store(true)
+		}
 		select {
 		case started <- run:
 		default:
@@ -119,7 +127,7 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 	go func() {
 		defer m.bgWG.Done()
 		ex.result, ex.err = execute(runCtx)
-		if ex.err != nil && runID != "" {
+		if ex.err != nil && runID != "" && !stopped.Load() {
 			if failed, ok := m.failStranded(runCtx, runID, ex.err); ok {
 				ex.result = failed
 			}
