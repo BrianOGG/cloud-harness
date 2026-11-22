@@ -395,8 +395,10 @@ export default function App() {
     setActing((previous) => ({ ...previous, [runId]: true }));
     try {
       upsertRun(await api.respond(runId, body));
+      return true;
     } catch (reason) {
       setError(`提交失败：${errorText(reason)}`);
+      return false;
     } finally {
       setActing((previous) => ({ ...previous, [runId]: false }));
       refreshApprovals().catch(() => undefined);
@@ -415,11 +417,15 @@ export default function App() {
     }
   };
 
-  const answer = (run: RunView, text: string) => {
+  const answer = async (run: RunView, text: string) => {
+    const exchange = { q: run.question || '', a: text };
     setDraft('');
     stickToBottom.current = true;
-    setAnswers((previous) => ({ ...previous, [run.id]: [...(previous[run.id] || []), { q: run.question || '', a: text }] }));
-    void respond(run.id, { answer: text });
+    setAnswers((previous) => ({ ...previous, [run.id]: [...(previous[run.id] || []), exchange] }));
+    if (await respond(run.id, { answer: text })) return;
+    // serve refused the answer: it is not part of the conversation.
+    setAnswers((previous) => ({ ...previous, [run.id]: (previous[run.id] || []).filter((item) => item !== exchange) }));
+    setDraft((current) => current || text);
   };
 
   const cancel = async (runId: string) => {
@@ -483,7 +489,7 @@ export default function App() {
       onSubmit={() => {
         const text = draft.trim();
         if (!text) return;
-        if (answering) answer(answering, text);
+        if (answering) void answer(answering, text);
         else void send(text);
       }}
       onStop={latestRun && isActive(latestRun) ? () => void stop() : undefined}
