@@ -89,13 +89,130 @@ connections close after 120 seconds.
 
 Two kinds of request have no total time limit. `GET /v1/runs/{id}/events`
 stays open, and each event or heartbeat write gets its own 60 seconds. A
-request that executes a run (`POST /v1/sessions/{id}/runs`, and the
-`/responses`, `/answer`, `/budget`, and `/cancel` routes of a run) is held
-open until the run stops, then has 60 seconds to write its response.
+request that executes a run and waits for it (`POST /v1/sessions/{id}/runs`,
+and the `/responses`, `/answer`, and `/budget` routes of a run, unless called
+with `?wait=0`) and `/cancel` are held open until the run stops, then have 60
+seconds to write the response.
 
-`SIGINT` and `SIGTERM` both stop `serve` gracefully: it stops accepting
-connections, waits up to 1 second for requests in flight, closes the
-remaining connections, and closes the store.
+`SIGINT` and `SIGTERM` both stop `serve` gracefully. It refuses new runs,
+cancels every run that is executing, and waits up to 5 seconds for them to
+unwind. Each of those runs is recorded as `CANCELLED` with a `run.cancelled`
+event, so none is left `RUNNING`, and open event streams receive that event.
+A run that is `WAITING` is not touched and can be resumed after a restart.
+`serve` then stops accepting connections, waits up to 1 second for requests in
+flight, closes the remaining connections, and closes the store.
+
+## Running a run: POST /v1/sessions/{id}/runs
+
+The body is `{"message":"..."}`. The response is HTTP 201 with the run view
+described under [GET /v1/sessions/{id}/runs](#get-v1sessionsidruns).
+
+A run executes in the server, not in the request that created it. Closing the
+connection does not stop the run: it keeps executing and its result is read
+with `GET /v1/runs/{id}` or the event stream. The only way to stop a run from
+a client is `POST /v1/runs/{id}/cancel`.
+
+The `wait` query parameter chooses when the request answers:
+
+| Request | Answers when | `status` in the response |
+| --- | --- | --- |
+| `?wait=1`, or no `wait` | the run has stopped executing | `COMPLETED`, `FAILED`, `CANCELLED`, or `WAITING` |
+| `?wait=0` | the run is recorded and has started | usually `RUNNING` |
+
+Any other value of `wait` returns HTTP 400 and creates no run. Use `?wait=0`
+to get the run ID first and then follow the run on its event stream; that is
+the only way to see model text while it is being generated.
+
+`POST /v1/runs/{id}/responses`, `/answer`, and `/budget` resume a waiting run
+and take the same `wait` parameter with the same default. They return HTTP 200.
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CLOUD_HARNESS_HTTP_TOKEN" \
+  -d '{"message":"summarize the README"}' \
+  'http://127.0.0.1:19421/v1/sessions/ses_2/runs?wait=0'
+```
+
+```json
+{
+  "id": "run_3",
+  "session_id": "ses_2",
+  "status": "RUNNING",
+  "budget": {
+    "max_model_calls": 100, "used_model_calls": 0,
+    "max_tool_calls": 300, "used_tool_calls": 0,
+    "max_script_calls": 50, "used_script_calls": 0,
+    "max_child_runs": 4, "used_child_runs": 0
+  },
+  "version": 1
+}
+```
+
+## GET /v1/runs/{id}/events
+
+A `text/event-stream` response. It first replays the run's persisted events,
+then stays open and sends new ones as they are committed. It ends once the run
+is `COMPLETED`, `FAILED`, or `CANCELLED` and its last event has been sent. For
+a run that is `WAITING` it stays open, and continues when the run is resumed.
+A `: ping` comment is sent while nothing else is.
+
+The stream carries two kinds of event:
+
+| Kind | `id:` line | Stored | Examples |
+| --- | --- | --- | --- |
+| Persisted event | the event's sequence number | yes | `run.created`, `model.completed`, `tool.batch`, `run.completed` |
+| Live text | none | no | `stream.delta`, `stream.reset` |
+
+**Persisted events** are the record of what the run did. Send the last `id`
+you received as the `Last-Event-ID` header to resume after it; every later
+event is delivered exactly once, in order. They report that a model response
+or the run completed, not the text itself: `run.completed` carries the status,
+and the answer is the `final_answer` of `GET /v1/runs/{id}`. A client that
+missed live text therefore loses nothing it needs. After a reconnect it reads
+the remaining events, and when the run has stopped it reads the run view.
+
+**Live text** is the model response in progress, sent as it is generated:
+
+- `stream.delta` has the data `{"text":"..."}`, the next piece of the
+  response. Pieces arrive in the order the model produced them; concatenate
+  them. A `model.completed` event marks the end of the response, and the next
+  `stream.delta` after it starts a new one. The text of the last response of
+  a completed run is its `final_answer`.
+- `stream.reset` means the text sent for the current response will not appear
+  in any persisted event, because the response failed or the connection fell
+  too far behind. Discard what you have shown for it.
+
+Live text has no cursor and is never replayed from the store. A new connection
+made while a response is in progress starts with one `stream.delta` holding
+that response's text so far, so a client that reconnects must drop the partial
+text it was showing rather than append to it. Text from a child run is sent on
+the child's stream, not its parent's.
+
+```bash
+curl -N -H "Authorization: Bearer $CLOUD_HARNESS_HTTP_TOKEN" \
+  -H "Last-Event-ID: 4" http://127.0.0.1:19421/v1/runs/run_3/events
+```
+
+```text
+event: stream.delta
+data: {"text":"The README "}
+
+event: stream.delta
+data: {"text":"describes"}
+
+id: 5
+event: model.completed
+data: {...}
+
+id: 6
+event: run.completed
+data: {"status":"COMPLETED"}
+```
+
+Subscribers are woken when an event is committed by this `serve` process. As
+a fallback each open stream also reads the store every 2 seconds, which is how
+it learns of events written by another process, such as
+`cloud-harness runs resume` against the same database.
 
 ## GET /approval
 

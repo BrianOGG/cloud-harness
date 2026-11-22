@@ -257,9 +257,22 @@ the caller names a definition.
 ## run / chat
 
 ```bash
-cloud-harness run --message TEXT [--plan] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
-cloud-harness chat [--message TEXT] [--session ID] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness run --message TEXT [--plan] [--stream] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness chat [--message TEXT] [--session ID] [--stream] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
 ```
+
+`--stream` writes model text while the model is still generating it. Without
+it, both commands print only when the run stops, as before.
+
+| Command | Without `--stream` | With `--stream` |
+| --- | --- | --- |
+| `run` | stdout: one JSON line when the run stops. | The same JSON line on stdout. Model text is written to stderr as it arrives. |
+| `chat` | stdout: the final answer of each turn. | stdout: model text as it arrives, including text the model writes before a tool call. The final answer is not printed a second time. |
+
+Each model response ends with a newline. Only the text of the run you started
+is written; child runs execute concurrently and their text is left out. If a
+response fails partway, the text already written stays on screen. The text is
+never stored: the run's result is still its `final_answer`.
 
 `--plan` runs the turn with a read-only model tool catalog. File writes,
 commands, child delegation, scripts, and plan updates are omitted from the

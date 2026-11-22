@@ -310,11 +310,13 @@ func waitRequested(r *http.Request) (bool, error) {
 	if raw == "" {
 		return defaultWait, nil
 	}
-	wait, err := strconv.ParseBool(raw)
-	if err != nil {
-		return false, domain.E(domain.CodeInvalidArgument, "wait must be 0 or 1")
+	switch raw {
+	case "1", "true":
+		return true, nil
+	case "0", "false":
+		return false, nil
 	}
-	return wait, nil
+	return false, domain.E(domain.CodeInvalidArgument, "wait must be 0 or 1")
 }
 
 // execute starts a run in the background and answers with its view. The run

@@ -156,6 +156,41 @@ function eventsError(response: Response): Error {
   return new Error(response.status === 401 ? TOKEN_HINT : `${response.status} ${response.statusText || '请求失败'}`);
 }
 
+export interface RunStreamHandlers {
+  /** Persisted events, in sequence order. Each carries a seq to resume from. */
+  onEvents: (events: HarnessEvent[]) => void;
+  /** The next piece of the model response in progress. Never persisted. */
+  onDelta: (text: string) => void;
+  /** Text delivered so far will not appear in the persisted events: discard it. */
+  onReset: () => void;
+}
+
+/** Sorts a batch of parsed events into persisted events and live text, in arrival order. */
+export function dispatchStreamEvents(events: HarnessEvent[], handlers: RunStreamHandlers) {
+  let persisted: HarnessEvent[] = [];
+  const flush = () => {
+    if (persisted.length) handlers.onEvents(persisted);
+    persisted = [];
+  };
+  for (const event of events) {
+    if (event.type === 'stream.delta') {
+      flush();
+      try {
+        const text = (JSON.parse(event.data) as { text?: unknown }).text;
+        if (typeof text === 'string' && text) handlers.onDelta(text);
+      } catch {
+        // A malformed delta carries nothing to show.
+      }
+    } else if (event.type === 'stream.reset') {
+      flush();
+      handlers.onReset();
+    } else if (event.seq > 0) {
+      persisted.push(event);
+    }
+  }
+  flush();
+}
+
 function fetchWithToken(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   const token = localStorage.getItem('cloud-harness.http-token');
@@ -189,7 +224,7 @@ export const api = {
   createSession: () => req<{ id: string }>('/v1/sessions', { method: 'POST' }),
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
   createRun: (sessionId: string, message: string) =>
-    req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`, {
+    req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
@@ -198,14 +233,57 @@ export const api = {
   getDoctor: (signal?: AbortSignal) => req<DoctorCheck[]>('/v1/doctor', { signal }),
   getRun: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}`),
   respond: (runId: string, body: { decision?: string; answer?: string; extra_model_calls?: number }) =>
-    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses`, { method: 'POST', body: JSON.stringify(body) }),
+    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses?wait=0`, { method: 'POST', body: JSON.stringify(body) }),
   addBudget: (runId: string, extra: number) =>
-    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/budget`, {
+    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/budget?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ extra_model_calls: extra }),
     }),
   cancel: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
   getTrace: (runId: string) => req<TraceView>(`/v1/runs/${encodeURIComponent(runId)}/trace`),
+  /**
+   * Holds the run's event stream open and reports events as they arrive.
+   * Resolves when the server ends the stream, which it does once the run is
+   * terminal, or when signal aborts. Live text has no cursor: a new connection
+   * starts with the text so far of the response in progress, so the caller
+   * clears what it showed before reconnecting.
+   */
+  streamRun: async (runId: string, after: number, handlers: RunStreamHandlers, signal: AbortSignal): Promise<void> => {
+    let response: Response;
+    try {
+      response = await eventsRequest(runId, after, signal);
+    } catch (reason) {
+      if (signal.aborted) return;
+      throw reason;
+    }
+    if (!response.ok) throw eventsError(response);
+    if (!response.body) {
+      dispatchStreamEvents(parseEventStream(await response.text()), handlers);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += (done ? decoder.decode() : decoder.decode(value, { stream: true }));
+        buffer = buffer.replace(/\r\n/g, '\n');
+        // Only blocks closed by a blank line are complete; keep the rest.
+        const end = done ? buffer.length : buffer.lastIndexOf('\n\n');
+        if (end >= 0) {
+          dispatchStreamEvents(parseEventStream(buffer.slice(0, end)), handlers);
+          buffer = buffer.slice(done ? end : end + 2);
+        }
+        if (done) return;
+      }
+    } catch (reason) {
+      if (signal.aborted) return;
+      throw reason;
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+  },
   // One short read of the persistent events after `after`. serve keeps the
   // stream of a live run open, so the read stops at the first complete block
   // or after 750 ms.

@@ -40,7 +40,8 @@ A loopback listener refuses a `Host` header that is not `localhost` or a
 loopback IP address unless it is listed in `http_allowed_hosts`. Every listener
 refuses a cross-origin `Origin` and requires `Content-Type: application/json`
 on write requests with a body; see [request checks](docs/api.md#request-checks).
-`serve` stops gracefully on `SIGINT` and `SIGTERM`.
+`serve` stops gracefully on `SIGINT` and `SIGTERM`: runs that are executing
+are cancelled and recorded as `CANCELLED` before the store closes.
 With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
 `/healthz` and the static pages at `/approval` and `/ui` are public. Open
 `/approval` on desktop or mobile to view the pending queue, make an approval
@@ -174,7 +175,9 @@ docker build -t cloud-harness .
 
 ## Trace and events
 
-`cloud-harness trace RUN_ID` and `GET /v1/runs/{id}/trace` return Session → Run → Step → tool batch, plus child runs. `GET /v1/runs/{id}/events` replays persistent events after `Last-Event-ID`. A `stream.delta` has no id and is not stored. Reconnecting does not execute tools again.
+`cloud-harness trace RUN_ID` and `GET /v1/runs/{id}/trace` return Session → Run → Step → tool batch, plus child runs. `GET /v1/runs/{id}/events` replays persistent events after `Last-Event-ID`, then stays open and sends new ones as they are committed. Reconnecting does not execute tools again.
+
+A run created over HTTP executes in the server: closing the request does not stop it, and only `POST /v1/runs/{id}/cancel` does. `POST /v1/sessions/{id}/runs?wait=0` returns as soon as the run is `RUNNING`; without `wait=0` it answers once the run has stopped. While the model generates a response, the event stream sends its text as `stream.delta` events. A `stream.delta` has no id and is not stored, so it is not replayed: after a reconnect, read the remaining persistent events and the run's `final_answer`. `cloud-harness chat --stream` and `cloud-harness run --stream` print the same text in the terminal. See [docs/api.md](docs/api.md#get-v1runsidevents) and [docs/cli.md](docs/cli.md#run--chat).
 
 The authenticated `GET /v1/sessions` and `GET /v1/sessions/{id}/runs` API
 routes list sessions with run aggregates and each session's runs. See the

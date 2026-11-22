@@ -419,6 +419,34 @@ func TestFailedResponseResetsStreamedText(t *testing.T) {
 	f.waitStatus(t, created.ID, domain.RunFailed)
 }
 
+// Without ?wait= the request answers once the run has stopped executing, as
+// it always has. An unreadable value is refused before any run is created.
+func TestWaitParameter(t *testing.T) {
+	p := newGatedProvider("done")
+	f := newStreamFixture(t, p)
+	go func() {
+		<-p.started
+		p.step <- struct{}{}
+		close(p.release)
+	}()
+	if got := f.createRun(t, ""); got.Status != domain.RunCompleted || got.FinalAnswer != "done" {
+		t.Fatalf("default create returned %s %q", got.Status, got.FinalAnswer)
+	}
+
+	resp, err := http.Post(f.base+"/v1/sessions/"+f.session+"/runs?wait=later", "application/json", strings.NewReader(`{"message":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wait=later: status %d", resp.StatusCode)
+	}
+	runs, err := f.db.ListRuns(context.Background(), f.session)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %d, err = %v", len(runs), err)
+	}
+}
+
 // Shutdown is what serve runs on SIGINT and SIGTERM: a run still executing is
 // recorded as CANCELLED, and no new run is accepted.
 func TestShutdownCancelsExecutingRuns(t *testing.T) {

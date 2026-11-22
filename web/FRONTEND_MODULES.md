@@ -11,9 +11,9 @@
 | `GET /v1/sessions` | 列出会话、run 数和最近状态/时间 |
 | `POST /v1/sessions` | 新建会话，返回 `{id}` |
 | `GET /v1/sessions/{id}/runs` | 列出该会话全部 runs |
-| `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图 |
+| `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图。默认等 run 停下才返回；`?wait=0` 立即返回 `RUNNING` 的 run（前端用这个） |
 | `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, parent_id, status, wait_reason, budget{...}, final_answer, error, version}`；子 run 才有 `parent_id` |
-| `GET /v1/runs/{id}/events` | SSE 格式一次性倒出该 run 的持久事件；带 `Last-Event-ID` 请求头可增量拉取（倒完即断开，需客户端重连/轮询） |
+| `GET /v1/runs/{id}/events` | SSE：先重放该 run 的持久事件（带 `Last-Event-ID` 请求头则从其后开始），随后保持连接推送新事件，run 终态后断开。模型生成中的文本以无 `id`、不落库的 `stream.delta` 推送；`stream.reset` 表示丢弃当前响应已显示的文本 |
 | `GET /v1/runs/{id}/trace` | 执行轨迹：`{session_id, run:{status, wait_reason, steps[], children[]}}`；step = 一次模型响应 `{id, action, batches[]}`；batch = 一批工具调用 `{id, status, action, calls[]}`；call = `{id, name, status, ordinal, provider_call_id}` |
 | `POST /v1/runs/{id}/responses` | 恢复等待中的 run，body 可带 `{decision}` / `{answer}` / `{extra_model_calls}` |
 | `GET /v1/approvals` | 读取待审批工具调用和 ask_user 问题 |
@@ -24,7 +24,7 @@
 
 1. **服务端列表可用**：会话与 run 列表分别来自 `GET /v1/sessions`、`GET /v1/sessions/{id}/runs`；服务端数据是列表权威来源。API 不返回 turn 文本，本客户端创建的消息在浏览器本地保存，旧会话缺失的原文会显示占位提示。
 2. **API 无 CORS 头**：前端不能跨域直连，开发时用 Vite 代理或同源部署。M11-2 起 UI 在 `/ui/` 同源托管。
-3. **没有真正的 token 流式输出**：`stream.delta` 事件不落盘；实时感只能靠轮询 run 视图 + 用 `Last-Event-ID` 增量拉事件实现。
+3. **token 流式输出走 SSE**：发消息和恢复 run 用 `?wait=0`，请求立即返回 `RUNNING` 的 run；随后保持 `GET /v1/runs/{id}/events` 连接。`stream.delta` 不落库、没有游标：重连时服务端会把当前响应已生成的文本从头重发，所以前端重连前要清空已显示的流式文本。持久事件用 `Last-Event-ID` 续传；最终回答以 run 视图的 `final_answer` 为准。
 4. **模型的原始思维链不可见（设计如此）**：推理内容是 opaque continuation，只回放给同一 provider，不落盘、不经 API 透出。前端能展示的"思考过程"是**编排层行踪**：每一步模型响应的意图、规划器决策、工具批次、用量（见模块 6）。
 5. **一轮对话 = 一个 run**：会话里每发一条消息就开一个新 run；消息列表与 run 一一对应。
 6. **演示数据注意**：默认 mock 模型只会一步直达 ANSWER 并复读用户输入。工具调用、审批、等待等状态不会自然出现，demo 要用脚本化 provider / eval 场景造数据，或直接对着状态枚举做 mock 渲染。
@@ -60,8 +60,8 @@
 - 注意：发送后要清输入框；同一会话可连续发多条（= 多个 run 顺序排列）。
 
 ### 5. 运行状态与预算条
-- 职责：顶部呈现当前 run 的状态徽标 + wait_reason + 四组预算计数（used/max）；RUNNING/WAITING 时轮询刷新（约 1 秒）；提供「取消运行」按钮。
-- 数据：`GET /v1/runs/{id}` 轮询；取消 `POST /v1/runs/{id}/cancel`。
+- 职责：顶部呈现当前 run 的状态徽标 + wait_reason + 四组预算计数（used/max）；RUNNING/WAITING 时随事件流刷新；提供「取消运行」按钮。
+- 数据：收到持久事件后读 `GET /v1/runs/{id}`；取消 `POST /v1/runs/{id}/cancel`。
 
 ## C. 过程可视化层（核心）
 
@@ -116,8 +116,8 @@
 ## M11-8：Web 真 serve 全流程（旧界面的验收记录）
 
 - 会话列表、运行记录、审批队列均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
-- 事件请求携带 `Last-Event-ID`；客户端短轮询 SSE 并重连，事件按 seq 合并。可见轨迹只包含编排层状态，不展示模型思维链。
-- 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行，前端随后轮询状态。
+- 当前查看的 RUNNING/WAITING run 保持一条 SSE 连接（`api.streamRun`），事件按 seq 合并，断线后带 `Last-Event-ID` 重连；`stream.delta` 实时显示在「模型输出」卡片。会话里其余活跃 run 只轮询状态（约 1 秒）。可见轨迹只包含编排层状态，不展示模型思维链。
+- 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行（`?wait=0`，请求立即返回），前端通过事件流跟进状态。
 - token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
 - `npm test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。
 
