@@ -229,8 +229,9 @@ func TestRunCommandKilledAtFileSizeLimit(t *testing.T) {
 func TestRunCommandMemoryLimit(t *testing.T) {
 	limitHelpers(t, map[string]string{"grow": "a=xxxxxxxx\nwhile :; do a=$a$a; done"})
 	for name, limits := range map[string]CommandLimits{
-		"memory_bytes":        {MemoryBytes: u64(32 << 20)},
-		"address_space_bytes": {MemoryBytes: u64(0), AddressSpaceBytes: u64(64 << 20)},
+		"memory_bytes": {MemoryBytes: u64(32 << 20)},
+		// The default memory limit stays on and is the looser of the two.
+		"address_space_bytes": {AddressSpaceBytes: u64(64 << 20)},
 	} {
 		_, out := runLimited(t, context.Background(), t.TempDir(), limits, "grow")
 		if out.ExitCode == 0 {

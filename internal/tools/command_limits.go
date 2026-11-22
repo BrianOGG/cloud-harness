@@ -177,8 +177,8 @@ func classifyLimitOutput(exitCode int, stderr string, limits map[string]uint64) 
 	text := strings.ToLower(stderr)
 	for _, hint := range limitOutputHints {
 		resource := hint.resource
-		if resource == limitMemory && limits[limitMemory] == 0 {
-			resource = limitAddressSpace
+		if resource == limitMemory {
+			resource = tighterMemoryLimit(limits)
 		}
 		if limits[resource] == 0 {
 			continue
@@ -192,14 +192,23 @@ func classifyLimitOutput(exitCode int, stderr string, limits map[string]uint64) 
 	return nil
 }
 
+// tighterMemoryLimit picks the limit an allocation failure is attributed to:
+// the lower of the memory and address space limits that were applied. Address
+// space is never smaller than the writable memory inside it, so the lower
+// value is the one reached first.
+func tighterMemoryLimit(limits map[string]uint64) string {
+	memory, addressSpace := limits[limitMemory], limits[limitAddressSpace]
+	if addressSpace > 0 && (memory == 0 || addressSpace < memory) {
+		return limitAddressSpace
+	}
+	return limitMemory
+}
+
 // classifyLimitCrash attributes a crash to the memory limit when the command
 // had grown to at least half of it. crash names the signal and maxRSS is the
 // peak resident memory in bytes.
 func classifyLimitCrash(crash string, maxRSS uint64, limits map[string]uint64) *limitHit {
-	resource := limitMemory
-	if limits[resource] == 0 {
-		resource = limitAddressSpace
-	}
+	resource := tighterMemoryLimit(limits)
 	limit := limits[resource]
 	if limit == 0 || maxRSS < limit/2 {
 		return nil
