@@ -35,7 +35,9 @@ npm run dev
 
 Open `http://127.0.0.1:5173/ui/`. The API sends no CORS headers, so the Vite
 dev server proxies `/v1` and `/healthz` to `serve` on `127.0.0.1:19421`
-(`vite.config.ts`). If `serve` runs with an HTTP token, set it for the dev
+(`vite.config.ts`). The proxy forwards the browser's `Host` unchanged
+(`changeOrigin: false`), because `serve` refuses a request whose `Origin`
+differs from its `Host`. If `serve` runs with an HTTP token, set it for the dev
 origin in the browser console, because `localStorage` is per origin and the
 token pasted on `http://127.0.0.1:19421/approval` is not visible on port 5173:
 
