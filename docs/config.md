@@ -17,6 +17,8 @@ baseline denials, examples, and run snapshot behavior.
   "provider": "mock",
   "openai_base_url": "https://api.openai.com/v1",
   "openai_model": "gpt-4.1-mini",
+  "anthropic_base_url": "https://api.anthropic.com",
+  "anthropic_model": "claude-sonnet-4-5",
   "model_prices": {},
   "oracle_max_cost_usd": 0,
   "http_token": "",
@@ -114,7 +116,7 @@ omitted, the notification contains no approval link.
 | --- | --- | --- |
 | `CLOUD_HARNESS_ADDR` | `127.0.0.1:19421` | HTTP listen address |
 | `CLOUD_HARNESS_DB` | `.cloud-harness/harness.db` | SQLite file |
-| `CLOUD_HARNESS_PROVIDER` | `mock` | `mock` or `openai` |
+| `CLOUD_HARNESS_PROVIDER` | `mock` | `mock`, `openai`, `openai-responses`, or `anthropic` |
 | `CLOUD_HARNESS_HTTP_TOKEN` | `""` | Bearer token required on `/v1/` endpoints (minimum 16 characters when set) |
 | `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS` | unset | Comma-separated extra `Host` header values `serve` accepts, replacing `http_allowed_hosts` from the file |
 | `CLOUD_HARNESS_HTTP_ALLOW_INSECURE` | `false` | Deprecated compatibility setting; non-loopback `serve` still requires `http_token` |
@@ -126,10 +128,13 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_COMMAND_LIMITS` | unset | `off`, or `name=value` pairs overriding single `command_limits` fields; see [Command resource limits](#command-resource-limits) |
 | `CLOUD_HARNESS_MODEL_PROFILES` | unset | JSON object replacing `model_profiles` from the file |
 | `CLOUD_HARNESS_MODEL_ROLES` | unset | JSON object replacing `model_roles` from the file |
-| `OPENAI_API_KEY` | unset | required only when the provider is `openai` |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions origin, without `/chat/completions` |
-| `OPENAI_MODEL` | `gpt-4.1-mini` | default model id for roles without a profile |
+| `OPENAI_API_KEY` | unset | required only when the provider is `openai` or `openai-responses` |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Chat Completions or Responses origin, without `/chat/completions` or `/responses` |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | default model id for roles without a profile; also used by `openai-responses` |
 | `OPENAI_DISABLE_IMAGES` | `false` | Reject image input locally for a text-only compatible endpoint/model; JSON field `openai_disable_images` |
+| `ANTHROPIC_API_KEY` | unset | required only when the provider is `anthropic` |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Messages API origin, without `/v1/messages` |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` | default Anthropic model id for roles without a profile |
 
 ## Command resource limits
 
@@ -273,6 +278,8 @@ the exact model name as the key, and fill the values from the provider's
 current pricing; the example configuration leaves this map empty by default.
 
 CLI flags `--addr`, `--db`, `--provider`, and `--http-token` override the environment for that process. `--http-allow-insecure` remains accepted for compatibility and cannot waive the HTTP token requirement.
+
+`openai-responses` reuses the OpenAI base URL, model, API key, reasoning replay, image, and retry settings, and posts to `/responses`. `anthropic` uses the Anthropic base URL, model, and API key, and posts to `/v1/messages`. Both providers are stdlib HTTP clients and return `provider.HTTPStatusError` for HTTP status failures. Unmapped calls retry HTTP 429 and 5xx responses with exponential backoff and jitter before any response items are produced; mapped profile calls leave retries and fallback to `ProfileProvider`.
 
 ## HTTP authentication and non-loopback rule
 

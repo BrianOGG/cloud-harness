@@ -1,19 +1,19 @@
 # Model API and tool-calling checklist
 
-M0 does not call a live provider. Rows marked "mock contract" are tested in-process. Rows marked "not run" wait for a key and for M1's adapters. Do not treat an unchecked row as supported.
+Live provider calls are not part of CI. Rows marked "httptest" are covered by stdlib httptest servers; rows marked "mock contract" are tested in-process. Do not treat an unchecked row as supported against a live API.
 
-| Capability | OpenAI Responses | Anthropic Messages | OpenAI-compatible Chat Completions | M0 status |
+| Capability | OpenAI Responses | Anthropic Messages | OpenAI-compatible Chat Completions | httptest status |
 | --- | --- | --- | --- | --- |
-| One text completion | Required | Required | Required | Chat Completions client tested against `httptest`. Live call not run (no key). |
-| Multiple tool calls in one response | Required | Required | Required | Domain batch contract: three calls, ordered, ids paired. No live provider. |
-| Tool arguments split across stream chunks | Required | Required | Required | Not run. Incomplete responses are refused and not dispatched. |
-| Text plus tool calls is non-terminal | Required | Required | Required | Mock contract. |
+| One text completion | Required | Required | Required | Request shape, parsing, and usage covered for all three stdlib clients. Live call not run (no key). |
+| Multiple tool calls in one response | Required | Required | Required | Domain batch contract plus provider parsing tests. No live provider. |
+| Tool arguments split across stream chunks | Required | Required | Required | Chat Completions stream test exists. Responses and Anthropic clients use non-streaming JSON. |
+| Text plus tool calls is non-terminal | Required | Required | Required | Provider parsing preserves ordered text and tool-call items. |
 | `finish_turn` exclusive | Harness protocol | Harness protocol | Harness protocol | Mock contract. Mixed with another call: zero dispatches. |
 | `ask_user` exclusive | Harness protocol | Harness protocol | Harness protocol | Mock contract. |
-| Opaque reasoning / thinking items kept in order | Reasoning items | Thinking and redacted thinking, with signature | Not available on this endpoint | Mock contract for storage, replay, and trace exclusion. Chat Completions client returns `opaque_replay_unsupported` instead of stripping bytes. |
-| Signature bytes unchanged across a follow-up | Required | Required | n/a | Mock contract. |
-| Prefix caching metrics | `cached_input_tokens` when reported | cache fields when reported | Not requested | Usage struct exists. Not collected from a live API. |
-| `previous_response_id` vs manual replay | Provider rule | n/a | n/a | Not implemented. M1. |
+| Opaque reasoning / thinking items kept in order | Reasoning items | Thinking and redacted thinking, with signature | Not available on this endpoint | Fixture order tests plus httptest continuation replay for Responses and Anthropic. Chat Completions returns `opaque_replay_unsupported` instead of stripping bytes. |
+| Signature bytes unchanged across a follow-up | Required | Required | n/a | Anthropic thinking payload and signature are replayed from continuation bytes in httptest. |
+| Prefix caching metrics | `cached_input_tokens` when reported | cache fields when reported | Not requested | Usage structs are populated from httptest responses for all three clients. |
+| `previous_response_id` vs manual replay | Provider rule | n/a | n/a | Manual replay is used for Responses input items; `previous_response_id` is not implemented. |
 | Switching provider drops opaque state | Required | Required | Required | `PrepareContinuation` degrades and removes opaque items. |
 | Official Go SDK | Planned | Planned | Not required for the probe | Not imported. Stdlib HTTP only, so SDK types cannot leak into domain. |
 
@@ -27,7 +27,7 @@ M0 does not call a live provider. Rows marked "mock contract" are tested in-proc
 ## Not checked against a live model
 
 - Parallel tool calls (V1 is serial).
-- Argument streaming and partial JSON.
+- Argument streaming and partial JSON for Responses and Anthropic.
 - Provider-specific required fields on thinking signatures.
 - Prompt-cache hit rate.
 - Refusal / safety stop sequences.

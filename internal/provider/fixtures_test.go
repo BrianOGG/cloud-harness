@@ -76,7 +76,7 @@ func TestOpenAIReasoningPassthroughOrder(t *testing.T) {
 	if resp.Items[1].ToolCall.ProviderCallID != "call_1" || resp.Items[2].Text != "done" {
 		t.Fatal("items were reordered")
 	}
-	replayed, err := domain.Replay("openai", resp.Items)
+	replayed, err := domain.Replay("openai-responses", resp.Items)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +85,44 @@ func TestOpenAIReasoningPassthroughOrder(t *testing.T) {
 	}
 	if bytes.Contains(mustJSON(t, domain.TraceView(resp.Items)), []byte("SECRET-REASON")) {
 		t.Fatal("trace leaked reasoning")
+	}
+}
+
+func TestAnthropicStopReasonControlsComplete(t *testing.T) {
+	for _, tc := range []struct {
+		reason   string
+		complete bool
+	}{
+		{"", true},
+		{"end_turn", true},
+		{"stop_sequence", true},
+		{"tool_use", true},
+		{"max_tokens", false},
+		{"refusal", false},
+		{"pause_turn", false},
+		{"future_reason", false},
+	} {
+		raw := []byte(`{"id":"msg_stop","content":[{"type":"text","text":"partial"}],"stop_reason":"` + tc.reason + `"}`)
+		resp, err := ParseAnthropicMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Complete != tc.complete {
+			t.Fatalf("stop_reason %q complete=%v; want %v", tc.reason, resp.Complete, tc.complete)
+		}
+	}
+}
+
+func TestOpenAIResponsesRefusalBecomesText(t *testing.T) {
+	resp, err := ParseOpenAIResponses([]byte(`{"id":"resp_refusal","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I can't help with that."}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Text() != "I can't help with that." {
+		t.Fatalf("text %q", resp.Text())
+	}
+	if _, err := domain.Classify(resp); err != nil {
+		t.Fatal(err)
 	}
 }
 

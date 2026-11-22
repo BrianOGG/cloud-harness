@@ -510,3 +510,43 @@ func TestDisableSnapshotsConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicConfigEnvAndRedacted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"provider":"anthropic","anthropic_model":"claude-x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, func(k string) string {
+		switch k {
+		case "ANTHROPIC_API_KEY":
+			return "anthropic-secret"
+		case "ANTHROPIC_BASE_URL":
+			return "https://anthropic.example"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "anthropic" || cfg.AnthropicModel != "claude-x" || cfg.AnthropicBaseURL != "https://anthropic.example" || cfg.AnthropicAPIKey != "anthropic-secret" {
+		t.Fatalf("%+v", cfg)
+	}
+	logged := cfg.Redacted()
+	if logged["anthropic_api_key"] != "set" {
+		t.Fatalf("redacted %+v", logged)
+	}
+	raw, err := json.Marshal(logged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "anthropic-secret") {
+		t.Fatalf("redacted config contained key: %s", raw)
+	}
+	if err := os.WriteFile(path, []byte(`{"anthropic_api_key":"file-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, func(string) string { return "" }); err == nil {
+		t.Fatal("file anthropic api key was accepted")
+	}
+}

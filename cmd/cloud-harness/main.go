@@ -118,12 +118,12 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 const usage = `Cloud Harness M5
 
   cloud-harness version
-  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai]
-  cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
-  cloud-harness eval suite [--live] [--provider mock|openai] [--db path] [--workspace dir] [--out path] [--compare path]
+  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness eval run --task TASK [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir]
+  cloud-harness eval suite [--live] [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir] [--out path] [--compare path]
   cloud-harness runs list [--session ID] [--db path]
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
@@ -132,7 +132,7 @@ const usage = `Cloud Harness M5
   cloud-harness trace RUN_ID
   cloud-harness retain [--days N] [--prune-runs-days N] [--dry-run] [--db path]
   cloud-harness rewind RUN_ID --to SNAPSHOT_ID [--all|--code-only|--chat-only] [--yes] [--db path] [--workspace dir]
-  cloud-harness doctor [--db path] [--workspace dir] [--provider mock|openai] [--json]
+  cloud-harness doctor [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic] [--json]
   cloud-harness stats [--days N] [--by day|model|run] [--db path] [--json]
   cloud-harness export RUN_ID [--out path] [--sanitize|--raw] [--force] [--json] [--db path]
   cloud-harness review [--workspace dir] [--json] [--diff]
@@ -146,7 +146,7 @@ const usage = `Cloud Harness M5
   cloud-harness program check
 
 Flags for runs resume come before the run id.
-The API key is read only from OPENAI_API_KEY. Default provider is mock.
+The API key is read only from OPENAI_API_KEY or ANTHROPIC_API_KEY. Default provider is mock.
 Default listen address is 127.0.0.1:19421.`
 
 type commonFlags struct {
@@ -193,7 +193,7 @@ func cmdCompact(args []string, stdout, stderr io.Writer) int {
 func addCommon(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
 	fs.StringVar(&c.db, "db", "", "sqlite database path")
-	fs.StringVar(&c.provider, "provider", "", "mock or openai")
+	fs.StringVar(&c.provider, "provider", "", "mock, openai, openai-responses, or anthropic")
 	fs.StringVar(&c.addr, "addr", "", "listen address")
 	fs.StringVar(&c.workspace, "workspace", "", "workspace root for file and command tools")
 	fs.StringVar(&c.httpToken, "http-token", "", "bearer token for HTTP API")
@@ -354,6 +354,21 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
 			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
 			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+		}, nil
+	case "openai-responses":
+		return &provider.OpenAIResponses{
+			BaseURL:         cfg.OpenAIBaseURL,
+			APIKey:          cfg.OpenAIAPIKey,
+			Model:           cfg.OpenAIModel,
+			ReasoningReplay: cfg.OpenAIReasoningReplay,
+			DisableImages:   cfg.OpenAIDisableImages,
+			RetryBaseDelay:  time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+		}, nil
+	case "anthropic":
+		return &provider.Anthropic{
+			BaseURL: cfg.AnthropicBaseURL,
+			APIKey:  cfg.AnthropicAPIKey,
+			Model:   cfg.AnthropicModel,
 		}, nil
 	default:
 		return nil, domain.E(domain.CodeInvalidArgument, "unknown provider "+cfg.Provider)

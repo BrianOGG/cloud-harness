@@ -345,6 +345,24 @@ func TestStatsCacheWarningThreshold(t *testing.T) {
 	}
 }
 
+func TestAttributedModelUsesConfiguredProviderModels(t *testing.T) {
+	cfg := config.Config{OpenAIModel: "gpt-test", AnthropicModel: "claude-test"}
+	for _, tc := range []struct {
+		provider string
+		want     string
+	}{
+		{"openai", "gpt-test"},
+		{"openai-responses", "gpt-test"},
+		{"anthropic", "claude-test"},
+		{"mock", "mock"},
+		{"", "unknown"},
+	} {
+		if got := attributedModel(tc.provider, cfg); got != tc.want {
+			t.Fatalf("attributedModel(%q) = %q; want %q", tc.provider, got, tc.want)
+		}
+	}
+}
+
 func TestFormatCostPreservesSmallAmounts(t *testing.T) {
 	if got := formatCost(0.000165); got != "0.000165" {
 		t.Fatalf("formatted cost=%q", got)

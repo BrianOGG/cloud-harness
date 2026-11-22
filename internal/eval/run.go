@@ -407,6 +407,21 @@ func build(cfg config.Config) (provider.Provider, error) {
 			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
 			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
 		}, nil
+	case "openai-responses":
+		return &provider.OpenAIResponses{
+			BaseURL:         cfg.OpenAIBaseURL,
+			APIKey:          cfg.OpenAIAPIKey,
+			Model:           cfg.OpenAIModel,
+			ReasoningReplay: cfg.OpenAIReasoningReplay,
+			DisableImages:   cfg.OpenAIDisableImages,
+			RetryBaseDelay:  time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+		}, nil
+	case "anthropic":
+		return &provider.Anthropic{
+			BaseURL: cfg.AnthropicBaseURL,
+			APIKey:  cfg.AnthropicAPIKey,
+			Model:   cfg.AnthropicModel,
+		}, nil
 	default:
 		return nil, domain.E(domain.CodeInvalidArgument, "unknown provider "+cfg.Provider)
 	}
