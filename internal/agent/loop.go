@@ -423,9 +423,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		if ctx.Err() != nil {
 			return m.finishCancelled(persist, run)
 		}
-		if err := m.event(ctx, run.ID, "tool.batch", map[string]any{
-			"batch_id": batch.ID, "status": batch.Status, "calls": callTrace(batch),
-		}); err != nil {
+		if err := m.batchEvent(ctx, run.ID, batch); err != nil {
 			return storage.Run{}, err
 		}
 		switch batch.Status {
@@ -893,6 +891,15 @@ func toolResultMessages(batch domain.Batch) []provider.Message {
 		out = append(out, provider.Message{Role: "tool", ToolCallID: inv.ProviderCallID, Ref: inv.ID, Content: string(raw)})
 	}
 	return out
+}
+
+// batchEvent records the state of a batch. A denial, a skip, and a
+// reconciliation change invocations without running them, so no
+// invocation event reports those outcomes.
+func (m *Manager) batchEvent(ctx context.Context, runID string, batch domain.Batch) error {
+	return m.event(ctx, runID, "tool.batch", map[string]any{
+		"batch_id": batch.ID, "status": batch.Status, "calls": callTrace(batch),
+	})
 }
 
 func callTrace(batch domain.Batch) []map[string]any {

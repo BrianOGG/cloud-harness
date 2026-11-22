@@ -467,6 +467,9 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 	}); err != nil {
 		return storage.Run{}, err
 	}
+	if err := m.batchEvent(ctx, run.ID, batch); err != nil {
+		return storage.Run{}, err
+	}
 	messages := append(snap.Messages, assistantFromBatch(batch))
 	messages = append(messages, toolResultMessages(batch)...)
 	if batch.Status == domain.BatchWaitingApproval || batch.Status == domain.BatchNeedsReconciliation {
@@ -612,6 +615,9 @@ func (m *Manager) resumeReconcile(ctx context.Context, run storage.Run, leaseVer
 		ID: batch.ID, ModelResponseID: stored.ModelResponseID, RunID: run.ID,
 		Status: batch.Status, Action: batch.Action, Invocations: batch.Invocations,
 	}); err != nil {
+		return storage.Run{}, err
+	}
+	if err := m.batchEvent(ctx, run.ID, batch); err != nil {
 		return storage.Run{}, err
 	}
 	if batch.Status == domain.BatchNeedsReconciliation {
