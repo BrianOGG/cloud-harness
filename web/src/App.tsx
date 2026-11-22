@@ -422,16 +422,19 @@ export default function App() {
     void respond(run.id, { answer: text });
   };
 
-  const stop = async () => {
-    if (!latestRun || !isActive(latestRun)) return;
-    setActing((previous) => ({ ...previous, [latestRun.id]: true }));
+  const cancel = async (runId: string) => {
+    setActing((previous) => ({ ...previous, [runId]: true }));
     try {
-      upsertRun(await api.cancel(latestRun.id));
+      upsertRun(await api.cancel(runId));
     } catch (reason) {
       setError(`取消失败：${errorText(reason)}`);
     } finally {
-      setActing((previous) => ({ ...previous, [latestRun.id]: false }));
+      setActing((previous) => ({ ...previous, [runId]: false }));
     }
+  };
+
+  const stop = async () => {
+    if (latestRun && isActive(latestRun)) await cancel(latestRun.id);
   };
 
   const openRun = async (runId: string) => {
@@ -448,6 +451,7 @@ export default function App() {
   const actions: TurnActions = {
     respond: (runId, body) => void respond(runId, body),
     addBudget: (runId) => void addBudget(runId),
+    cancel: (runId) => void cancel(runId),
     inspect: (runId) => {
       setInspected(runId);
       const run = activeRuns.find((item) => item.id === runId);

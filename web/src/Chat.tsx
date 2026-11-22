@@ -15,6 +15,7 @@ export interface Exchange {
 export interface TurnActions {
   respond: (runId: string, body: { decision?: string; answer?: string }) => void;
   addBudget: (runId: string) => void;
+  cancel: (runId: string) => void;
   inspect: (runId: string) => void;
   loadEvents: (run: RunView) => void;
 }
@@ -108,7 +109,10 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
     return (
       <div className="question">
         <Markdown text={run.question || '运行正在等待你提供更多信息。'} />
-        <p className="question-hint"><Icon name="question" size={14} />在下方输入框回答后，运行会继续。</p>
+        <p className="question-hint">
+          <Icon name="question" size={14} /><span>在下方输入框回答后，运行会继续。</span>
+          <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>
+        </p>
       </div>
     );
   }
