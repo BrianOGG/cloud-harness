@@ -425,18 +425,28 @@ func TestFailedResponseResetsStreamedText(t *testing.T) {
 	f.waitStatus(t, created.ID, domain.RunFailed)
 }
 
-// Without ?wait= the request answers once the run has stopped executing, as
-// it always has. An unreadable value is refused before any run is created.
+// Without ?wait= the request answers as soon as the run is RUNNING. ?wait=1
+// holds it until the run has stopped, as every request did before M13-2. An
+// unreadable value is refused before any run is created.
 func TestWaitParameter(t *testing.T) {
 	p := newGatedProvider("done")
 	f := newStreamFixture(t, p)
-	go func() {
+	finish := func() {
 		<-p.started
 		p.step <- struct{}{}
-		close(p.release)
-	}()
-	if got := f.createRun(t, ""); got.Status != domain.RunCompleted || got.FinalAnswer != "done" {
-		t.Fatalf("default create returned %s %q", got.Status, got.FinalAnswer)
+		p.release <- struct{}{}
+	}
+
+	started := f.createRun(t, "")
+	if started.Status != domain.RunRunning || started.FinalAnswer != "" {
+		t.Fatalf("default create returned %s %q", started.Status, started.FinalAnswer)
+	}
+	finish()
+	f.waitStatus(t, started.ID, domain.RunCompleted)
+
+	go finish()
+	if got := f.createRun(t, "?wait=1"); got.Status != domain.RunCompleted || got.FinalAnswer != "done" {
+		t.Fatalf("wait=1 create returned %s %q", got.Status, got.FinalAnswer)
 	}
 
 	resp, err := http.Post(f.base+"/v1/sessions/"+f.session+"/runs?wait=later", "application/json", strings.NewReader(`{"message":"hello"}`))
@@ -448,7 +458,7 @@ func TestWaitParameter(t *testing.T) {
 		t.Fatalf("wait=later: status %d", resp.StatusCode)
 	}
 	runs, err := f.db.ListRuns(context.Background(), f.session)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("runs = %d, err = %v", len(runs), err)
 	}
 }

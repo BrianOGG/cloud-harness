@@ -364,12 +364,12 @@ func TestServeWorktreeHTTPApprovalAndSummary(t *testing.T) {
 		return v
 	}
 	session := request("/v1/sessions", "", http.StatusCreated)["id"].(string)
-	view := request("/v1/sessions/"+session+"/runs", `{"message":"edit via http"}`, http.StatusCreated)
+	view := request("/v1/sessions/"+session+"/runs?wait=1", `{"message":"edit via http"}`, http.StatusCreated)
 	if view["status"] != string(domain.RunWaiting) {
 		t.Fatalf("expected approval: %+v", view)
 	}
 	id := view["id"].(string)
-	view = request("/v1/runs/"+id+"/responses", `{"decision":"approve"}`, http.StatusOK)
+	view = request("/v1/runs/"+id+"/responses?wait=1", `{"decision":"approve"}`, http.StatusOK)
 	if view["status"] != string(domain.RunCompleted) {
 		t.Fatalf("resume: %+v", view)
 	}
@@ -728,7 +728,7 @@ func TestServeWorktreeCLIProcessWithHTTP(t *testing.T) {
 		return view
 	}
 	session := post("/v1/sessions", "")["id"].(string)
-	view := post("/v1/sessions/"+session+"/runs", `{"message":"actual serve worktree"}`)
+	view := post("/v1/sessions/"+session+"/runs?wait=1", `{"message":"actual serve worktree"}`)
 	run, err := db.GetRun(ctx, view["id"].(string))
 	if err != nil || run.WorktreePath == "" || run.Status != domain.RunCompleted {
 		t.Fatalf("serve --worktree did not isolate: %+v %v", run, err)

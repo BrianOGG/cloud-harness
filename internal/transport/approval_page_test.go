@@ -100,19 +100,19 @@ func TestApprovalPageNotificationToResume(t *testing.T) {
 		{
 			name: "approve", channel: "bark", event: notify.EventWaitingApproval,
 			tool: "run_command", argument: "command", summary: "echo approved-for-m10-3-3",
-			reason: domain.WaitApproval, queueReason: "approval", endpoint: "/responses", payload: `{"decision":"approve"}`,
+			reason: domain.WaitApproval, queueReason: "approval", endpoint: "/responses?wait=1", payload: `{"decision":"approve"}`,
 			invocationStatus: domain.InvSucceeded, resultText: "approved-for-m10-3-3",
 		},
 		{
 			name: "deny", channel: "ntfy", event: notify.EventWaitingApproval,
 			tool: "run_command", argument: "command", summary: "echo denied-for-m10-3-3",
-			reason: domain.WaitApproval, queueReason: "approval", endpoint: "/responses", payload: `{"decision":"deny"}`,
+			reason: domain.WaitApproval, queueReason: "approval", endpoint: "/responses?wait=1", payload: `{"decision":"deny"}`,
 			invocationStatus: domain.InvDenied,
 		},
 		{
 			name: "answer", channel: "ntfy", event: notify.EventAskUser,
 			tool: domain.ToolAskUser, argument: "question", summary: "Which region should I use?",
-			reason: domain.WaitUser, queueReason: "ask_user", endpoint: "/answer", payload: `{"answer":"eu-central-1"}`,
+			reason: domain.WaitUser, queueReason: "ask_user", endpoint: "/answer?wait=1", payload: `{"answer":"eu-central-1"}`,
 			invocationStatus: domain.InvSucceeded, resultText: `"answer":"eu-central-1"`,
 		},
 	} {
@@ -209,7 +209,7 @@ func TestApprovalPageNotificationToResume(t *testing.T) {
 			var session struct{ ID string }
 			read(request(ctx, http.MethodPost, "/v1/sessions", approvalTestToken, ""), http.StatusCreated, &session)
 			var waiting view
-			read(request(ctx, http.MethodPost, "/v1/sessions/"+session.ID+"/runs", approvalTestToken, `{"message":"trigger a wait"}`), http.StatusCreated, &waiting)
+			read(request(ctx, http.MethodPost, "/v1/sessions/"+session.ID+"/runs?wait=1", approvalTestToken, `{"message":"trigger a wait"}`), http.StatusCreated, &waiting)
 			if waiting.ID == "" || waiting.Status != domain.RunWaiting || waiting.WaitReason != tc.reason {
 				t.Fatalf("waiting run: %+v", waiting)
 			}

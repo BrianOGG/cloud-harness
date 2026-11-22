@@ -303,9 +303,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // defaultWait is the behavior of a request that executes a run when it does
-// not pass ?wait=: true answers once the run has stopped executing, false
-// answers as soon as the run is RUNNING.
-const defaultWait = true
+// not pass ?wait=: false answers as soon as the run is RUNNING, true answers
+// once the run has stopped executing, which is what every request did before
+// runs became asynchronous.
+const defaultWait = false
 
 func waitRequested(r *http.Request) (bool, error) {
 	raw := r.URL.Query().Get("wait")

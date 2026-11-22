@@ -90,8 +90,8 @@ connections close after 120 seconds.
 Two kinds of request have no total time limit. `GET /v1/runs/{id}/events`
 stays open, and each event or heartbeat write gets its own 60 seconds. A
 request that executes a run and waits for it (`POST /v1/sessions/{id}/runs`,
-and the `/responses`, `/answer`, and `/budget` routes of a run, unless called
-with `?wait=0`) and `/cancel` are held open until the run stops, then have 60
+or the `/responses`, `/answer`, or `/budget` route of a run, called with
+`?wait=1`) and `/cancel` are held open until the run stops, then have 60
 seconds to write the response.
 
 `SIGINT` and `SIGTERM` both stop `serve` gracefully. It refuses new runs and
@@ -120,25 +120,15 @@ connection does not stop the run: it keeps executing and its result is read
 with `GET /v1/runs/{id}` or the event stream. The only way to stop a run from
 a client is `POST /v1/runs/{id}/cancel`.
 
-The `wait` query parameter chooses when the request answers:
-
-| Request | Answers when | `status` in the response |
-| --- | --- | --- |
-| `?wait=1`, or no `wait` | the run has stopped executing | `COMPLETED`, `FAILED`, `CANCELLED`, or `WAITING` |
-| `?wait=0` | the run is recorded and has started | usually `RUNNING` |
-
-Any other value of `wait` returns HTTP 400 and creates no run. Use `?wait=0`
-to get the run ID first and then follow the run on its event stream; that is
-the only way to see model text while it is being generated.
-
-`POST /v1/runs/{id}/responses`, `/answer`, and `/budget` resume a waiting run
-and take the same `wait` parameter with the same default. They return HTTP 200.
+The request answers as soon as the run is recorded and has started, so the
+`status` in the response is usually `RUNNING`. Follow the run on its event
+stream, or read `GET /v1/runs/{id}` until it stops.
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CLOUD_HARNESS_HTTP_TOKEN" \
   -d '{"message":"summarize the README"}' \
-  'http://127.0.0.1:19421/v1/sessions/ses_2/runs?wait=0'
+  http://127.0.0.1:19421/v1/sessions/ses_2/runs
 ```
 
 ```json
@@ -154,6 +144,29 @@ curl -s -X POST -H "Content-Type: application/json" \
   },
   "version": 1
 }
+```
+
+The `wait` query parameter chooses when the request answers:
+
+| Request | Answers when | `status` in the response |
+| --- | --- | --- |
+| `?wait=0`, or no `wait` | the run is recorded and has started | usually `RUNNING` |
+| `?wait=1` | the run has stopped executing | `COMPLETED`, `FAILED`, `CANCELLED`, or `WAITING` |
+
+Any other value of `wait` returns HTTP 400 and creates no run.
+
+`POST /v1/runs/{id}/responses`, `/answer`, and `/budget` resume a waiting run
+and take the same `wait` parameter with the same default. They return HTTP 200.
+
+**Changed in M13-2.** These four requests used to answer only once the run had
+stopped, with the final answer or the wait in the response. A client that
+relies on that adds `?wait=1`:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CLOUD_HARNESS_HTTP_TOKEN" \
+  -d '{"message":"summarize the README"}' \
+  'http://127.0.0.1:19421/v1/sessions/ses_2/runs?wait=1'
 ```
 
 ## GET /v1/runs/{id}/events
