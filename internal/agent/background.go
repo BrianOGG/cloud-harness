@@ -119,6 +119,11 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 	go func() {
 		defer m.bgWG.Done()
 		ex.result, ex.err = execute(runCtx)
+		if ex.err != nil && runID != "" {
+			if failed, ok := m.failStranded(runCtx, runID, ex.err); ok {
+				ex.result = failed
+			}
+		}
 		m.bgMu.Lock()
 		delete(m.bgRuns, runID)
 		m.bgMu.Unlock()
@@ -141,6 +146,18 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 	}
 	ex.Run = ex.result
 	return ex, nil
+}
+
+// failStranded records cause on a run whose execution returned an error
+// without moving it out of RUNNING. No caller may be waiting to read that
+// error, and nothing else would ever move the run.
+func (m *Manager) failStranded(ctx context.Context, runID string, cause error) (storage.Run, bool) {
+	current, err := m.Store.GetRun(ctx, runID)
+	if err != nil || current.Status != domain.RunRunning {
+		return storage.Run{}, false
+	}
+	failed, err := m.finish(ctx, current, domain.EventFatal, "", asDomain(cause))
+	return failed, err == nil
 }
 
 // shutdownRecheck is how often Shutdown looks for an execution that recorded

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -87,5 +88,24 @@ func TestCancelRightAfterStartStopsExecution(t *testing.T) {
 	waitDone(t, ex)
 	if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunCancelled {
 		t.Fatalf("status = %s", got.Status)
+	}
+}
+
+// Nobody is waiting on a background execution to read its error, so an error
+// that left the run RUNNING is recorded on the run.
+func TestBackgroundExecutionErrorFailsRun(t *testing.T) {
+	malformed := toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":`)})
+	m, session := backgroundManager(t, newBlockingProvider(func(int) *domain.ModelResponse { return &malformed }))
+	ex, err := m.StartMessage(t.Context(), session.ID, "hello", RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, ex)
+	if _, err := ex.Wait(t.Context()); err == nil {
+		t.Fatal("execution reported no error")
+	}
+	got := statusOf(t, m, ex.Run.ID)
+	if got.Status != domain.RunFailed || got.Error == nil {
+		t.Fatalf("status = %s, error = %v", got.Status, got.Error)
 	}
 }
