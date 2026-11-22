@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 func (db *DB) CreateSession(ctx context.Context, s storage.Session) error {

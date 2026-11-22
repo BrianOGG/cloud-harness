@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
+	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
 )
 
 const skillUsage = "usage: cloud-harness /skill NAME [--workspace dir]"

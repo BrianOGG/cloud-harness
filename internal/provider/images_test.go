@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 func TestMockRecordsImageMetadataWithoutPayload(t *testing.T) {

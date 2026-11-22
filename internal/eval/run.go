@@ -17,12 +17,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/agent"
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 )
 
 const (
@@ -103,6 +103,8 @@ type Result struct {
 	ToolCalls  []Call          `json:"tool_calls"`
 	Failures   []string        `json:"failures,omitempty"`
 	Metrics    json.RawMessage `json:"metrics,omitempty"`
+	ModelCalls int             `json:"model_calls,omitempty"`
+	Usage      domain.Usage    `json:"usage"`
 }
 
 // Options selects the task and the provider configuration.
@@ -297,6 +299,12 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	out.Status = string(run.Status)
 	out.WaitReason = string(run.WaitReason)
 	out.RunID = run.ID
+	usage, err := sumUsage(ctx, db, run.ID)
+	if err != nil {
+		return out, err
+	}
+	out.ModelCalls = run.Budget.UsedModelCalls
+	out.Usage = usage
 	batches, err := db.LoadBatches(ctx, run.ID)
 	if err != nil {
 		return out, err
@@ -321,7 +329,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 			out.ToolCalls = append(out.ToolCalls, call)
 		}
 	}
-	out.Failures = score(ctx, opt.Task, abs, run.Status, run.FinalAnswer, out.ToolCalls)
+	out.Failures = score(ctx, opt.Task, abs, run.Status, run.FinalAnswer, out.ToolCalls, !useScripted)
 	if extra := scoreHistory(ctx, db, ses.ID, opt.Task, out.ToolCalls); len(extra) > 0 {
 		out.Failures = append(out.Failures, extra...)
 	}
@@ -604,15 +612,27 @@ func textResp(text string) domain.ModelResponse {
 	return domain.ModelResponse{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemText, Text: text}}}
 }
 
-func score(ctx context.Context, task, abs string, status domain.RunStatus, answer string, calls []Call) []string {
+func score(ctx context.Context, task, abs string, status domain.RunStatus, answer string, calls []Call, live bool) []string {
 	switch task {
 	case "dev-fix-failing-test":
+		if live {
+			return scoreLiveDevFixFailingTest(ctx, abs, status, calls)
+		}
 		return scoreDevFixFailingTest(ctx, abs, status, calls)
 	case "dev-explain-call-site":
+		if live {
+			return scoreLiveDevExplain(status, answer, calls)
+		}
 		return scoreDevExplainCallSite(status, answer, calls)
 	case "file-summarize-log":
+		if live {
+			return scoreLiveFileSummarizeLog(status, answer, calls)
+		}
 		return scoreFileSummarizeLog(status, answer, calls)
 	case "file-safe-edit":
+		if live {
+			return scoreLiveFileSafeEdit(abs, status, answer, calls)
+		}
 		return scoreFileSafeEdit(abs, status, calls)
 	case "incident-service-down":
 		return scoreIncidentServiceDown(status, answer, calls)
@@ -621,11 +641,21 @@ func score(ctx context.Context, task, abs string, status domain.RunStatus, answe
 	case "recover-mid-batch":
 		return scoreRecover(status, calls)
 	case "retrieve-chinese-term":
+		if live {
+			return scoreLiveRetrieveChinese(status, answer, calls)
+		}
 		return scoreChinese(status, calls)
 	case "retrieve-path-and-id":
+		if live {
+			return scoreLiveRetrievePath(status, answer, calls)
+		}
 		return scorePath(status, calls)
 	case "incident-wait-for-ready":
 		return scorePoll(status, calls)
+	case "batch-three-reads":
+		if live {
+			return scoreLiveBatchThreeReads(status, answer, calls)
+		}
 	}
 	var failures []string
 	if task != "batch-three-reads" {
@@ -680,6 +710,10 @@ func score(ctx context.Context, task, abs string, status domain.RunStatus, answe
 }
 
 func scoreDevFixFailingTest(ctx context.Context, abs string, status domain.RunStatus, calls []Call) []string {
+	return scoreDevFix(ctx, abs, status, calls, true)
+}
+
+func scoreDevFix(ctx context.Context, abs string, status domain.RunStatus, calls []Call, requireWrite bool) []string {
 	var failures []string
 	if status != domain.RunCompleted {
 		failures = append(failures, "run status is "+string(status))
@@ -698,7 +732,7 @@ func scoreDevFixFailingTest(ctx context.Context, abs string, status domain.RunSt
 			wroteNonTest = true
 		}
 	}
-	if !wroteNonTest {
+	if requireWrite && !wroteNonTest {
 		failures = append(failures, "expected at least one succeeded write_file or edit_file call on a non-test file")
 	}
 	testPath := filepath.Join(abs, "calc_test.go")

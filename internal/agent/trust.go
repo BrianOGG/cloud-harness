@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/hooks"
-	"github.com/cloud-harness/cloud-harness/internal/security"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
+	"github.com/BrianOGG/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 // EventConfigUntrusted records that a workspace control file was present at

@@ -112,7 +112,16 @@ cloud-harness eval run --task cache-baseline
 cloud-harness eval run --task incident-wait-for-ready
 ```
 
-`eval suite` runs that list and prints completion, correctness, wall time, token totals the tasks actually reported, cache hit rate, planner arms, repeated tool calls, and recovery.
+`eval suite` runs that list and prints completion, correctness, wall time, model and tool call totals, token totals the tasks actually reported, cache hit rate, planner arms, repeated tool calls, and recovery.
+
+For a real model, run the live subset with a configured provider:
+
+```bash
+cloud-harness eval suite --live --provider openai --out live-report.json
+cloud-harness eval suite --live --provider openai --compare live-baseline.json
+```
+
+`--live` rejects the mock provider and uses the `live_tasks` list in [docs/eval/tasks.json](docs/eval/tasks.json); see [docs/eval/live-suite.md](docs/eval/live-suite.md).
 
 ## Repository symbol map
 
@@ -152,6 +161,15 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 export OPENAI_MODEL=gpt-4.1-mini
 ./cloud-harness run --provider openai --message "Say hello in one sentence."
 ./cloud-harness eval run --task batch-three-reads --provider openai
+```
+
+## Release artifacts
+
+Release builds produce Go binaries for Linux, macOS, and Windows plus a container image. The `release` workflow runs on `v*` tags; see [docs/release.md](docs/release.md) for local builds and `ghcr.io/brianogg/cloud-harness`.
+
+```bash
+go build -o cloud-harness ./cmd/cloud-harness
+docker build -t cloud-harness .
 ```
 
 ## Trace and events
@@ -238,6 +256,10 @@ The Go jobs read the Go version from `go.mod`; the web job reads the Node.js ver
 
 Cross-compiled targets are built, not vetted or tested: `GOOS=windows go vet ./...` fails because `internal/tools/stdio_mcp_test.go` calls `syscall.Kill`.
 
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
 ## Docs
 
 - [docs/cli.md](docs/cli.md) rewind modes, preview, confirmation, and safety snapshots
@@ -250,6 +272,8 @@ Cross-compiled targets are built, not vetted or tested: `GOOS=windows go vet ./.
 - [docs/state-machine.md](docs/state-machine.md) run and invocation transitions
 - [docs/worker-starlark.md](docs/worker-starlark.md) worker isolation
 - [docs/eval/tasks.json](docs/eval/tasks.json) task list
+- [docs/eval/live-suite.md](docs/eval/live-suite.md) real-model eval subset
+- [docs/release.md](docs/release.md) binaries and container image
 - [docs/m5-report.md](docs/m5-report.md) M5 evidence, after that milestone is recorded
 
 Milestone reports `docs/m0-report.md` through `docs/m4-report.md` are the historical records. They are not rewritten when a later milestone lands.

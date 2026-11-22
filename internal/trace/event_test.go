@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 func TestSSEIDsOnlyForPersistentEvents(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 // approveWorkspaceTrust records the user's decision through the CLI.

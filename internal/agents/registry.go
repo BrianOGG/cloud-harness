@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 )
 
 // Definition is a role definition, not an authorization to execute its tools.

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 func TestSummarizeOracleEvents(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 // Spec describes one local tool. Execute is stored by the registry and is not

@@ -1,6 +1,6 @@
 # Eval baseline
 
-`cloud-harness eval suite` runs the scripted tasks and prints the metrics those runs actually produce. Tasks that need a live model stay on `eval run --provider openai` and are not part of the suite.
+`cloud-harness eval suite` runs the scripted tasks and prints the metrics those runs actually produce. `cloud-harness eval suite --live --provider openai` runs the real-model subset in [live-suite.md](live-suite.md); harness-mechanics probes stay scripted.
 
 Metrics to collect on every case, once a live model exists:
 

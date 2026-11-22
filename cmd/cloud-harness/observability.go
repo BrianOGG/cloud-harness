@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/hooks"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 )
 
 const observabilityFailureLimit = 12

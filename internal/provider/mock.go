@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 // Mock is a scripted provider. With no scripted response it returns a text answer.

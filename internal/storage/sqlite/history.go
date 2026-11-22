@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/history"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/history"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 func (db *DB) IndexHistory(ctx context.Context, doc storage.HistoryDoc) error {

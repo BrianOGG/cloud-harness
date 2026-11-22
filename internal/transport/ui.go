@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/web"
+	"github.com/BrianOGG/cloud-harness/web"
 )
 
 var hashedUIAsset = regexp.MustCompile(`^assets/.+-[A-Za-z0-9_-]{8}\.[^./]+$`)

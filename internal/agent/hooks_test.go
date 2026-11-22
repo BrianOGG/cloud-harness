@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/hooks"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 )
 
 func putAgentHooks(t *testing.T, workspace string, actions map[hooks.Point][]hooks.Action, goCheck bool) {

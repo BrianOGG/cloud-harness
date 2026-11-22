@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 func putFile(t *testing.T, path, body string) {

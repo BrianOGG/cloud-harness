@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/config"
 )
 
 // SuiteTasks are the 13 evaluation tasks in docs/eval/tasks.json.
@@ -37,6 +37,8 @@ type SuiteReport struct {
 	CompletionRate    float64          `json:"completion_rate"`
 	Correctness       float64          `json:"correctness"`
 	WallMS            int64            `json:"wall_ms"`
+	ModelCalls        int              `json:"model_calls"`
+	ToolCalls         int              `json:"tool_calls"`
 	RepeatedToolCalls int              `json:"repeated_tool_calls"`
 	RecoveryPass      bool             `json:"recovery_pass"`
 	InputTokens       int              `json:"input_tokens"`
@@ -202,9 +204,13 @@ func CompareSuiteReports(baseline, current SuiteReport) SuiteComparison {
 
 // Suite runs the scripted tasks and returns only metrics the runs produced.
 func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteReport, error) {
+	return suite(ctx, cfg, workspace, SuiteTasks)
+}
+
+func suite(ctx context.Context, cfg config.Config, workspace string, tasks []string) (SuiteReport, error) {
 	report := SuiteReport{TaskPass: map[string]bool{}}
 	var planner any
-	for _, task := range SuiteTasks {
+	for _, task := range tasks {
 		start := time.Now()
 		taskWS := ""
 		if workspace != "" {
@@ -220,6 +226,11 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 			continue
 		}
 		report.TaskPass[task] = result.Pass
+		report.ModelCalls += result.ModelCalls
+		report.ToolCalls += len(result.ToolCalls)
+		report.InputTokens += result.Usage.InputTokens
+		report.OutputTokens += result.Usage.OutputTokens
+		report.CachedTokens += result.Usage.CachedInputTokens
 		if result.Pass {
 			report.Passed++
 		} else {
