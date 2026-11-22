@@ -334,6 +334,66 @@ func TestMCPToolRunsThroughApprovalEndToEnd(t *testing.T) {
 	}
 }
 
+func TestMCPApprovalSurvivesResumeWhileServerIsDown(t *testing.T) {
+	env := newMCPTestEnv(t, echoScript, oneEchoServer(false))
+	status, wait, runID, _ := env.run("echo hello through mcp")
+	if status != domain.RunWaiting || wait != domain.WaitApproval {
+		t.Fatalf("mcp call must wait for approval, got %s/%s", status, wait)
+	}
+	configPath := filepath.Join(env.policyDir, "config.json")
+	good, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := json.Marshal(map[string]any{"provider": "openai", "servers": []config.MCPServerConfig{
+		{Name: "files", Command: filepath.Join(t.TempDir(), "missing-mcp-binary")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, down, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resume := func() (int, string) {
+		var out, errBuf bytes.Buffer
+		code := Main(append([]string{"runs", "resume", "--decision", "approve"}, append(env.common(), runID)...), &out, &errBuf)
+		return code, errBuf.String()
+	}
+	code, stderr := resume()
+	if code == 0 || !strings.Contains(stderr, "mcp.files.echo is not available") {
+		t.Fatalf("approving while the server is down must fail clearly: code=%d stderr=%q", code, stderr)
+	}
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, env.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.GetRun(ctx, runID)
+	db.Close()
+	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
+		t.Fatalf("run must keep waiting for approval while the server is down: %+v %v", run, err)
+	}
+
+	if err := os.WriteFile(configPath, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stderr := resume(); code != 0 {
+		t.Fatalf("approval after the server came back: code=%d stderr=%q", code, stderr)
+	}
+	if calls := env.calls(); len(calls) != 1 || calls[0] != "echo hello" {
+		t.Fatalf("approved mcp call did not execute exactly once: %v", calls)
+	}
+	db, err = sqlite.Open(ctx, env.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	run, err = db.GetRun(ctx, runID)
+	if err != nil || run.Status != domain.RunCompleted || run.FinalAnswer != "model saw tool result" {
+		t.Fatalf("run after approval: %+v %v", run, err)
+	}
+}
+
 func TestMCPToolFollowsPolicyFile(t *testing.T) {
 	for _, tc := range []struct {
 		effect     string
