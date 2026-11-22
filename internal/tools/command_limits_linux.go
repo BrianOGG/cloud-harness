@@ -200,6 +200,11 @@ func commandSandboxSpecFor(root string) (commandSandboxSpec, error) {
 	spec := commandSandboxSpec{Enabled: true}
 	preserve := ""
 	if control, ok := worktreeControlDir(abs); ok {
+		resolvedControl, _ := resolveSandboxMask(control)
+		resolvedPreserve, _ := resolveSandboxMask(abs)
+		if !pathWithin(resolvedPreserve, resolvedControl) {
+			return commandSandboxSpec{}, errors.New("command sandbox cannot preserve a worktree outside its control directory")
+		}
 		spec.Paths = append(spec.Paths, commandSandboxPath{Path: control})
 		preserve = abs
 	}

@@ -533,7 +533,7 @@ func TestRunCommandMasksOriginalControlInSymlinkedWorktree(t *testing.T) {
 	}
 }
 
-func TestRunCommandMasksControlWhenWorktreesDirIsRelocated(t *testing.T) {
+func TestRunCommandFailsClosedWhenWorktreesDirIsRelocated(t *testing.T) {
 	if !commandSandboxAvailable() {
 		t.Skip("user namespaces unavailable")
 	}
@@ -543,8 +543,7 @@ func TestRunCommandMasksControlWhenWorktreesDirIsRelocated(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	worktree := filepath.Join(outside, "run1")
-	if err := os.MkdirAll(worktree, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(outside, "run1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
@@ -553,26 +552,11 @@ func TestRunCommandMasksControlWhenWorktreesDirIsRelocated(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(control, "worktrees")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(worktree, "note.txt"), []byte("note"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	root := filepath.Join(control, "worktrees", "run1")
-	dbPath := filepath.Join(control, "harness.db")
-	limitHelpers(t, map[string]string{"probe-relocated-worktree": "set +e\ncat note.txt\ncat " + dbPath + "\n"})
 
-	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-relocated-worktree")
-	combined := out.Stdout + out.Stderr
-	if !strings.Contains(combined, "note") {
-		t.Fatalf("command could not read the relocated worktree:\n%s", combined)
-	}
-	if strings.Contains(combined, "DB_SECRET") {
-		t.Fatalf("command read the original control database through a relocated worktrees dir:\n%s", combined)
-	}
-	if body, err := os.ReadFile(dbPath); err != nil || string(body) != "DB_SECRET" {
-		t.Fatalf("original control database changed: %q %v", body, err)
-	}
-	if _, err := os.Stat(filepath.Join(worktree, ".cloud-harness")); !os.IsNotExist(err) {
-		t.Fatalf("relocated worktree control mask leaked: %v", err)
+	guard := guardCommand(exec.CommandContext(context.Background(), "pwd"), CommandLimits{}, root, false)
+	if guard.failErr == nil {
+		t.Fatal("expected run_command to fail closed when the worktree resolves outside its control directory")
 	}
 }
 
