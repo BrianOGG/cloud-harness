@@ -249,6 +249,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | --- | --- | --- |
 | `id` | string | Run ID. |
 | `session_id` | string | Owning session ID. |
+| `parent_id` | string, optional | ID of the run that delegated this child run. Absent for a run started by a message. |
 | `status` | string | Current run status. |
 | `wait_reason` | string, optional | Reason the run is waiting. |
 | `wait_kind` | string, optional | Wait kind, matching `wait_reason` when present. |

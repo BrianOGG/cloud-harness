@@ -628,6 +628,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 type view struct {
 	ID                string                   `json:"id"`
 	SessionID         string                   `json:"session_id"`
+	ParentID          string                   `json:"parent_id,omitempty"`
 	Status            domain.RunStatus         `json:"status"`
 	WaitReason        domain.WaitReason        `json:"wait_reason,omitempty"`
 	WaitKind          domain.WaitReason        `json:"wait_kind,omitempty"`
@@ -641,7 +642,7 @@ type view struct {
 
 func (s *Server) runView(ctx context.Context, run storage.Run) view {
 	v := view{
-		ID: run.ID, SessionID: run.SessionID, Status: run.Status, WaitReason: run.WaitReason,
+		ID: run.ID, SessionID: run.SessionID, ParentID: run.ParentRunID, Status: run.Status, WaitReason: run.WaitReason,
 		WaitKind: run.WaitReason, Budget: run.Budget, FinalAnswer: run.FinalAnswer,
 		Error: run.Error, Version: run.Version,
 	}
