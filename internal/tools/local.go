@@ -948,7 +948,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces, harness control files are masked from the command. Dangerous commands require approval and are not started.",
+		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces, harness control files are masked from the command; approved dangerous commands are not started when that sandbox is unavailable. Dangerous commands require approval.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,
@@ -1005,7 +1005,7 @@ func runCommandSpec(b *Broker, abs string) Spec {
 			stderr.limit = maxFileBytes
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
-			guard := guardCommand(cmd, b.CommandLimits(), abs)
+			guard := guardCommand(cmd, b.CommandLimits(), abs, dangerous)
 			err = guard.Run()
 			exitCode := 0
 			if err != nil {

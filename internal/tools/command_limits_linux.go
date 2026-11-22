@@ -302,7 +302,12 @@ var commandSandboxProbe = struct {
 
 func commandSandboxAvailable() bool {
 	commandSandboxProbe.Do(func() {
-		cmd := exec.Command("/bin/true")
+		sandboxJSON, err := json.Marshal(commandSandboxSpec{Enabled: true})
+		if err != nil {
+			return
+		}
+		cmd := exec.Command(limitExecSelf)
+		cmd.Args = []string{limitExecArg0, encodeRlimits(nil), string(sandboxJSON), "/bin/true", "/bin/true"}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 			UidMappings: []syscall.SysProcIDMap{
@@ -327,17 +332,22 @@ type commandGuard struct {
 	target  string
 	applied map[string]uint64
 	planErr error
+	failErr error
 	statusR *os.File
 	statusW *os.File
 	sandbox commandSandboxSpec
 	created []string
 }
 
-func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string) *commandGuard {
+func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string, requireSandbox bool) *commandGuard {
 	g := &commandGuard{cmd: cmd, target: cmd.Path, applied: map[string]uint64{}}
 	applySysProc(cmd)
 	cmd.Cancel = func() error { return killGroup(cmd) }
 	if cmd.Err != nil {
+		return g
+	}
+	if requireSandbox && !commandSandboxAvailable() {
+		g.failErr = errors.New("command sandbox unavailable on this kernel; dangerous command was not started")
 		return g
 	}
 	if commandSandboxAvailable() {
@@ -388,6 +398,9 @@ func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string) *comman
 // could not be established is not started.
 func (g *commandGuard) Run() error {
 	defer g.cleanupSandbox()
+	if g.failErr != nil {
+		return g.failErr
+	}
 	if g.planErr != nil {
 		return limitsNotApplied(g.planErr.Error())
 	}

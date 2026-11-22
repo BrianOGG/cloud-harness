@@ -10,7 +10,7 @@ import (
 func TestGuardCommandIsNoOpOffLinux(t *testing.T) {
 	cmd := exec.Command("go", "version")
 	path, args := cmd.Path, append([]string(nil), cmd.Args...)
-	guard := guardCommand(cmd, CommandLimits{CPUSeconds: u64(1)}, t.TempDir())
+	guard := guardCommand(cmd, CommandLimits{CPUSeconds: u64(1)}, t.TempDir(), false)
 	if cmd.Path != path || len(cmd.Args) != len(args) || cmd.SysProcAttr != nil || cmd.Cancel != nil || len(cmd.ExtraFiles) != 0 {
 		t.Fatalf("command was changed: %+v", cmd)
 	}

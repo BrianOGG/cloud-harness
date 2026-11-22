@@ -188,7 +188,9 @@ What the limits do and do not cover:
   masked by empty tmpfs mounts, even when `disabled` is true; a timeout or
   cancellation kills the whole process group.
 - macOS and Windows run commands without these limits or the control-directory
-  mask.
+  mask. On a restricted Linux kernel where the mask cannot be applied, safe
+  commands keep the rlimits-only path while approved dangerous commands are not
+  started.
 
 How a limit shows up in the `run_command` result is described in
 [tools.md](tools.md).
