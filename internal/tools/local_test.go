@@ -978,6 +978,48 @@ func TestRunCommandCwdEscapeDenied(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsControlPathArguments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"ls .cloud-harness", "wc .cloud-harness/harness.db"} {
+		if _, _, err := parseCommand(root, command); err == nil {
+			t.Fatalf("%s was allowed", command)
+		}
+	}
+	if _, dangerous, err := parseCommand(root, "ls ."); err != nil || dangerous {
+		t.Fatalf("ordinary safe command changed: dangerous=%v err=%v", dangerous, err)
+	}
+}
+
+func TestRunCommandRejectsControlWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBroker(&memCharge{b: domain.Budget{MaxToolCalls: 1}}, &memGrants{})
+	specs, err := LocalSpecs(b, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec Spec
+	for _, s := range specs {
+		if s.Name == "run_command" {
+			spec = s
+			break
+		}
+	}
+	if spec.Execute == nil {
+		t.Fatal("run_command spec missing")
+	}
+	for _, cwd := range []string{".cloud-harness", ".cloud-harness/sub"} {
+		if _, err := spec.Execute(context.Background(), json.RawMessage(`{"command":"ls","cwd":"`+cwd+`"}`)); err == nil {
+			t.Fatalf("cwd %s was allowed", cwd)
+		}
+	}
+}
+
 func TestRunCommandReportsExitCode(t *testing.T) {
 	root := t.TempDir()
 	binDir := t.TempDir()

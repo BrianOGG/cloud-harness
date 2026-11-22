@@ -182,9 +182,18 @@ What the limits do and do not cover:
   systemd, a container): the lower value wins.
 - Core dumps are turned off (`RLIMIT_CORE` 0) whenever limits are enabled.
 - The 120 second timeout, the environment allowlist, and the 1 MiB output cap
-  apply as before. On Linux the command runs in its own process group, and a
-  timeout or cancellation kills the whole group.
-- macOS and Windows run commands without these limits.
+  apply as before. On Linux, when unprivileged user namespaces are available,
+  the command runs in its own process group and in a private user and mount
+  namespace where `.cloud-harness` and the harness configuration directory are
+  masked by empty tmpfs mounts, even when `disabled` is true; a timeout or
+  cancellation kills the whole process group.
+- macOS and Windows run commands without these limits or the control-directory
+  mask. For `--worktree` runs on Linux, the original workspace `.cloud-harness`
+  is masked while the run worktree is preserved. If the configuration directory
+  contains the workspace, `run_command` fails closed because the mask would hide
+  the workspace. On a restricted Linux kernel where the mask cannot be applied,
+  safe commands keep the rlimits-only path while approved dangerous commands are
+  not started.
 
 How a limit shows up in the `run_command` result is described in
 [tools.md](tools.md).

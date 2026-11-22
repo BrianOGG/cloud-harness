@@ -10,9 +10,11 @@ type commandGuard struct {
 	cmd *exec.Cmd
 }
 
-func guardCommand(cmd *exec.Cmd, _ CommandLimits) *commandGuard {
+func guardCommand(cmd *exec.Cmd, _ CommandLimits, _ string, _ bool) *commandGuard {
 	return &commandGuard{cmd: cmd}
 }
+
+func warmCommandSandbox() {}
 
 func (g *commandGuard) Run() error { return g.cmd.Run() }
 

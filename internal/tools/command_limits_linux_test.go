@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -387,9 +388,208 @@ func TestRlimitEncoding(t *testing.T) {
 	if plan, err := planRlimits(CommandLimits{Disabled: true}); err != nil || len(plan) != 0 {
 		t.Fatalf("disabled plan = %v %v, want empty", plan, err)
 	}
-	for _, bad := range []string{"", "cpu", "cpu=1", "cpu=1:x", "bogus=1:1", "cpu=-1:1"} {
+	for _, bad := range []string{"cpu", "cpu=1", "cpu=1:x", "bogus=1:1", "cpu=-1:1"} {
 		if _, err := decodeRlimits(bad); err == nil {
 			t.Fatalf("decodeRlimits(%q) succeeded", bad)
 		}
+	}
+}
+
+func TestRunCommandMasksControlDirectory(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"probe-control": "set +e\nls .cloud-harness\ncat .cloud-harness/secret\nprintf x > .cloud-harness/new\n"})
+	root := t.TempDir()
+	control := filepath.Join(root, ".cloud-harness")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "secret"), []byte("CONTROL_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-control")
+	combined := out.Stdout + out.Stderr
+	if strings.Contains(combined, "CONTROL_SECRET") {
+		t.Fatalf("command read control file:\n%s", combined)
+	}
+	if strings.Contains(out.Stdout, "secret") {
+		t.Fatalf("control directory was not masked:\n%s", out.Stdout)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "secret")); err != nil || string(body) != "CONTROL_SECRET" {
+		t.Fatalf("control file changed: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(control, "new")); !os.IsNotExist(err) {
+		t.Fatalf("command wrote through the control mask: %v", err)
+	}
+}
+
+func TestRunCommandMasksTrustStore(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	configDir := t.TempDir()
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(configDir, "settings.json"))
+	trustPath := filepath.Join(configDir, "trust.json")
+	if err := os.WriteFile(trustPath, []byte("TRUST_SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limitHelpers(t, map[string]string{"probe-trust": "cat " + trustPath + "\nprintf x > " + trustPath + "\n"})
+	root := t.TempDir()
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-trust")
+	combined := out.Stdout + out.Stderr
+	if strings.Contains(combined, "TRUST_SECRET") {
+		t.Fatalf("command read trust store:\n%s", combined)
+	}
+	if body, err := os.ReadFile(trustPath); err != nil || string(body) != "TRUST_SECRET" {
+		t.Fatalf("trust store changed: %q %v", body, err)
+	}
+}
+
+func TestRunCommandMasksMissingControlDirectory(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"make-control": "printf x > .cloud-harness/pwn\n"})
+	root := t.TempDir()
+
+	if _, out := runLimited(t, context.Background(), root, CommandLimits{}, "make-control"); strings.Contains(out.Stdout+out.Stderr, "CONTROL_SECRET") {
+		t.Fatalf("command saw control contents:\n%s", out.Stdout+out.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cloud-harness")); !os.IsNotExist(err) {
+		t.Fatalf("temporary control mask was not cleaned up: %v", err)
+	}
+}
+
+func TestRunCommandMasksOriginalControlInWorktree(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"probe-worktree": "set +e\npwd\ncat ../../harness.db\nprintf x > ../../harness.db\n"})
+	orig := t.TempDir()
+	control := filepath.Join(orig, ".cloud-harness")
+	worktree := filepath.Join(control, "worktrees", "run1")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "note.txt"), []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := runLimited(t, context.Background(), worktree, CommandLimits{}, "probe-worktree")
+	combined := out.Stdout + out.Stderr
+	if got := strings.TrimSpace(strings.SplitN(out.Stdout, "\n", 2)[0]); got != worktree {
+		t.Fatalf("command cwd = %q, want worktree %q", got, worktree)
+	}
+	if strings.Contains(combined, "DB_SECRET") {
+		t.Fatalf("command read the original control database:\n%s", combined)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "harness.db")); err != nil || string(body) != "DB_SECRET" {
+		t.Fatalf("original control database changed: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".cloud-harness")); !os.IsNotExist(err) {
+		t.Fatalf("worktree control mask leaked: %v", err)
+	}
+}
+
+func TestRunCommandMasksOriginalControlInSymlinkedWorktree(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"probe-symlink-worktree": "set +e\ncat note.txt\ncat ../../harness.db\n"})
+	real := t.TempDir()
+	control := filepath.Join(real, ".cloud-harness")
+	worktree := filepath.Join(control, "worktrees", "run1")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "note.txt"), []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(link, ".cloud-harness", "worktrees", "run1")
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-symlink-worktree")
+	combined := out.Stdout + out.Stderr
+	if !strings.Contains(combined, "note") {
+		t.Fatalf("command could not read the preserved worktree:\n%s", combined)
+	}
+	if strings.Contains(combined, "DB_SECRET") {
+		t.Fatalf("command read the original control database through a symlinked workspace:\n%s", combined)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "harness.db")); err != nil || string(body) != "DB_SECRET" {
+		t.Fatalf("original control database changed: %q %v", body, err)
+	}
+}
+
+func TestRunCommandFailsClosedWhenWorktreesDirIsRelocated(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	real := t.TempDir()
+	control := filepath.Join(real, ".cloud-harness")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "run1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(control, "worktrees")); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(control, "worktrees", "run1")
+
+	guard := guardCommand(exec.CommandContext(context.Background(), "pwd"), CommandLimits{}, root, false)
+	if guard.failErr == nil {
+		t.Fatal("expected run_command to fail closed when the worktree resolves outside its control directory")
+	}
+}
+
+func TestCommandSandboxFailsClosedWhenConfigAliasContainsWorkspace(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(base, "shared")
+	if err := os.Symlink(real, shared); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(shared, "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(shared, "settings.json"))
+
+	if _, err := commandSandboxSpecFor(workspace); err == nil {
+		t.Fatal("expected run_command to fail closed when a symlinked configuration directory contains the workspace")
+	}
+}
+
+func TestRunCommandFailsClosedWhenConfigContainsWorkspace(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	root := t.TempDir()
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(root, "settings.json"))
+
+	guard := guardCommand(exec.CommandContext(context.Background(), "pwd"), CommandLimits{}, root, false)
+	if guard.failErr == nil {
+		t.Fatal("expected run_command to fail closed when the configuration directory contains the workspace")
 	}
 }

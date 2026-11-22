@@ -3,17 +3,21 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/BrianOGG/cloud-harness/internal/security"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,8 +26,9 @@ const (
 	// set rlimits on itself and then exec the real command. Setting them in
 	// the child, before the command exists, leaves no window in which the
 	// command runs unlimited.
-	limitExecArg0 = "cloud-harness-exec-limits"
-	limitExecSelf = "/proc/self/exe"
+	limitExecArg0    = "cloud-harness-exec-limits"
+	sandboxProbeArg0 = "cloud-harness-sandbox-probe"
+	limitExecSelf    = "/proc/self/exe"
 	// limitStatusFD is the close-on-exec pipe the trampoline reports failures
 	// on. The parent reads EOF without data once the command has started.
 	limitStatusFD = 3
@@ -57,22 +62,35 @@ func init() {
 	if len(os.Args) > 0 && os.Args[0] == limitExecArg0 {
 		execLimited(os.Args[1:])
 	}
+	if len(os.Args) > 0 && os.Args[0] == sandboxProbeArg0 {
+		os.Exit(probeCommandSandbox())
+	}
 }
 
-// execLimited is the trampoline body: args are the encoded limits, the target
-// path, and the target argv. It never returns.
+// execLimited is the trampoline body: args are the encoded limits, the
+// encoded command sandbox, the target path, and the target argv. It never
+// returns.
 func execLimited(args []string) {
 	fail := func(kind, detail string) {
 		_, _ = syscall.Write(limitStatusFD, []byte(kind+"\n"+detail))
 		os.Exit(126)
 	}
 	syscall.CloseOnExec(limitStatusFD)
-	if len(args) < 3 {
-		fail("limits", "malformed trampoline arguments")
+	if len(args) < 4 {
+		fail("sandbox", "malformed trampoline arguments")
 	}
 	limits, err := decodeRlimits(args[0])
 	if err != nil {
 		fail("limits", err.Error())
+	}
+	var sandbox commandSandboxSpec
+	if err := json.Unmarshal([]byte(args[1]), &sandbox); err != nil {
+		fail("sandbox", "decode sandbox: "+err.Error())
+	}
+	if sandbox.Enabled {
+		if err := applyCommandSandbox(sandbox); err != nil {
+			fail("sandbox", err.Error())
+		}
 	}
 	env := os.Environ()
 	for _, lim := range limits {
@@ -80,7 +98,12 @@ func execLimited(args []string) {
 			fail("limits", "setrlimit "+lim.name+": "+err.Error())
 		}
 	}
-	err = syscall.Exec(args[1], args[2:], env)
+	if sandbox.Enabled {
+		if err := dropCommandPrivileges(); err != nil {
+			fail("sandbox", err.Error())
+		}
+	}
+	err = syscall.Exec(args[2], args[3:], env)
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		fail("exec", strconv.Itoa(int(errno)))
@@ -97,6 +120,9 @@ func encodeRlimits(limits []rlimit) string {
 }
 
 func decodeRlimits(spec string) ([]rlimit, error) {
+	if spec == "" {
+		return nil, nil
+	}
 	var out []rlimit
 	for _, part := range strings.Split(spec, ",") {
 		name, value, ok := strings.Cut(part, "=")
@@ -150,30 +176,368 @@ func planRlimits(limits CommandLimits) ([]rlimit, error) {
 	return plan, nil
 }
 
+type commandSandboxPath struct {
+	Path   string `json:"path"`
+	Create bool   `json:"create,omitempty"`
+}
+
+type commandSandboxSpec struct {
+	Enabled  bool                 `json:"enabled"`
+	Paths    []commandSandboxPath `json:"paths,omitempty"`
+	Preserve string               `json:"preserve,omitempty"`
+}
+
+// commandSandboxSpecFor returns the mount-namespace mask for a command rooted
+// at root. Run worktrees live inside the original workspace's control directory,
+// so that directory is masked while the worktree itself is preserved. A
+// configuration directory that contains the workspace cannot be masked without
+// hiding the workspace, so commands fail closed there instead.
+func commandSandboxSpecFor(root string) (commandSandboxSpec, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return commandSandboxSpec{}, err
+	}
+	spec := commandSandboxSpec{Enabled: true}
+	preserve := ""
+	if control, ok := worktreeControlDir(abs); ok {
+		resolvedControl, _ := resolveSandboxMask(control)
+		resolvedPreserve, _ := resolveSandboxMask(abs)
+		if !pathWithin(resolvedPreserve, resolvedControl) {
+			return commandSandboxSpec{}, errors.New("command sandbox cannot preserve a worktree outside its control directory")
+		}
+		spec.Paths = append(spec.Paths, commandSandboxPath{Path: control})
+		preserve = abs
+	}
+	workspaceControl := controlSandboxPath(filepath.Join(abs, security.ControlDir))
+	if preserve != "" {
+		// Creating .cloud-harness inside a retained worktree would write into
+		// the original control directory on the host.
+		workspaceControl.Create = false
+	}
+	spec.Paths = append(spec.Paths, workspaceControl)
+	config, ok, contains := commandConfigPath(abs)
+	if contains {
+		return commandSandboxSpec{}, errors.New("command sandbox cannot mask a configuration directory that contains the workspace")
+	}
+	if ok {
+		spec.Paths = append(spec.Paths, controlSandboxPath(config))
+	}
+	spec.Preserve = preserve
+	return spec, nil
+}
+
+// worktreeControlDir reports the original control directory when root is a
+// retained run worktree at <workspace>/.cloud-harness/worktrees/<run>.
+func worktreeControlDir(root string) (string, bool) {
+	parent := filepath.Dir(root)
+	if filepath.Base(parent) != "worktrees" {
+		return "", false
+	}
+	control := filepath.Dir(parent)
+	if filepath.Base(control) != security.ControlDir {
+		return "", false
+	}
+	return control, true
+}
+
+func controlSandboxPath(path string) commandSandboxPath {
+	_, err := os.Lstat(path)
+	return commandSandboxPath{Path: path, Create: os.IsNotExist(err)}
+}
+
+func commandConfigPath(root string) (string, bool, bool) {
+	dir, err := security.ConfigDirectory()
+	if err != nil {
+		return "", false, false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", false, false
+	}
+	absRoot = filepath.Clean(absRoot)
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolved
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false, false
+	}
+	absDir = filepath.Clean(absDir)
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+		absDir = resolved
+	}
+	rel, err := filepath.Rel(absDir, absRoot)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false, true
+	}
+	return absDir, true, false
+}
+
+func pathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func applyCommandSandbox(spec commandSandboxSpec) error {
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make mounts private: %w", err)
+	}
+	preserve := filepath.Clean(spec.Preserve)
+	preserved := ""
+	preservedResolved := ""
+	if preserve != "" {
+		resolvedPreserve, _ := resolveSandboxMask(preserve)
+		for _, entry := range spec.Paths {
+			maskPath := filepath.Clean(entry.Path)
+			if !pathWithin(preserve, maskPath) {
+				continue
+			}
+			resolvedMask, _ := resolveSandboxMask(maskPath)
+			if resolvedMask == resolvedPreserve {
+				return errors.New("refusing to mask the command workspace")
+			}
+			if preserved != "" && preserved != maskPath {
+				return errors.New("multiple control masks contain the command workspace")
+			}
+			preserved = maskPath
+			preservedResolved = resolvedMask
+		}
+		if preserved != "" {
+			if err := maskPreservedControl(preservedResolved, preserve); err != nil {
+				return err
+			}
+		}
+	}
+	seen := map[string]bool{}
+	if preservedResolved != "" {
+		seen[preservedResolved] = true
+	}
+	for _, entry := range spec.Paths {
+		path := filepath.Clean(entry.Path)
+		if entry.Create {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				// A read-only or permission-denied parent means the command
+				// cannot create the control directory either, so there is
+				// nothing to mask.
+				if errors.Is(err, syscall.EROFS) || os.IsPermission(err) {
+					continue
+				}
+				return fmt.Errorf("create control mask %s: %w", path, err)
+			}
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			resolved = path
+		}
+		resolved = filepath.Clean(resolved)
+		if resolved == string(os.PathSeparator) {
+			return fmt.Errorf("refusing to mask filesystem root")
+		}
+		if seen[resolved] {
+			continue
+		}
+		if preservedResolved != "" && resolved != preservedResolved && pathWithin(preservedResolved, resolved) {
+			return errors.New("refusing to mask a directory containing the preserved command workspace")
+		}
+		seen[resolved] = true
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if err := unix.Mount("tmpfs", resolved, "tmpfs", 0, "mode=0755"); err != nil {
+			return fmt.Errorf("mask %s: %w", resolved, err)
+		}
+	}
+	return nil
+}
+
+func resolveSandboxMask(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// maskPreservedControl hides an ancestor control directory while keeping the
+// command workspace reachable: the workspace is bind-mounted aside, the control
+// directory is replaced with an empty tmpfs, and the workspace is bound back at
+// its original path inside that tmpfs.
+func maskPreservedControl(mask, preserve string) error {
+	info, err := os.Stat(mask)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("control mask %s is not a directory", mask)
+	}
+	tmp, err := os.MkdirTemp("", "cloud-harness-preserve-*")
+	if err != nil {
+		return err
+	}
+	cleanup := func() {
+		_ = unix.Unmount(tmp, unix.MNT_DETACH)
+		_ = os.Remove(tmp)
+	}
+	if err := unix.Mount(preserve, tmp, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		cleanup()
+		return fmt.Errorf("preserve command workspace: %w", err)
+	}
+	if err := unix.Mount("tmpfs", mask, "tmpfs", 0, "mode=0755"); err != nil {
+		cleanup()
+		return fmt.Errorf("mask %s: %w", mask, err)
+	}
+	if err := os.MkdirAll(preserve, 0o755); err != nil {
+		cleanup()
+		return fmt.Errorf("restore command workspace: %w", err)
+	}
+	if err := unix.Mount(tmp, preserve, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		cleanup()
+		return fmt.Errorf("restore command workspace: %w", err)
+	}
+	cleanup()
+	return nil
+}
+
+func commandLastCapability() int {
+	raw, err := os.ReadFile("/proc/sys/kernel/cap_last_cap")
+	if err != nil {
+		return int(unix.CAP_LAST_CAP)
+	}
+	last, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || last < 0 {
+		return int(unix.CAP_LAST_CAP)
+	}
+	return last
+}
+
+func dropCommandPrivileges() error {
+	last := commandLastCapability()
+	for cap := 0; cap <= last; cap++ {
+		if cap == unix.CAP_SETPCAP {
+			continue
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(cap), 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d: %w", cap, err)
+		}
+	}
+	if last >= int(unix.CAP_SETPCAP) {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(unix.CAP_SETPCAP), 0, 0, 0); err != nil {
+			return fmt.Errorf("drop capability %d: %w", unix.CAP_SETPCAP, err)
+		}
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("set no_new_privs: %w", err)
+	}
+	return nil
+}
+
+var commandSandboxProbe = struct {
+	sync.Once
+	ok bool
+}{}
+
+func commandUsernsAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
+		},
+		GidMappingsEnableSetgroups: false,
+	}
+}
+
+func commandSandboxAvailable() bool {
+	commandSandboxProbe.Do(func() {
+		cmd := exec.Command(limitExecSelf)
+		cmd.Args = []string{sandboxProbeArg0}
+		cmd.SysProcAttr = commandUsernsAttr()
+		commandSandboxProbe.ok = cmd.Run() == nil
+	})
+	return commandSandboxProbe.ok
+}
+
+// warmCommandSandbox resolves the sandbox probe during tool registration so a
+// later approved command does not pay for it inside a request deadline.
+func warmCommandSandbox() {
+	_ = commandSandboxAvailable()
+}
+
+// probeCommandSandbox runs the same namespace, mount, and privilege-drop setup
+// as a sandboxed command without exec-ing an external binary, so availability
+// does not depend on /bin/true being installed.
+func probeCommandSandbox() int {
+	if err := applyCommandSandbox(commandSandboxSpec{Enabled: true}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := dropCommandPrivileges(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
 // commandGuard runs one run_command process in its own process group, under
-// resource limits when they are enabled.
+// resource limits when they are enabled. When user namespaces are available it
+// also masks harness control files; restricted kernels keep the rlimits-only
+// behavior instead of failing every command.
 type commandGuard struct {
 	cmd     *exec.Cmd
 	target  string
 	applied map[string]uint64
 	planErr error
+	failErr error
 	statusR *os.File
 	statusW *os.File
+	sandbox commandSandboxSpec
+	created []string
 }
 
-func guardCommand(cmd *exec.Cmd, limits CommandLimits) *commandGuard {
+func guardCommand(cmd *exec.Cmd, limits CommandLimits, workspace string, requireSandbox bool) *commandGuard {
 	g := &commandGuard{cmd: cmd, target: cmd.Path, applied: map[string]uint64{}}
 	applySysProc(cmd)
 	cmd.Cancel = func() error { return killGroup(cmd) }
 	if cmd.Err != nil {
 		return g
 	}
+	if requireSandbox && !commandSandboxAvailable() {
+		g.failErr = errors.New("command sandbox unavailable on this kernel; dangerous command was not started")
+		return g
+	}
+	if commandSandboxAvailable() {
+		spec, err := commandSandboxSpecFor(workspace)
+		if err != nil {
+			g.failErr = err
+			return g
+		}
+		g.sandbox = spec
+		for _, entry := range spec.Paths {
+			if entry.Create {
+				g.created = append(g.created, entry.Path)
+			}
+		}
+		attr := cmd.SysProcAttr
+		if attr == nil {
+			attr = &syscall.SysProcAttr{}
+			cmd.SysProcAttr = attr
+		}
+		attr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
+		attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+		attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+		attr.GidMappingsEnableSetgroups = false
+	}
 	plan, err := planRlimits(limits)
 	if err != nil {
 		g.planErr = err
 		return g
 	}
-	if len(plan) == 0 {
+	sandboxJSON, err := json.Marshal(g.sandbox)
+	if err != nil {
+		g.planErr = err
 		return g
 	}
 	if g.statusR, g.statusW, err = os.Pipe(); err != nil {
@@ -185,15 +549,19 @@ func guardCommand(cmd *exec.Cmd, limits CommandLimits) *commandGuard {
 			g.applied[lim.config] = lim.cur
 		}
 	}
-	cmd.Args = append([]string{limitExecArg0, encodeRlimits(plan), cmd.Path}, cmd.Args...)
+	cmd.Args = append([]string{limitExecArg0, encodeRlimits(plan), string(sandboxJSON), cmd.Path}, cmd.Args...)
 	cmd.Path = limitExecSelf
 	cmd.ExtraFiles = []*os.File{g.statusW}
 	return g
 }
 
-// Run starts the command and waits for it. A command whose limits could not
-// be established is not started.
+// Run starts the command and waits for it. A command whose limits or sandbox
+// could not be established is not started.
 func (g *commandGuard) Run() error {
+	defer g.cleanupSandbox()
+	if g.failErr != nil {
+		return g.failErr
+	}
 	if g.planErr != nil {
 		return limitsNotApplied(g.planErr.Error())
 	}
@@ -204,7 +572,7 @@ func (g *commandGuard) Run() error {
 	err := g.cmd.Start()
 	_ = g.statusW.Close()
 	if err != nil {
-		return limitsNotApplied(err.Error())
+		return sandboxNotApplied(err.Error())
 	}
 	status, _ := io.ReadAll(io.LimitReader(g.statusR, 4096))
 	err = g.cmd.Wait()
@@ -215,11 +583,24 @@ func (g *commandGuard) Run() error {
 	if errno, convErr := strconv.Atoi(detail); kind == "exec" && convErr == nil {
 		return &os.PathError{Op: "fork/exec", Path: g.target, Err: syscall.Errno(errno)}
 	}
+	if kind == "sandbox" {
+		return sandboxNotApplied(detail)
+	}
 	return limitsNotApplied(detail)
 }
 
 func limitsNotApplied(detail string) error {
 	return errors.New("resource limits could not be applied, so the command was not started: " + detail)
+}
+
+func sandboxNotApplied(detail string) error {
+	return errors.New("command sandbox could not be applied, so the command was not started: " + detail)
+}
+
+func (g *commandGuard) cleanupSandbox() {
+	for _, path := range g.created {
+		_ = os.Remove(path)
+	}
 }
 
 // limitHit reports which resource limit, if any, explains the failure err.
