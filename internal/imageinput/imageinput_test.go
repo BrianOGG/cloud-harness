@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
 )
 
 func TestParseAndLoadSingleMultipleQuotedAndAbsolutePaths(t *testing.T) {

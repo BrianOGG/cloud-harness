@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/agent"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/security"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
 )
 
 func policyCLIDatabase(t *testing.T) (string, string, *sqlite.DB) {

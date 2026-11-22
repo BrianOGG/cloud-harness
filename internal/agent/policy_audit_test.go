@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/security"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
 )
 
 var auditEpoch = time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)

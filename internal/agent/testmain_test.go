@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/program"
+	"github.com/BrianOGG/cloud-harness/internal/program"
 )
 
 func TestMain(m *testing.M) {

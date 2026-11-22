@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/transport"
+	"github.com/BrianOGG/cloud-harness/internal/transport"
 )
 
 func TestEmbeddedUI(t *testing.T) {

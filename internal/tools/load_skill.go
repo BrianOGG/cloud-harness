@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 const LoadSkillName = "load_skill"

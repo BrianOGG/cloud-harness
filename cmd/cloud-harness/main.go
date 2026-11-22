@@ -17,24 +17,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/agent"
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/eval"
-	"github.com/cloud-harness/cloud-harness/internal/hooks"
-	"github.com/cloud-harness/cloud-harness/internal/imageinput"
-	"github.com/cloud-harness/cloud-harness/internal/notify"
-	"github.com/cloud-harness/cloud-harness/internal/program"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	workspacesnapshot "github.com/cloud-harness/cloud-harness/internal/snapshot"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
-	"github.com/cloud-harness/cloud-harness/internal/trace"
-	"github.com/cloud-harness/cloud-harness/internal/transport"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/eval"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
+	"github.com/BrianOGG/cloud-harness/internal/imageinput"
+	"github.com/BrianOGG/cloud-harness/internal/notify"
+	"github.com/BrianOGG/cloud-harness/internal/program"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	workspacesnapshot "github.com/BrianOGG/cloud-harness/internal/snapshot"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/trace"
+	"github.com/BrianOGG/cloud-harness/internal/transport"
 )
 
-const version = "0.5.0-m5"
+var version = "0.5.0-m5"
 
 // StateNew connections can keep net/http.Shutdown waiting even when every
 // handler has finished. Bound draining so connection and SQLite cleanup still
@@ -123,7 +123,7 @@ const usage = `Cloud Harness M5
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness eval run --task TASK [--provider mock|openai] [--db path] [--workspace dir]
-  cloud-harness eval suite [--db path] [--workspace dir] [--out path] [--compare path]
+  cloud-harness eval suite [--live] [--provider mock|openai] [--db path] [--workspace dir] [--out path] [--compare path]
   cloud-harness runs list [--session ID] [--db path]
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
@@ -273,6 +273,7 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval suite", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
+	live := fs.Bool("live", false, "run the real-model task subset")
 	outPath := fs.String("out", "", "write suite report JSON to file")
 	comparePath := fs.String("compare", "", "compare suite report against baseline JSON file")
 	if err := fs.Parse(args); err != nil {
@@ -283,7 +284,7 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if c.provider == "" {
+	if c.provider == "" && !*live {
 		cfg.Provider = "mock"
 	}
 	if c.db == "" {
@@ -298,9 +299,16 @@ func cmdEvalSuite(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	report, err := eval.Suite(context.Background(), cfg, c.workspace)
+	var report eval.SuiteReport
+	if *live {
+		report, err = eval.LiveSuite(context.Background(), cfg, c.workspace)
+	} else {
+		report, err = eval.Suite(context.Background(), cfg, c.workspace)
+	}
 	if err != nil {
-		_ = writeJSON(stdout, report)
+		if report.Tasks > 0 {
+			_ = writeJSON(stdout, report)
+		}
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -905,7 +913,7 @@ def main():
 
 func cmdEval(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || (args[0] != "run" && args[0] != "suite") {
-		fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite")
+		fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite [--live]")
 		return 2
 	}
 	if args[0] == "suite" {

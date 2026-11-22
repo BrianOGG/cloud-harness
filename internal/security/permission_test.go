@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 func grant(tool, scope string, until time.Time) domain.Grant {

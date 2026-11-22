@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/program"
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/program"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 type Point string
