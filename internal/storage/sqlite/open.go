@@ -30,24 +30,24 @@ type DB struct {
 	now func() time.Time
 
 	hookMu     sync.RWMutex
-	eventHooks []func(runID string)
+	eventHooks []func(runID string, seq int64)
 }
 
 // OnEvent registers fn to be called after each commit that appends a
-// persistent event, with the event's run id. Hooks cannot be removed. Writes
-// made by other processes do not reach them.
-func (db *DB) OnEvent(fn func(runID string)) {
+// persistent event, with the event's run id and sequence number. Hooks cannot
+// be removed. Writes made by other processes do not reach them.
+func (db *DB) OnEvent(fn func(runID string, seq int64)) {
 	db.hookMu.Lock()
 	defer db.hookMu.Unlock()
 	db.eventHooks = append(db.eventHooks, fn)
 }
 
-func (db *DB) eventCommitted(runID string) {
+func (db *DB) eventCommitted(runID string, seq int64) {
 	db.hookMu.RLock()
 	hooks := db.eventHooks
 	db.hookMu.RUnlock()
 	for _, fn := range hooks {
-		fn(runID)
+		fn(runID, seq)
 	}
 }
 

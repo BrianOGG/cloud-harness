@@ -80,8 +80,10 @@ func (s *Server) stream() *trace.Hub {
 		if s.Manager.Stream == nil {
 			s.Manager.Stream = s.hub
 		}
-		if store, ok := s.Manager.Store.(interface{ OnEvent(func(runID string)) }); ok {
-			store.OnEvent(s.hub.Notify)
+		if store, ok := s.Manager.Store.(interface {
+			OnEvent(func(runID string, seq int64))
+		}); ok {
+			store.OnEvent(s.hub.Committed)
 		}
 	})
 	return s.hub
@@ -424,6 +426,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	live := &liveStream{store: s.Manager.Store, w: w, sub: sub, runID: id, after: after}
 	hbTicker := time.NewTicker(s.heartbeatInterval())
 	defer hbTicker.Stop()
 	pollTicker := time.NewTicker(s.pollInterval())
@@ -439,26 +442,23 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 			flushSSE(w)
 		case <-sub.Wake():
-			for _, item := range sub.Take() {
-				switch item.Kind {
-				case trace.ItemPersisted:
-					if s.drainLiveEvents(r.Context(), w, id, &after) {
-						return
-					}
-				case trace.ItemDelta:
-					payload, _ := json.Marshal(map[string]string{"text": item.Text})
-					if err := trace.WriteSSE(w, storage.Event{Type: "stream.delta", Payload: payload}); err != nil {
-						return
-					}
-				case trace.ItemReset:
-					if err := trace.WriteSSE(w, storage.Event{Type: "stream.reset"}); err != nil {
-						return
-					}
-				}
+			committed, unbounded, err := live.writeQueued(r.Context())
+			if err == nil && unbounded {
+				err = live.catchUp(r.Context())
+			}
+			if err != nil {
+				return
 			}
 			flushSSE(w)
+			if committed && live.ended(r.Context()) {
+				return
+			}
 		case <-pollTicker.C:
-			if s.drainLiveEvents(r.Context(), w, id, &after) {
+			if err := live.catchUp(r.Context()); err != nil {
+				return
+			}
+			flushSSE(w)
+			if live.ended(r.Context()) {
 				return
 			}
 		}
@@ -483,41 +483,113 @@ func (s *Server) parseLastEventID(ctx context.Context, runID, header string) (in
 	return 0, domain.E(domain.CodeInvalidArgument, "Last-Event-ID must be an integer")
 }
 
-func (s *Server) drainLiveEvents(ctx context.Context, w http.ResponseWriter, runID string, after *int64) bool {
-	evs, err := s.Manager.Store.ListEvents(ctx, runID, *after)
+// liveStream is one event-stream response after its replay: where it has
+// got to in the run's stored events, and the hub queue that orders those
+// events among the run's model text.
+type liveStream struct {
+	store storage.Store
+	w     http.ResponseWriter
+	sub   *trace.Subscription
+	runID string
+	after int64
+}
+
+func (l *liveStream) write(ev storage.Event) error {
+	if err := trace.WriteSSE(l.w, ev); err != nil {
+		return err
+	}
+	if ev.Seq > l.after {
+		l.after = ev.Seq
+	}
+	return nil
+}
+
+// writeStored writes the stored events not yet sent, up to sequence number
+// through.
+func (l *liveStream) writeStored(ctx context.Context, through int64) error {
+	evs, err := l.store.ListEvents(ctx, l.runID, l.after)
+	if err != nil {
+		return err
+	}
+	for _, ev := range evs {
+		if ev.Seq > through {
+			break
+		}
+		if err := l.write(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeQueued writes what the hub has queued, in the order it happened. A
+// commit releases the stored events up to its own sequence number and no
+// further: a later event, such as the one that completes a model response,
+// is written only after the text queued ahead of it. committed reports that
+// the queue held a commit, and unbounded that one of them did not say how far
+// the store has got, so the caller should catch up.
+func (l *liveStream) writeQueued(ctx context.Context) (committed, unbounded bool, err error) {
+	for _, item := range l.sub.Take() {
+		switch item.Kind {
+		case trace.ItemPersisted:
+			committed = true
+			if item.Seq == 0 {
+				unbounded = true
+			} else if item.Seq > l.after {
+				err = l.writeStored(ctx, item.Seq)
+			}
+		case trace.ItemDelta:
+			payload, _ := json.Marshal(map[string]string{"text": item.Text})
+			err = trace.WriteSSE(l.w, storage.Event{Type: "stream.delta", Payload: payload})
+		case trace.ItemReset:
+			err = trace.WriteSSE(l.w, storage.Event{Type: "stream.reset"})
+		}
+		if err != nil {
+			return committed, unbounded, err
+		}
+	}
+	return committed, unbounded, nil
+}
+
+// catchUp writes every stored event not yet sent, including those written by
+// another process, which the hub never hears of. The store is read before
+// the queue is taken: the text of a response is queued before the event that
+// completes it is committed, so the queue taken afterwards holds all the text
+// that belongs ahead of the events that were read.
+func (l *liveStream) catchUp(ctx context.Context) error {
+	evs, err := l.store.ListEvents(ctx, l.runID, l.after)
+	if err != nil {
+		return err
+	}
+	if _, _, err := l.writeQueued(ctx); err != nil {
+		return err
+	}
+	for _, ev := range evs {
+		if ev.Seq <= l.after {
+			continue
+		}
+		if err := l.write(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ended reports whether the stream is over: the run is terminal, or the
+// stream can no longer be served. For a terminal run it first writes
+// whatever is left.
+func (l *liveStream) ended(ctx context.Context) bool {
+	run, err := l.store.GetRun(ctx, l.runID)
 	if err != nil {
 		return true
 	}
-	if len(evs) > 0 {
-		for _, ev := range evs {
-			if err := trace.WriteSSE(w, ev); err != nil {
-				return true
-			}
-			if ev.Seq > *after {
-				*after = ev.Seq
-			}
-		}
-		flushSSE(w)
+	if !domain.TerminalRun(run.Status) {
+		return false
 	}
-	run, err := s.Manager.Store.GetRun(ctx, runID)
-	if err != nil {
-		return true
+	if err := l.catchUp(ctx); err == nil {
+		flushSSE(l.w)
 	}
-	if domain.TerminalRun(run.Status) {
-		if tail, lerr := s.Manager.Store.ListEvents(ctx, runID, *after); lerr == nil && len(tail) > 0 {
-			for _, ev := range tail {
-				if err := trace.WriteSSE(w, ev); err != nil {
-					return true
-				}
-				if ev.Seq > *after {
-					*after = ev.Seq
-				}
-			}
-			flushSSE(w)
-		}
-		return true
-	}
-	return false
+	return true
 }
 
 // Notify wakes active SSE subscribers for runID so they check the event store.

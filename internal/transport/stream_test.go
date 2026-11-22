@@ -80,6 +80,7 @@ func (p *gatedProvider) emit(t *testing.T, n int) {
 
 type streamFixture struct {
 	db      *sqlite.DB
+	path    string
 	manager *agent.Manager
 	base    string
 	session string
@@ -89,7 +90,8 @@ type streamFixture struct {
 // hour, so a subscriber that sees an event was woken by a notification.
 func newStreamFixture(t *testing.T, p *gatedProvider) *streamFixture {
 	t.Helper()
-	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "h.db"))
+	path := filepath.Join(t.TempDir(), "h.db")
+	db, err := sqlite.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func newStreamFixture(t *testing.T, p *gatedProvider) *streamFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &streamFixture{db: db, manager: m, base: ts.URL, session: session.ID}
+	return &streamFixture{db: db, path: path, manager: m, base: ts.URL, session: session.ID}
 }
 
 func (f *streamFixture) createRun(t *testing.T, query string) view {
@@ -495,4 +497,127 @@ func TestShutdownCancelsExecutingRuns(t *testing.T) {
 func jsonNumber(n int64) string {
 	raw, _ := json.Marshal(n)
 	return string(raw)
+}
+
+// seedRun stores a RUNNING run that nothing executes, for events to hang on.
+func (f *streamFixture) seedRun(t *testing.T) string {
+	t.Helper()
+	ctx, now := context.Background(), time.Now()
+	turn := storage.Turn{ID: domain.NewID("trn_"), SessionID: f.session, UserInput: "hello", Status: "completed", CreatedAt: now}
+	if err := f.db.CreateTurn(ctx, turn); err != nil {
+		t.Fatal(err)
+	}
+	run := storage.Run{ID: domain.NewID("run_"), SessionID: f.session, TurnID: turn.ID, Status: domain.RunRunning, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := f.db.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	return run.ID
+}
+
+// liveOutput lists what a liveStream wrote: an event type, or "delta:" and
+// the text.
+func liveOutput(t *testing.T, rec *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var out []string
+	for _, block := range strings.Split(strings.TrimSpace(rec.Body.String()), "\n\n") {
+		var typ, data string
+		for _, line := range strings.Split(block, "\n") {
+			if v, ok := strings.CutPrefix(line, "event: "); ok {
+				typ = v
+			}
+			if v, ok := strings.CutPrefix(line, "data: "); ok {
+				data = v
+			}
+		}
+		if typ == "stream.delta" {
+			var body struct{ Text string }
+			if err := json.Unmarshal([]byte(data), &body); err != nil {
+				t.Fatal(err)
+			}
+			typ = "delta:" + body.Text
+		}
+		if typ != "" {
+			out = append(out, typ)
+		}
+	}
+	return out
+}
+
+// A subscriber that falls behind finds two finished responses in its queue
+// while the store already holds every event. Each response's text must still
+// be written before the event that completes it, on both the wake-up and the
+// fallback path.
+func TestQueuedTextKeepsItsPlaceAmongStoredEvents(t *testing.T) {
+	want := []string{"model.started", "delta:first", "model.completed", "model.started", "delta:second", "model.completed"}
+	paths := map[string]func(*liveStream) error{
+		"wake": func(l *liveStream) error {
+			_, _, err := l.writeQueued(context.Background())
+			return err
+		},
+		"fallback": func(l *liveStream) error { return l.catchUp(context.Background()) },
+	}
+	for name, send := range paths {
+		t.Run(name, func(t *testing.T) {
+			f := newStreamFixture(t, newGatedProvider())
+			srv := &Server{Manager: f.manager}
+			hub := srv.stream()
+			runID := f.seedRun(t)
+			sub := hub.Subscribe(runID)
+			defer sub.Close()
+			commit := func(typ string) {
+				t.Helper()
+				if _, err := f.db.AppendEvent(context.Background(), storage.Event{RunID: runID, Type: typ, Persistent: true, CreatedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, text := range []string{"first", "second"} {
+				commit("model.started")
+				hub.Delta(runID, text)
+				hub.End(runID, true)
+				commit("model.completed")
+			}
+
+			rec := httptest.NewRecorder()
+			live := &liveStream{store: f.db, w: rec, sub: sub, runID: runID}
+			if err := send(live); err != nil {
+				t.Fatal(err)
+			}
+			if got := liveOutput(t, rec); strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Fatalf("wrote %v\nwant  %v", got, want)
+			}
+			if live.after != 4 {
+				t.Fatalf("after = %d", live.after)
+			}
+		})
+	}
+}
+
+// Another process, such as `runs resume`, commits through its own handle, so
+// the hub never hears of it. The fallback read finds the event.
+func TestFallbackReadFindsEventsFromAnotherProcess(t *testing.T) {
+	f := newStreamFixture(t, newGatedProvider())
+	srv := &Server{Manager: f.manager}
+	runID := f.seedRun(t)
+	sub := srv.stream().Subscribe(runID)
+	defer sub.Close()
+	other, err := sqlite.Open(context.Background(), f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.AppendEvent(context.Background(), storage.Event{RunID: runID, Type: "run.resumed", Persistent: true, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	live := &liveStream{store: f.db, w: rec, sub: sub, runID: runID}
+	if committed, _, err := live.writeQueued(context.Background()); err != nil || committed || rec.Body.Len() != 0 {
+		t.Fatalf("queue held a commit from another process: %v %v %q", committed, err, rec.Body.String())
+	}
+	if err := live.catchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveOutput(t, rec); len(got) != 1 || got[0] != "run.resumed" {
+		t.Fatalf("wrote %v", got)
+	}
 }

@@ -28,6 +28,12 @@ const (
 type Item struct {
 	Kind ItemKind
 	Text string
+	// Seq is set on an ItemPersisted for a commit made by this process: the
+	// store holds the run's events up to Seq, and the subscriber's turn to
+	// send them is here. Events after Seq wait for their own item, because
+	// text queued behind this one may belong before them. Zero means only
+	// that the store may have new events.
+	Seq int64
 }
 
 // Hub fans one run's activity out to its live subscribers in arrival order.
@@ -144,8 +150,10 @@ func (s *Subscription) push(it Item) {
 	s.mu.Lock()
 	last := len(s.items) - 1
 	switch {
-	case it.Kind == ItemPersisted && last >= 0 && s.items[last].Kind == ItemPersisted:
+	case it.Kind == ItemPersisted && last >= 0 && s.items[last].Kind == ItemPersisted &&
+		(it.Seq == 0) == (s.items[last].Seq == 0):
 		// One store read covers both.
+		s.items[last].Seq = max(s.items[last].Seq, it.Seq)
 	case it.Kind == ItemDelta && s.pending+len(it.Text) > maxPendingDeltaBytes:
 		kept := s.items[:0]
 		for _, queued := range s.items {
@@ -175,14 +183,20 @@ func (h *Hub) publish(runID string, it Item) {
 	}
 }
 
-// Notify tells runID's subscribers that the store has new events for it.
-func (h *Hub) Notify(runID string) {
+// Notify tells runID's subscribers that the store may have new events for it.
+func (h *Hub) Notify(runID string) { h.Committed(runID, 0) }
+
+// Committed tells runID's subscribers that the event with sequence number seq
+// has just been committed. It must be called by the goroutine that made the
+// commit, before that goroutine produces anything else for the run, so the
+// event keeps its place among the run's text.
+func (h *Hub) Committed(runID string, seq int64) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.publish(runID, Item{Kind: ItemPersisted})
+	h.publish(runID, Item{Kind: ItemPersisted, Seq: seq})
 }
 
 // Delta sends model text to runID's subscribers. Empty text is ignored.

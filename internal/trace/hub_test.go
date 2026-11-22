@@ -158,3 +158,26 @@ func kinds(items []Item) []ItemKind {
 	}
 	return out
 }
+
+// A commit says how far the store has got. Commits that queue together are
+// one read up to the later one; a notification without a position is kept
+// apart, because it asks for a different kind of read.
+func TestCommitsCarryTheirSequenceNumber(t *testing.T) {
+	h := NewHub()
+	sub := h.Subscribe("run")
+	defer sub.Close()
+	h.Committed("run", 3)
+	h.Committed("run", 4)
+	h.Delta("run", "a")
+	h.Committed("run", 5)
+	h.Notify("run")
+	h.Notify("run")
+	h.Committed("run", 6)
+	want := []Item{
+		{Kind: ItemPersisted, Seq: 4}, {Kind: ItemDelta, Text: "a"},
+		{Kind: ItemPersisted, Seq: 5}, {Kind: ItemPersisted}, {Kind: ItemPersisted, Seq: 6},
+	}
+	if got := sub.Take(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("queue = %+v\nwant    %+v", got, want)
+	}
+}
