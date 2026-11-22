@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 npm run build
 
-changes="$(git status --porcelain -- dist)"
+changes="$(git status --porcelain --ignored -- dist)"
 if [ -n "$changes" ]; then
   echo "web/dist does not match a fresh build of the Web UI source:" >&2
   echo "$changes" >&2
