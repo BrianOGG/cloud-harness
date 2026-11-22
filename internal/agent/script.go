@@ -87,7 +87,11 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 	for _, name := range body.ConfirmSideEffects {
 		confirmed[name] = true
 	}
+	uncertain := false
 	invoke := func(callCtx context.Context, tool string, toolArgs json.RawMessage) (bool, json.RawMessage, *domain.Error) {
+		if uncertain {
+			return false, nil, domain.E(domain.CodeToolError, "script stopped after an uncertain tool outcome")
+		}
 		if !allow[tool] {
 			return false, nil, domain.E(domain.CodeAuthDenied, "script cannot request a tool that was not pre-authorized")
 		}
@@ -115,6 +119,7 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 			return false, nil, domain.E(domain.CodeScriptPolicy, "a running script cannot request new permissions")
 		}
 		if res.Error != nil {
+			uncertain = uncertain || res.UncertainOutcome
 			return false, res.Data, res.Error
 		}
 		return res.OK, res.Data, nil
@@ -122,6 +127,9 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 	res, err := program.Replay(program.SafeReplay(facts), func() (program.Result, error) {
 		return program.Execute(ctx, program.Request{Script: body.Script}, invoke)
 	})
+	if uncertain {
+		return nil, domain.ErrUncertainOutcome
+	}
 	out := map[string]any{"ok": res.OK, "hash": res.Hash, "replay_safe": program.SafeReplay(facts)}
 	if len(res.Data) > 0 {
 		out["data"] = json.RawMessage(res.Data)
