@@ -82,6 +82,7 @@ export default function App() {
   const liveFrame = useRef(0);
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const focusRun = useRef<string | null>(null);
   const runsRef = useRef(runs);
 
   // Child runs share the session but are not turns of the conversation.
@@ -317,7 +318,15 @@ export default function App() {
   // Keep the newest content in view unless the reader scrolled up.
   useEffect(() => {
     const node = threadRef.current;
-    if (node && stickToBottom.current) node.scrollTop = node.scrollHeight;
+    if (!node) return;
+    const target = focusRun.current ? node.querySelector(`.turn[data-run-id="${focusRun.current}"]`) : null;
+    if (target) {
+      // A run opened by id is shown at its own turn, not at the newest one.
+      stickToBottom.current = false;
+      target.scrollIntoView({ block: 'start' });
+    } else if (stickToBottom.current) {
+      node.scrollTop = node.scrollHeight;
+    }
   }, [activeRuns, events, live, optimistic]);
 
   const openSession = (sessionId: string | null) => {
@@ -447,6 +456,9 @@ export default function App() {
     try {
       const run = await api.getRun(runId);
       openSession(run.session_id);
+      // Held while the rest of the session loads around the turn.
+      focusRun.current = run.id;
+      window.setTimeout(() => { if (focusRun.current === run.id) focusRun.current = null; }, 1500);
       upsertRun(run);
       setInspected(run.id);
       loadEvents(run);

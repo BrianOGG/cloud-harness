@@ -91,7 +91,10 @@ def reply(body):
                 tool_call("write_file", {"path": "hello.txt", "content": "hello from cloud-harness\n"}),
                 tool_call("list_files", {"path": "."}),
             ]
-        return "text", "`hello.txt` 的写入请求已经处理，并列出了工作区的文件。\n\n```text\nhello.txt\n```\n\n如果你拒绝了写入，文件不会被创建。"
+        results = " ".join(text_of(message) for message in after if message.get("role") == "tool")
+        if "denied" in results:
+            return "text", "写入请求被拒绝，`hello.txt` 没有创建，后面的列目录也跳过了。"
+        return "text", "已写入 `hello.txt`，并列出了工作区的文件。\n\n```text\nhello.txt\n```"
     return "text", INTRO
 
 

@@ -6,7 +6,7 @@ export const isActive = (run: Pick<RunView, 'status'>) => run.status === 'RUNNIN
 
 const statusLabels: Record<string, string> = {
   RUNNING: '运行中', WAITING: '等待处理', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消',
-  PENDING: '排队中', WAITING_APPROVAL: '待审批', SUCCEEDED: '成功', DENIED: '已拒绝', UNKNOWN: '结果未知',
+  PENDING: '排队中', WAITING_APPROVAL: '待审批', SUCCEEDED: '成功', DENIED: '已拒绝', SKIPPED: '已跳过', UNKNOWN: '结果未知',
   COMPLETE: '已完成',
 };
 export const statusName = (status?: string) => {

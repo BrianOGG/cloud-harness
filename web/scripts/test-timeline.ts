@@ -34,6 +34,12 @@ assert.deepEqual(
   buildWork(log.slice(0, 4)).items.map((item) => (item.kind === 'tool' ? item.status : item.kind)),
   ['model', 'WAITING_APPROVAL', 'PENDING'],
 );
+// A denial runs nothing: the batch event after it carries the outcome of both calls.
+const denied = { seq: 6, type: 'tool.batch', data: '{"calls":[{"name":"write_file","provider_call_id":"a","status":"DENIED"},{"name":"list_files","provider_call_id":"b","status":"SKIPPED"}],"status":"complete"}' };
+assert.deepEqual(
+  buildWork([...log.slice(0, 4), denied]).items.map((item) => (item.kind === 'tool' ? item.status : item.kind)),
+  ['model', 'DENIED', 'SKIPPED'],
+);
 assert.deepEqual(buildWork([{ seq: 1, type: 'model.completed', data: 'not json' }]).items, [
   { kind: 'model', seq: 1, action: '', inputTokens: 0, outputTokens: 0, latencyMs: 0 },
 ]);
