@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/migrations"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/migrations"
 )
 
 func seedChatRewind(t *testing.T, db *DB, runID string) {

@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/notify"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/notify"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 func TestAskUserNotificationAndNoConfigZeroRequests(t *testing.T) {

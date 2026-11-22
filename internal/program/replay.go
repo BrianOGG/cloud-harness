@@ -1,6 +1,6 @@
 package program
 
-import "github.com/cloud-harness/cloud-harness/internal/domain"
+import "github.com/BrianOGG/cloud-harness/internal/domain"
 
 // ToolFact is the slice of a tool spec that decides whether a crashed script
 // may run again. A side effect, or a tool that is not readonly and idempotent,

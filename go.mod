@@ -1,4 +1,4 @@
-module github.com/cloud-harness/cloud-harness
+module github.com/BrianOGG/cloud-harness
 
 go 1.27.4
 

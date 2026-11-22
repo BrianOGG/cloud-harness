@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/cloud-harness/cloud-harness/internal/agents"
+	"github.com/BrianOGG/cloud-harness/internal/agents"
 )
 
 const agentsUsage = "usage: cloud-harness agents [list] [--workspace dir] [--json]\n       cloud-harness agents show <name> [--workspace dir] [--json]"

@@ -13,6 +13,16 @@
     "cached_input_tokens",
     "recovery_without_replay"
   ],
+  "live_tasks": [
+    "dev-fix-failing-test",
+    "dev-explain-call-site",
+    "file-summarize-log",
+    "file-safe-edit",
+    "incident-service-down",
+    "batch-three-reads",
+    "retrieve-chinese-term",
+    "retrieve-path-and-id"
+  ],
   "tasks": [
     {
       "id": "dev-fix-failing-test",

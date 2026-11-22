@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/cloud-harness/cloud-harness/internal/repomap"
+	"github.com/BrianOGG/cloud-harness/internal/repomap"
 )
 
 func cmdRepoMap(args []string, stdout, stderr io.Writer) int {

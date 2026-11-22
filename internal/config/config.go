@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/notify"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/notify"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 // MCPTool is the Model Context Protocol tool descriptor mapped from a ToolSpec.

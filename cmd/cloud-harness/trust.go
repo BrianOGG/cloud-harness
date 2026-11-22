@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/agent"
-	"github.com/cloud-harness/cloud-harness/internal/hooks"
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/hooks"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 const trustUsage = `usage: cloud-harness trust status [--workspace dir] [--json]

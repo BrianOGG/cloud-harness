@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 // guard refuses requests a web page could make a browser send to this

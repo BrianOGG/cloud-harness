@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	contextpkg "github.com/cloud-harness/cloud-harness/internal/context"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/repomap"
-	"github.com/cloud-harness/cloud-harness/internal/rules"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/repomap"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 const (

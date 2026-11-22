@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/provider"
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
 )
 
 func TestApprovalSkipAndCrashRecovery(t *testing.T) {
@@ -326,6 +326,24 @@ func TestEvalOpenAIProviderNeverScripted(t *testing.T) {
 			t.Fatalf("recover-mid-batch hook did not fire under openai provider: %+v", recoverRes)
 		}
 	})
+}
+
+func TestSuiteComparisonCallTotals(t *testing.T) {
+	ctx := context.Background()
+	ws := t.TempDir()
+	report, err := suite(ctx, config.Config{DBPath: filepath.Join(ws, "suite.db"), Provider: "mock"}, ws, []string{"planner-compare", "cache-baseline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed != 2 || len(report.Failures) != 0 {
+		t.Fatalf("expected comparison tasks to pass, got %+v", report)
+	}
+	if report.ModelCalls == 0 || report.ToolCalls == 0 {
+		t.Fatalf("comparison tasks did not contribute model/tool calls: %+v", report)
+	}
+	if report.CacheHitRate <= 0 {
+		t.Fatalf("expected cache hit rate, got %+v", report)
+	}
 }
 
 func TestEvalSuiteRerunnable(t *testing.T) {

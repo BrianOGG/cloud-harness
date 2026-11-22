@@ -6,11 +6,11 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cloud-harness/cloud-harness/internal/domain"
-	"github.com/cloud-harness/cloud-harness/internal/security"
-	"github.com/cloud-harness/cloud-harness/internal/storage"
-	"github.com/cloud-harness/cloud-harness/internal/tools"
-	"github.com/cloud-harness/cloud-harness/internal/trace"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/trace"
 )
 
 type policyContextKey struct{}

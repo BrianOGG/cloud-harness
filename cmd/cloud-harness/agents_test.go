@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/agents"
+	"github.com/BrianOGG/cloud-harness/internal/agents"
 )
 
 func TestAgentsListHumanAndJSON(t *testing.T) {

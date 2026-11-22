@@ -15,7 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/cloud-harness/cloud-harness/internal/rules"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
 )
 
 const (

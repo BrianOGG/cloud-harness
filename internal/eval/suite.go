@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/config"
 )
 
 // SuiteTasks are the 13 evaluation tasks in docs/eval/tasks.json.
@@ -37,6 +37,8 @@ type SuiteReport struct {
 	CompletionRate    float64          `json:"completion_rate"`
 	Correctness       float64          `json:"correctness"`
 	WallMS            int64            `json:"wall_ms"`
+	ModelCalls        int              `json:"model_calls"`
+	ToolCalls         int              `json:"tool_calls"`
 	RepeatedToolCalls int              `json:"repeated_tool_calls"`
 	RecoveryPass      bool             `json:"recovery_pass"`
 	InputTokens       int              `json:"input_tokens"`
@@ -202,9 +204,13 @@ func CompareSuiteReports(baseline, current SuiteReport) SuiteComparison {
 
 // Suite runs the scripted tasks and returns only metrics the runs produced.
 func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteReport, error) {
+	return suite(ctx, cfg, workspace, SuiteTasks)
+}
+
+func suite(ctx context.Context, cfg config.Config, workspace string, tasks []string) (SuiteReport, error) {
 	report := SuiteReport{TaskPass: map[string]bool{}}
 	var planner any
-	for _, task := range SuiteTasks {
+	for _, task := range tasks {
 		start := time.Now()
 		taskWS := ""
 		if workspace != "" {
@@ -220,6 +226,11 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 			continue
 		}
 		report.TaskPass[task] = result.Pass
+		report.ModelCalls += result.ModelCalls
+		report.ToolCalls += len(result.ToolCalls)
+		report.InputTokens += result.Usage.InputTokens
+		report.OutputTokens += result.Usage.OutputTokens
+		report.CachedTokens += result.Usage.CachedInputTokens
 		if result.Pass {
 			report.Passed++
 		} else {
@@ -231,23 +242,29 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 		}
 		if task == "planner-compare" && len(result.Metrics) > 0 {
 			_ = json.Unmarshal(result.Metrics, &planner)
-			addTokens(&report, result.Metrics)
+			addPlannerMetrics(&report, result.Metrics)
 		}
 		if task == "cache-baseline" && len(result.Metrics) > 0 {
 			var body struct {
 				Stable struct {
 					HitRate      float64 `json:"hit_rate"`
+					ModelCalls   int     `json:"model_calls"`
+					ToolCalls    int     `json:"tool_calls"`
 					InputTokens  int     `json:"input_tokens"`
 					CachedTokens int     `json:"cached_input_tokens"`
 					CostTokens   int     `json:"cost_tokens"`
 				} `json:"stable"`
 				Baseline struct {
-					HitRate float64 `json:"hit_rate"`
+					HitRate    float64 `json:"hit_rate"`
+					ModelCalls int     `json:"model_calls"`
+					ToolCalls  int     `json:"tool_calls"`
 				} `json:"baseline"`
 			}
 			if err := json.Unmarshal(result.Metrics, &body); err == nil {
 				report.CacheHitRate = body.Stable.HitRate
 				report.BaselineHitRate = body.Baseline.HitRate
+				report.ModelCalls += body.Stable.ModelCalls + body.Baseline.ModelCalls
+				report.ToolCalls += body.Stable.ToolCalls + body.Baseline.ToolCalls
 				report.InputTokens += body.Stable.InputTokens
 				report.CachedTokens += body.Stable.CachedTokens
 				report.OutputTokens += body.Stable.CostTokens - body.Stable.InputTokens
@@ -255,6 +272,9 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 		}
 	}
 	report.Planner = planner
+	if report.CacheHitRate == 0 && report.InputTokens > 0 {
+		report.CacheHitRate = float64(report.CachedTokens) / float64(report.InputTokens)
+	}
 	if report.Tasks > 0 {
 		report.CompletionRate = float64(report.Passed) / float64(report.Tasks)
 		report.Correctness = report.CompletionRate
@@ -275,9 +295,11 @@ func repeated(calls []Call) int {
 	return extra
 }
 
-func addTokens(report *SuiteReport, raw json.RawMessage) {
+func addPlannerMetrics(report *SuiteReport, raw json.RawMessage) {
 	var body struct {
 		Arms []struct {
+			ModelCalls   int `json:"model_calls"`
+			ToolCalls    int `json:"tool_calls"`
 			InputTokens  int `json:"input_tokens"`
 			CostTokens   int `json:"cost_tokens"`
 			CachedTokens int `json:"cached_input_tokens"`
@@ -287,6 +309,8 @@ func addTokens(report *SuiteReport, raw json.RawMessage) {
 		return
 	}
 	for _, arm := range body.Arms {
+		report.ModelCalls += arm.ModelCalls
+		report.ToolCalls += arm.ToolCalls
 		report.InputTokens += arm.InputTokens
 		report.CachedTokens += arm.CachedTokens
 		if arm.CostTokens >= arm.InputTokens {

@@ -12,8 +12,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/agent"
-	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 const policyUsage = "usage: cloud-harness policy decisions [--run ID] [--tool NAME] [--effect allow|ask|deny] [--since RFC3339] [--limit N] [--db path] [--workspace dir] [--json]"

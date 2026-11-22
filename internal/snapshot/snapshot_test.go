@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
 )
 
 func TestSnapshotRestoreKeepsWorkspaceGitAndUntrackedFiles(t *testing.T) {

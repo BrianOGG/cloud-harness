@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-harness/cloud-harness/internal/config"
-	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/config"
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
 type exportDocument struct {

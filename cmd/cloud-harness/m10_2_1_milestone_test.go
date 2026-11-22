@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud-harness/cloud-harness/internal/agents"
+	"github.com/BrianOGG/cloud-harness/internal/agents"
 )
 
 func TestM1021DeclarativeAgentsMilestone(t *testing.T) {
