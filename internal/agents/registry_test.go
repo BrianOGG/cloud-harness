@@ -90,7 +90,7 @@ func TestLoadMinimalAndToolForms(t *testing.T) {
 func TestLoadAllKnownChildTools(t *testing.T) {
 	root := t.TempDir()
 	names := []string{
-		"read_file", "write_file", "edit_file", "list_files", "grep", "git_status", "git_diff", "git_log", "run_command",
+		"read_file", "write_file", "edit_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log", "run_command",
 		"finish_turn", "update_plan", "retrieve_history", "retrieve_resource", "execute_program", "poll_tool",
 	}
 	writeDefinition(t, root, "all.md", "---\ndescription: All eligible tools\ntools: "+strings.Join(names, ", ")+"\n---\n")
@@ -189,7 +189,7 @@ func TestLoadOnlyBuiltins(t *testing.T) {
 		if len(defs) != 2 || defs[0].Name != "explorer" || defs[1].Name != "reviewer" {
 			t.Fatalf("built-ins for %q = %+v", workspace, defs)
 		}
-		readonly := []string{"read_file", "list_files", "grep", "git_status", "git_diff", "git_log"}
+		readonly := []string{"read_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log"}
 		for _, def := range defs {
 			if def.Source != "builtin" || def.OverridesBuiltin || !slices.Equal(def.Tools, readonly) || def.Description == "" {
 				t.Fatalf("builtin = %+v", def)
@@ -240,7 +240,7 @@ func TestRegistryReturnsIndependentCopies(t *testing.T) {
 	def.Tools[0] = "write_file"
 	defs := r.List()
 	defs[0].Tools[1] = "run_command"
-	if got := mustGet(t, r, "explorer"); got.Tools[0] != "read_file" || got.Tools[1] != "list_files" {
+	if got := mustGet(t, r, "explorer"); got.Tools[0] != "read_file" || got.Tools[1] != "list_dir" {
 		t.Fatalf("returned slice mutated registry: %+v", got)
 	}
 	if got := mustGet(t, mustLoad(t, ""), "explorer"); got.Tools[0] != "read_file" {

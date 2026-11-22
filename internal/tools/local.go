@@ -21,6 +21,7 @@ import (
 
 const (
 	maxFileBytes          = 1 << 20
+	defaultListDirEntries = 200
 	defaultListFiles      = 200
 	defaultGrepMaxHits    = 50
 	hardGrepMaxHits       = 200
@@ -33,8 +34,8 @@ const (
 
 var defaultCommandEnvVars = []string{"PATH", "HOME", "LANG", "LC_ALL", "TERM"}
 
-// RegisterLocal adds read_file, write_file, edit_file, list_files, grep, git_status, git_diff, git_log, and run_command rooted at root.
-// read_file, list_files, grep, git_status, git_diff, and git_log are readonly. write_file, edit_file, and any command outside the safe
+// RegisterLocal adds read_file, write_file, edit_file, list_dir, list_files, grep, git_status, git_diff, git_log, and run_command rooted at root.
+// read_file, list_dir, list_files, grep, git_status, git_diff, and git_log are readonly. write_file, edit_file, and any command outside the safe
 // set require a scoped grant or an approval decision before Execute runs.
 func RegisterLocal(b *Broker, root string) error {
 	specs, err := LocalSpecs(b, root)
@@ -94,6 +95,7 @@ func LocalSpecs(b *Broker, root string) ([]Spec, error) {
 		readFileSpec(abs),
 		writeFileSpec(abs),
 		editFileSpec(abs),
+		listDirSpec(abs),
 		listFilesSpec(abs),
 		grepSpec(abs),
 		gitStatusSpec(b, abs),
@@ -478,6 +480,112 @@ func listFilesSpec(abs string) Spec {
 			return json.Marshal(out)
 		},
 	}
+}
+
+func listDirSpec(abs string) Spec {
+	return Spec{
+		Name:            "list_dir",
+		Description:     "List entries in one workspace directory without recursing, skipping .git and .cloud-harness entries.",
+		Required:        nil,
+		Readonly:        true,
+		Idempotent:      true,
+		Pollable:        true,
+		SideEffectClass: securityNone,
+		Parameters: strictSchema(map[string]schemaProp{
+			"path": {Type: "string", Description: "Workspace-relative or absolute directory path inside the workspace (default \".\")."},
+		}),
+		ExtractResources: func(args json.RawMessage) ([]string, error) {
+			p, err := listDirPath(abs, stringField(args, "path"))
+			if err != nil {
+				return nil, err
+			}
+			return []string{p}, nil
+		},
+		Execute: func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+			p, err := listDirPath(abs, stringField(args, "path"))
+			if err != nil {
+				return nil, err
+			}
+			dirEntries, err := os.ReadDir(p)
+			if err != nil {
+				return nil, domain.E(domain.CodeToolError, "list_dir: "+err.Error())
+			}
+			rel, err := filepath.Rel(abs, p)
+			if err != nil {
+				return nil, domain.E(domain.CodeAuthDenied, "path is outside the workspace")
+			}
+			relSlash := filepath.ToSlash(rel)
+			isControl := controlFiles(abs)
+			entries := []map[string]any{}
+			total := 0
+			truncated := false
+			for _, d := range dirEntries {
+				name := d.Name()
+				if name == ".git" || name == ".cloud-harness" {
+					continue
+				}
+				resolved, rerr := resolveInside(abs, filepath.Join(p, name))
+				if rerr != nil || isControl(resolved) {
+					continue
+				}
+				total++
+				if len(entries) >= defaultListDirEntries {
+					truncated = true
+					continue
+				}
+				entry := map[string]any{
+					"name": name,
+					"path": path.Join(relSlash, name),
+					"type": listDirEntryType(d),
+				}
+				if d.Type().IsRegular() {
+					if info, ierr := d.Info(); ierr == nil {
+						entry["size"] = info.Size()
+					}
+				}
+				entries = append(entries, entry)
+			}
+			out := map[string]any{
+				"path":      relSlash,
+				"entries":   entries,
+				"count":     len(entries),
+				"total":     total,
+				"truncated": truncated,
+			}
+			if truncated {
+				out["notice"] = fmt.Sprintf("truncated: showing %d of %d entries (cap %d)", len(entries), total, defaultListDirEntries)
+			}
+			return json.Marshal(out)
+		},
+	}
+}
+
+func listDirPath(abs, raw string) (string, error) {
+	target := raw
+	if target == "" {
+		target = "."
+	}
+	p, err := resolveInside(abs, target)
+	if err != nil {
+		return "", err
+	}
+	if controlFiles(abs)(p) {
+		return "", domain.E(domain.CodeAuthDenied, "path is inside the harness control directory")
+	}
+	return p, nil
+}
+
+func listDirEntryType(d fs.DirEntry) string {
+	if d.IsDir() {
+		return "directory"
+	}
+	if d.Type()&os.ModeSymlink != 0 {
+		return "symlink"
+	}
+	if d.Type().IsRegular() {
+		return "file"
+	}
+	return "other"
 }
 
 func grepSpec(abs string) Spec {
@@ -1153,7 +1261,7 @@ func SensitivePath(p string) bool {
 }
 
 // controlFiles returns a test for whether a path returned by resolveInside is
-// the harness control directory or lies inside it. list_files and grep walk
+// the harness control directory or lies inside it. list_dir, list_files and grep walk
 // the workspace without a policy decision per file, so a symlink into that
 // directory, or a control directory that is itself a symlink, must not expose
 // what the builtin policy denies to read_file.

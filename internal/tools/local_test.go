@@ -171,6 +171,7 @@ func TestLocalToolSchemasAreStrict(t *testing.T) {
 	checkSchema("read_file", []string{"path", "start_line", "end_line"}, []string{"content", "command"}, []string{"path"})
 	checkSchema("write_file", []string{"path", "content"}, []string{"command"}, []string{"path", "content"})
 	checkSchema("edit_file", []string{"path", "old_string", "new_string"}, []string{"content", "command"}, []string{"path", "old_string", "new_string"})
+	checkSchema("list_dir", []string{"path"}, []string{"content", "command", "pattern"}, nil)
 	checkSchema("list_files", []string{"pattern"}, []string{"content", "command", "path"}, nil)
 	checkSchema("grep", []string{"pattern", "glob", "literal", "max_hits"}, []string{"content", "command"}, []string{"pattern"})
 	checkSchema("git_status", nil, []string{"content", "command", "path"}, nil)
@@ -737,6 +738,113 @@ func TestListFilesSkipsGitDirs(t *testing.T) {
 	}
 	if len(got.Files) != defaultListFiles || got.Total != defaultListFiles+10 || !got.Truncated || !strings.Contains(got.Notice, "truncated") {
 		t.Fatalf("expected capped list_files (%d of %d), got %+v", defaultListFiles, defaultListFiles+10, got)
+	}
+}
+
+func TestListDirEntries(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.txt", "hello")
+	write("sub/child.go", "package sub")
+	write(".git/config", "git")
+	write(".cloud-harness/policy.json", "{}")
+
+	charge := &memCharge{b: domain.Budget{MaxToolCalls: 20}}
+	grants := &memGrants{grants: []domain.Grant{
+		{ID: "g", Tool: "list_dir", Op: "call", State: "active", RunID: "run", ResourceScope: root},
+	}}
+	b := NewBroker(charge, grants)
+	if err := RegisterLocal(b, root); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{}`)})
+	if err != nil || !res.OK {
+		t.Fatalf("list_dir: %+v %v", res, err)
+	}
+	var got struct {
+		Path      string `json:"path"`
+		Count     int    `json:"count"`
+		Total     int    `json:"total"`
+		Truncated bool   `json:"truncated"`
+		Entries   []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(res.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "." || got.Count != 2 || got.Total != 2 || got.Truncated {
+		t.Fatalf("unexpected list_dir root result: %+v", got)
+	}
+	if got.Entries[0].Name != "a.txt" || got.Entries[0].Type != "file" || got.Entries[0].Size != 5 || got.Entries[0].Path != "a.txt" {
+		t.Fatalf("unexpected file entry: %+v", got.Entries[0])
+	}
+	if got.Entries[1].Name != "sub" || got.Entries[1].Type != "directory" || got.Entries[1].Path != "sub" {
+		t.Fatalf("unexpected directory entry: %+v", got.Entries[1])
+	}
+	for _, e := range got.Entries {
+		if e.Name == ".git" || e.Name == ".cloud-harness" {
+			t.Fatalf("list_dir leaked ignored entry: %+v", e)
+		}
+	}
+
+	subRes, err := b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{"path":"sub"}`)})
+	if err != nil || !subRes.OK {
+		t.Fatalf("list_dir sub: %+v %v", subRes, err)
+	}
+	got = struct {
+		Path      string `json:"path"`
+		Count     int    `json:"count"`
+		Total     int    `json:"total"`
+		Truncated bool   `json:"truncated"`
+		Entries   []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"entries"`
+	}{}
+	if err := json.Unmarshal(subRes.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "sub" || got.Count != 1 || got.Entries[0].Path != "sub/child.go" || got.Entries[0].Type != "file" {
+		t.Fatalf("unexpected list_dir sub result: %+v", got)
+	}
+
+	controlRes, err := b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{"path":".cloud-harness"}`)})
+	if err != nil || controlRes.OK || controlRes.Error == nil || controlRes.Error.Code != domain.CodeAuthDenied {
+		t.Fatalf("list_dir control path should be denied: %+v %v", controlRes, err)
+	}
+
+	write(" reports/inside.txt", "x")
+	spaceRes, err := b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{"path":" reports"}`)})
+	if err != nil || !spaceRes.OK {
+		t.Fatalf("list_dir whitespace path: %+v %v", spaceRes, err)
+	}
+	var spaceGot struct {
+		Path    string `json:"path"`
+		Entries []struct {
+			Name string `json:"name"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(spaceRes.Data, &spaceGot); err != nil {
+		t.Fatal(err)
+	}
+	if spaceGot.Path != " reports" || len(spaceGot.Entries) != 1 || spaceGot.Entries[0].Name != "inside.txt" {
+		t.Fatalf("unexpected list_dir whitespace result: %+v", spaceGot)
 	}
 }
 
