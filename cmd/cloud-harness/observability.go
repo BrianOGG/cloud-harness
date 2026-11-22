@@ -13,6 +13,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/cloud-harness/cloud-harness/internal/tools"
 )
 
 const observabilityFailureLimit = 12
@@ -20,6 +21,8 @@ const observabilityFailureLimit = 12
 type serveDiagnostics struct {
 	cfg       config.Config
 	workspace string
+	// mcp is the server set owned by this serve process; doctor reports its live state.
+	mcp *tools.MCPSet
 }
 
 // Config is captured from serve; every database query made by the dashboard is read-only.
@@ -72,7 +75,11 @@ func (d serveDiagnostics) stats(w http.ResponseWriter, r *http.Request) {
 func (d serveDiagnostics) doctor(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	items := collectDoctorChecks(ctx, d.cfg, d.workspace, nil)
+	var liveMCP func() []tools.MCPServerStatus
+	if d.mcp != nil {
+		liveMCP = d.mcp.Status
+	}
+	items := collectDoctorChecksMCP(ctx, d.cfg, d.workspace, nil, liveMCP)
 	// collectDoctorChecks appends a summary for the CLI. Recompute it after the
 	// serve-only failed-run check so the HTTP response contains one overall row.
 	if len(items) > 0 && items[len(items)-1].Name == "overall" {

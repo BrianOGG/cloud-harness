@@ -24,7 +24,7 @@ func TestDoctorReadOnlyAndMissingDatabase(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.json")
-	if err := os.WriteFile(configPath, []byte(`{"provider":"mock","servers":[{"name":"not-started","command":"/missing/mcp"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"provider":"mock"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	setDiagnosticEnv(t, configPath, "")
@@ -76,7 +76,7 @@ func TestDoctorReadOnlyAndMissingDatabase(t *testing.T) {
 	if got := findDoctor(checks, "shadow_repository"); got == nil || got.Status != "ok" || got.Detail != "HEAD is readable" {
 		t.Fatalf("shadow repository check: %+v", got)
 	}
-	if got := findDoctor(checks, "mcp"); got == nil || got.Status != "ok" || !strings.Contains(got.Detail, "1 server(s)") {
+	if got := findDoctor(checks, "mcp"); got == nil || got.Status != "ok" || !strings.Contains(got.Detail, "0 server(s)") {
 		t.Fatalf("MCP check: %+v", got)
 	}
 

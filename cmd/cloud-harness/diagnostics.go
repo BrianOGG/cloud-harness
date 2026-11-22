@@ -23,6 +23,7 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/snapshot"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 	"github.com/cloud-harness/cloud-harness/internal/storage/sqlite"
+	"github.com/cloud-harness/cloud-harness/internal/tools"
 	"github.com/cloud-harness/cloud-harness/migrations"
 )
 
@@ -34,6 +35,8 @@ type doctorItem struct {
 	Detail string               `json:"detail"`
 	RunID  string               `json:"run_id,omitempty"`
 	Oracle *doctorOracleSummary `json:"oracle,omitempty"`
+	// Servers carries per-server MCP state on the "mcp" item.
+	Servers []tools.MCPServerStatus `json:"servers,omitempty"`
 }
 
 type doctorOracleSummary struct {
@@ -97,6 +100,12 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 }
 
 func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, configErr error) []doctorItem {
+	return collectDoctorChecksMCP(ctx, cfg, ws, configErr, nil)
+}
+
+// collectDoctorChecksMCP reports MCP state from liveMCP when a serve process
+// already owns the servers; with nil it probes them.
+func collectDoctorChecksMCP(ctx context.Context, cfg config.Config, ws string, configErr error, liveMCP func() []tools.MCPServerStatus) []doctorItem {
 	configOK := configErr == nil
 	items := make([]doctorItem, 0, 10)
 	if configErr != nil {
@@ -115,11 +124,7 @@ func collectDoctorChecks(ctx context.Context, cfg config.Config, ws string, conf
 	}
 
 	if configOK {
-		if err := validateMCPServers(cfg.Servers); err != nil {
-			items = append(items, doctorItem{Name: "mcp", Status: "fail", Detail: err.Error()})
-		} else {
-			items = append(items, doctorItem{Name: "mcp", Status: "ok", Detail: fmt.Sprintf("%d server(s) validated; no process started", len(cfg.Servers))})
-		}
+		items = append(items, checkMCP(ctx, cfg.Servers, liveMCP))
 	} else {
 		items = append(items, doctorItem{Name: "mcp", Status: "warn", Detail: "skipped because configuration could not be validated"})
 	}

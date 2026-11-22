@@ -75,7 +75,65 @@ failed consultation records `oracle.failed` with `budget_exhausted`, `budget`,
 
 ## MCP
 
-`ToMCPTool` maps a spec to `{name, description, inputSchema}`. `MCPErrorResult` maps a denial to an MCP tool result with `isError` and the domain code. `StaticMCP.Discover` returns the specs it was given. It does not open a socket. There is no MCP transport in this build.
+Local stdio MCP servers listed under `servers` in the configuration file (see
+[config.md](config.md#mcp-servers)) are started by every command that executes a
+run: `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Each server is a
+subprocess that speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. The
+harness sends `initialize`, `notifications/initialized`, and `tools/list`, then
+registers every discovered tool in the broker as `mcp.<server>.<tool>`. Only the
+stdio transport exists; HTTP and SSE servers are not supported.
+
+Lifecycle:
+
+- Servers start concurrently when the command starts. Start plus discovery is
+  limited to 30 seconds per server.
+- A server that cannot start, does not answer, or returns an invalid tool list
+  is skipped with a `warning: mcp server "<name>" is unavailable ...` line on
+  stderr. The command and the other servers continue; the failed server's tools
+  are not registered.
+- A discovered tool is skipped with a warning when its name contains characters
+  other than letters, digits, `_`, `-`, and `.`, or when the name is already
+  registered.
+- Servers are not restarted. If one exits later, its tools stay listed and each
+  call fails with a tool error until the harness process is restarted.
+- When the command exits, every server's process group is killed and reaped. On
+  Linux the subprocess also receives SIGKILL if the harness itself dies.
+- The subprocess inherits the harness working directory and only `PATH`, `HOME`,
+  `LANG`, `LC_ALL`, `TERM`, and `TMPDIR` from the environment. Its stderr is
+  discarded.
+
+Calls use the same path as built-in tools: arguments are checked against the
+server's `inputSchema`, the call is charged to the tool budget, `policy.json`
+rules match the full name (`{"tool": "mcp.files.search", "effect": "allow"}`),
+`PreToolUse` / `PostToolUse` hooks run, and the invocation, policy decision, and
+approval are stored like any other. One call is limited to 15 seconds and 64 KiB
+of result.
+
+| Server setting | Tool class | Default without a policy rule |
+| --- | --- | --- |
+| `readonly: false` (default) | reversible, egress scope = server name | waits for approval on every call |
+| `readonly: true` | no side effect, no egress scope | denied; needs a `policy.json` `allow` rule |
+
+A tool from a non-readonly server counts as egress: after the run has read
+sensitive data it is denied unless an explicit egress grant exists.
+`readonly` is a declaration by whoever wrote the configuration; the harness
+cannot verify it.
+
+Child runs started by `delegate_task` never receive a grant for an MCP tool,
+including when the tool is named in `allowed_tools`. A child cannot wait for
+approval and `policy.json` `allow` rules do not widen a child's permissions, so
+a child's MCP call ends the child with `WAITING (APPROVAL)` reported to the
+parent. Agent definitions under `.cloud-harness/agents` cannot list MCP tools.
+
+OpenAI-compatible endpoints only accept function names made of letters, digits,
+`_`, and `-`, up to 64 characters. The provider adapter therefore sends
+`mcp.files.search` as `mcp_files_search` (with a hash suffix if that would
+collide or exceed the limit) and maps the model's calls back. Policy, grants,
+events, and stored invocations always use the dotted name.
+
+`doctor` reports the real state, see [cli.md](cli.md).
+
+In-process mapping helpers remain: `ToMCPTool` maps a spec to `{name, description, inputSchema}`. `MCPErrorResult` maps a denial to an MCP tool result with `isError` and the domain code. `StaticMCP.Discover` returns the specs it was given without starting a process.
 
 ## Permission
 
