@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,13 +91,20 @@ type streamFixture struct {
 // hour, so a subscriber that sees an event was woken by a notification.
 func newStreamFixture(t *testing.T, p *gatedProvider) *streamFixture {
 	t.Helper()
+	return newWrappedStreamFixture(t, p, func(h http.Handler) http.Handler { return h })
+}
+
+// newWrappedStreamFixture is newStreamFixture with the server's handler passed
+// through wrap.
+func newWrappedStreamFixture(t *testing.T, p *gatedProvider, wrap func(http.Handler) http.Handler) *streamFixture {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "h.db")
 	db, err := sqlite.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := &agent.Manager{Store: db, Provider: p, OwnerID: "api", SkipPlanner: true, DisableRepoMap: true, DisableSnapshots: true}
-	ts := httptest.NewServer((&Server{Manager: m, PollInterval: time.Hour}).Handler())
+	ts := httptest.NewServer(wrap((&Server{Manager: m, PollInterval: time.Hour}).Handler()))
 	t.Cleanup(func() {
 		ts.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -423,6 +431,66 @@ func TestFailedResponseResetsStreamedText(t *testing.T) {
 		t.Fatalf("unstored events = %q, want a delta then a reset", got)
 	}
 	f.waitStatus(t, created.ID, domain.RunFailed)
+}
+
+// heldFlush stops an event stream's handler right after its first flush, the
+// one that sends the replay, until release is closed.
+type heldFlush struct {
+	http.ResponseWriter
+	once    *sync.Once
+	release chan struct{}
+}
+
+func (w *heldFlush) Flush() {
+	w.ResponseWriter.(http.Flusher).Flush()
+	w.once.Do(func() { <-w.release })
+}
+
+func (w *heldFlush) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// A response can run its whole course, and the run end with it, between a
+// subscriber's replay and its first look at the run's status. The text and
+// the reset were queued for it by then, so it is still sent them.
+func TestSubscriberIsSentTheTextOfAResponseThatEndsTheRunDuringItsReplay(t *testing.T) {
+	p := newGatedProvider("half an ans")
+	p.fail = errors.New("upstream closed the stream")
+	release := make(chan struct{})
+	var once, released sync.Once
+	resume := func() { released.Do(func() { close(release) }) }
+	f := newWrappedStreamFixture(t, p, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				w = &heldFlush{ResponseWriter: w, once: &once, release: release}
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	t.Cleanup(resume)
+	created := f.createRun(t, "?wait=0")
+	sub := f.subscribe(t, created.ID, "")
+	p.emit(t, 1)
+	close(p.release)
+	f.waitStatus(t, created.ID, domain.RunFailed)
+	for deadline := time.Now().Add(5 * time.Second); f.manager.Executing(created.ID); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("run is still executing")
+		}
+	}
+	resume()
+
+	var live []string
+	for {
+		ev, ok := sub.next(t)
+		if !ok {
+			break
+		}
+		if ev.id == "" {
+			live = append(live, ev.typ)
+		}
+	}
+	if got := strings.Join(live, " "); got != "stream.delta stream.reset" {
+		t.Fatalf("unstored events = %q, want a delta then a reset", got)
+	}
 }
 
 // Without ?wait= the request answers as soon as the run is RUNNING. ?wait=1
