@@ -117,8 +117,9 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
   `trusted`。
 - 记录保存在 `<配置目录>/trust.json`（权限 `0600`），与全局 `policy.json`、`hooks.json`
   同目录，位于工作区之外，文件工具无法写入。`trust approve` 和 `trust revoke` 修改记录时
-  通过同目录的 `trust.json.lock` 串行化，并发执行不会互相覆盖；如果进程异常退出留下该
-  锁文件，命令会在 5 秒后报错并给出锁文件路径，确认没有其他进程后手动删除即可。如果配置目录位于工作区内部，信任记录会
+  通过同目录的 `trust.json.lock` 串行化，并发执行不会互相覆盖；该文件由操作系统级锁保护，
+  进程异常退出后留下的锁文件会在下次命令中被复用，不需要手动删除。命令最多等待 5 秒；
+  仍被其他进程占用时会报错并给出锁文件路径。如果配置目录位于工作区内部，信任记录会
   暴露给 agent，此时工作区文件一律视为未信任，`trust approve` 也会拒绝写入，并提示把
   配置目录移到工作区之外。
 - 使用 `--worktree` 时，run 的 worktree 位于 `<workspace>/.cloud-harness/worktrees/<run>`，

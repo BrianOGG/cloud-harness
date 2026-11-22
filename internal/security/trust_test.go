@@ -148,6 +148,20 @@ func TestTrustStoreRecordsHashesPerWorkspaceAndFile(t *testing.T) {
 	}
 }
 
+// A lock file left by a crashed approval is only the lock target; the OS
+// released the lock with the process, so the next change reuses the file.
+func TestTrustStoreReclaimsStaleLockFile(t *testing.T) {
+	workspace, global := t.TempDir(), t.TempDir()
+	writePolicyFile(t, filepath.Join(workspace, ControlDir, TrustHooksFile), `{}`)
+	writePolicyFile(t, TrustStorePath(global)+".lock", "left by a crashed approval")
+	if err := TrustContent(workspace, global, map[string][]byte{TrustHooksFile: []byte(`{}`)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := trustState(t, workspace, global, TrustHooksFile); got.State != TrustTrusted {
+		t.Fatalf("stale lock blocked approval: %+v", got)
+	}
+}
+
 // A trust store the agent could write with its workspace file tools is not
 // evidence of a user decision.
 func TestTrustStoreInsideWorkspaceIsNeverTrusted(t *testing.T) {
@@ -315,7 +329,14 @@ func TestTrustStoreSerializesConcurrentChanges(t *testing.T) {
 			t.Fatalf("workspace %d = %s, want %s", i, got.State, want)
 		}
 	}
-	if leftovers, _ := filepath.Glob(filepath.Join(global, "trust.json.*")); len(leftovers) != 0 {
-		t.Fatalf("lock or temporary files left behind: %v", leftovers)
+	entries, err := os.ReadDir(global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "trust.json" || entry.Name() == "trust.json.lock" {
+			continue
+		}
+		t.Fatalf("unexpected file left behind: %s", entry.Name())
 	}
 }

@@ -251,27 +251,35 @@ func trustStoreExposed(workspaceKey, configDir string) string {
 }
 
 // lockTrustStore serializes the read-modify-write of the store between
-// processes, so a concurrent approval cannot write back a decision another
-// process just revoked. The lock is a file created exclusively next to the
-// store; a process that dies while holding it leaves the file behind, and the
-// error names it rather than guessing that it is stale.
+// processes with an operating-system lock on trust.json.lock. The lock file
+// can stay behind after a crash, but the OS releases the lock with the
+// process, so the next command reuses the file instead of treating it as held.
 func lockTrustStore(configDir string) (func(), error) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return nil, err
 	}
 	lock := TrustStorePath(configDir) + ".lock"
+	f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("trust store lock %s: %w", lock, err)
+	}
+	if err := prepareTrustLockFile(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("trust store lock %s: %w", lock, err)
+	}
 	deadline := time.Now().Add(trustLockWait)
 	for {
-		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
+		locked, err := tryLockTrustFile(f)
+		if err != nil {
 			_ = f.Close()
-			return func() { _ = os.Remove(lock) }, nil
-		}
-		if !os.IsExist(err) {
 			return nil, fmt.Errorf("trust store lock %s: %w", lock, err)
 		}
+		if locked {
+			return func() { _ = unlockTrustFile(f); _ = f.Close() }, nil
+		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("trust store is locked by another cloud-harness process; retry, or remove %s if none is running", lock)
+			_ = f.Close()
+			return nil, fmt.Errorf("trust store is locked by another cloud-harness process; retry")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
