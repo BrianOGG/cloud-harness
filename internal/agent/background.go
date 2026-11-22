@@ -165,6 +165,14 @@ func (m *Manager) failStranded(ctx context.Context, runID string, cause error) (
 	if err != nil || current.Status != domain.RunRunning {
 		return storage.Run{}, false
 	}
+	// The execution's own context, which carried its hooks, is gone. Stop
+	// hooks still run before this terminal transition, but a hook that
+	// cannot run must not keep the run RUNNING.
+	if hooked, err := m.restoreHooks(ctx, current); err == nil {
+		if failed, err := m.finish(hooked, current, domain.EventFatal, "", asDomain(cause)); err == nil {
+			return failed, true
+		}
+	}
 	failed, err := m.finish(ctx, current, domain.EventFatal, "", asDomain(cause))
 	return failed, err == nil
 }

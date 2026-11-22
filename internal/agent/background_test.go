@@ -111,6 +111,25 @@ func TestBackgroundExecutionErrorFailsRun(t *testing.T) {
 	}
 }
 
+// Stop hooks run before every terminal transition, including this one.
+func TestBackgroundExecutionErrorRunsStopHooks(t *testing.T) {
+	malformed := toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":`)})
+	m, session := backgroundManager(t, newBlockingProvider(func(int) *domain.ModelResponse { return &malformed }))
+	putAgentHooks(t, m.Workspace, map[hooks.Point][]hooks.Action{hooks.Stop: {{Type: "command", Command: "echo stopped"}}}, false)
+	ex, err := m.StartMessage(t.Context(), session.ID, "hello", RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, ex)
+	if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunFailed {
+		t.Fatalf("status = %s", got.Status)
+	}
+	events := hookEvents(t, m.Store, ex.Run.ID)
+	if len(events) != 1 || events[0].Point != hooks.Stop || events[0].ExitCode != 0 {
+		t.Fatalf("hook events = %+v", events)
+	}
+}
+
 // Cancel runs Stop hooks before it records CANCELLED, so the execution can
 // return its context error while the run is still RUNNING. That is a cancel
 // in progress, not a failure.
