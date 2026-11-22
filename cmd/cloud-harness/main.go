@@ -122,8 +122,8 @@ const usage = `Cloud Harness M5
 
   cloud-harness version
   cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
-  cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
-  cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness run --message TEXT [--plan] [--stream] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness chat [--message TEXT] [--session ID] [--stream=false] [--worktree] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
   cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
   cloud-harness eval run --task TASK [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir]
   cloud-harness eval suite [--live] [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir] [--out path] [--compare path]
@@ -993,7 +993,7 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	message := fs.String("message", "", "initial user message")
 	session := fs.String("session", "", "session id")
 	useWorktree := fs.Bool("worktree", false, "run each turn in a retained Git worktree isolated from the workspace")
-	stream := fs.Bool("stream", false, "print model text as it is generated")
+	stream := fs.Bool("stream", true, "print model text as it is generated; --stream=false prints only each turn's final answer")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

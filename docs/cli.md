@@ -258,21 +258,22 @@ the caller names a definition.
 
 ```bash
 cloud-harness run --message TEXT [--plan] [--stream] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
-cloud-harness chat [--message TEXT] [--session ID] [--stream] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness chat [--message TEXT] [--session ID] [--stream=false] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
 ```
 
-`--stream` writes model text while the model is still generating it. Without
-it, both commands print only when the run stops, as before.
+`chat` prints model text while the model is still generating it. `run` does
+so only with `--stream`, and then on stderr: its stdout is always the one JSON
+line, so a script that reads it gets only the final result.
 
-| Command | Without `--stream` | With `--stream` |
+| Command | Default | Option |
 | --- | --- | --- |
-| `run` | stdout: one JSON line when the run stops. | The same JSON line on stdout. Model text is written to stderr as it arrives. |
-| `chat` | stdout: the final answer of each turn. | stdout: model text as it arrives, including text the model writes before a tool call. The final answer is not printed a second time. |
+| `chat` | stdout: model text as it arrives, including text the model writes before a tool call. The final answer is not printed a second time. | `--stream=false`: stdout has only the final answer of each turn, printed when the turn stops. |
+| `run` | stdout: one JSON line when the run stops. Nothing is streamed. | `--stream`: the same JSON line on stdout, and model text on stderr as it arrives. |
 
-Each model response ends with a newline. Only the text of the run you started
-is written; child runs execute concurrently and their text is left out. If a
-response fails partway, the text already written stays on screen. The text is
-never stored: the run's result is still its `final_answer`.
+Each streamed model response ends with a newline. Only the text of the run
+you started is written; child runs execute concurrently and their text is left
+out. If a response fails partway, the text already written stays on screen.
+The text is never stored: the run's result is still its `final_answer`.
 
 `--plan` runs the turn with a read-only model tool catalog. File writes,
 commands, child delegation, scripts, and plan updates are omitted from the

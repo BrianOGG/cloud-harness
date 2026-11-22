@@ -86,6 +86,32 @@ func TestChatStreamPrintsFinalAnswerThatWasNotStreamed(t *testing.T) {
 	}
 }
 
+// chat streams unless it is told not to. Either way the answer is on stdout
+// once.
+func TestChatStreamsByDefault(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
+	for _, tc := range []struct {
+		name   string
+		extra  []string
+		writes []string
+	}{
+		{name: "default", writes: []string{"Mock ", "answer: ", "say ", "hello", "\n"}},
+		{name: "stream=false", extra: []string{"--stream=false"}, writes: []string{"Mock answer: say hello\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"chat", "--workspace", t.TempDir(), "--db", filepath.Join(t.TempDir(), "h.db"), "--provider", "mock", "--message", "say hello"}
+			out := &orderWriter{}
+			var errBuf bytes.Buffer
+			if code := Main(append(args, tc.extra...), out, &errBuf); code != 0 {
+				t.Fatalf("code=%d stderr=%q", code, errBuf.String())
+			}
+			if strings.Join(out.writes, "|") != strings.Join(tc.writes, "|") {
+				t.Fatalf("stdout writes = %q, want %q", out.writes, tc.writes)
+			}
+		})
+	}
+}
+
 func TestRunStreamWritesTextToStderrAndKeepsStdoutJSON(t *testing.T) {
 	setDiagnosticEnv(t, "", "")
 	args := []string{"run", "--workspace", t.TempDir(), "--db", filepath.Join(t.TempDir(), "h.db"), "--provider", "mock", "--message", "say hello"}
