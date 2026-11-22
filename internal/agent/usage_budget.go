@@ -26,12 +26,14 @@ func (m *Manager) prices() map[string]config.ModelPrice {
 	return m.loadedPrices
 }
 
-// pricedModel names the model a call on p is billed as.
-func (m *Manager) pricedModel(p provider.Provider) string {
+// pricedModel names the model a call on p is billed as. requested is the
+// model named in the request: a call that names none runs on the provider's
+// own model, whatever model the manager's steps ask for.
+func (m *Manager) pricedModel(p provider.Provider, requested string) string {
 	if profiled, ok := p.(*provider.ProfileProvider); ok && profiled != nil {
 		return provider.ModelName(profiled.Provider, profiled.Model)
 	}
-	return provider.ModelName(p, m.Model)
+	return provider.ModelName(p, requested)
 }
 
 // usageCost is the estimated cost of one call. A model without a configured

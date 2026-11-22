@@ -101,7 +101,7 @@ func (m *Manager) summarizeWork(ctx context.Context, run storage.Run, leaseVersi
 		{Role: "system", Content: contextpkg.SummaryPrompt},
 		{Role: "user", Content: request},
 	}})
-	m.chargeUsage(ctx, run.ID, m.pricedModel(model), usageOf(resp))
+	m.chargeUsage(ctx, run.ID, m.pricedModel(model, ""), usageOf(resp))
 	if err != nil {
 		return "", err
 	}

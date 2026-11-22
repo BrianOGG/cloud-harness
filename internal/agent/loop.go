@@ -329,7 +329,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		m.endDeltas(run.ID, err == nil)
 		usage := usageOf(resp)
 		// Tokens a failed call reported are spent too.
-		costUSD := m.chargeUsage(ctx, run.ID, m.pricedModel(model), usage)
+		costUSD := m.chargeUsage(ctx, run.ID, m.pricedModel(model, m.Model), usage)
 		if usage.LatencyMS == 0 {
 			usage.LatencyMS = time.Since(started).Milliseconds()
 		}

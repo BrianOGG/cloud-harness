@@ -408,6 +408,31 @@ func TestRunWaitsAtTheCostLimitAndReportsCallCost(t *testing.T) {
 	}
 }
 
+func TestSummaryIsPricedAsTheModelThatWroteIt(t *testing.T) {
+	// A child's steps name its own model. Its summary call names none, so the
+	// provider answers with its default model and is billed at that price.
+	m, mock, _, sessionID, _ := summaryCompactionSetup(t, nil)
+	mock.Responses = []domain.ModelResponse{
+		withUsage(mock.Responses[0], 10, 0, 0),
+		mock.Responses[1],
+		withUsage(textOnly(`{"confirmed_facts":["summary"],"in_progress":[],"pending":[],"key_files_and_decisions":[]}`), 1000, 100, 0),
+		mock.Responses[2],
+	}
+	m.Model = "step-model"
+	m.ModelPrices = map[string]config.ModelPrice{"mock": {Input: 1, Output: 1}, "step-model": {Input: 100, Output: 100}}
+	run, err := m.RunMessage(context.Background(), sessionID, "read the log then the note")
+	if err != nil || run.Status != domain.RunCompleted || len(mock.Requests) != 4 {
+		t.Fatalf("%+v %v requests=%d", run, err, len(mock.Requests))
+	}
+	if mock.Requests[0].Model != "step-model" || mock.Requests[2].Model != "" || mock.Requests[2].Messages[0].Content != contextpkg.SummaryPrompt {
+		t.Fatalf("step model=%q summary model=%q", mock.Requests[0].Model, mock.Requests[2].Model)
+	}
+	// 10 tokens at $100 per million for the step, 1100 at $1 for the summary.
+	if want := 0.001 + 0.0011; math.Abs(run.Budget.UsedCostUSD-want) > 1e-12 {
+		t.Fatalf("cost=%v want %v", run.Budget.UsedCostUSD, want)
+	}
+}
+
 func TestChildSpendsTheParentTokenAndCostBudget(t *testing.T) {
 	ctx := context.Background()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{
