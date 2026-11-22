@@ -257,9 +257,29 @@ the caller names a definition.
 ## run / chat
 
 ```bash
-cloud-harness run --message TEXT [--plan] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
-cloud-harness chat [--message TEXT] [--session ID] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness run --message TEXT [--plan] [--stream] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
+cloud-harness chat [--message TEXT] [--session ID] [--stream=false] [--workspace dir] [--worktree] [--provider mock|openai] [--db path]
 ```
+
+`chat` prints model text while the model is still generating it. `run` does
+so only with `--stream`, and then on stderr: its stdout is always the one JSON
+line, so a script that reads it gets only the final result.
+
+| Command | Default | Option |
+| --- | --- | --- |
+| `chat` | stdout: model text as it arrives, including text the model writes before a tool call. The final answer is not printed a second time. | `--stream=false`: stdout has only the final answer of each turn, printed when the turn stops. |
+| `run` | stdout: one JSON line when the run stops. Nothing is streamed. | `--stream`: the same JSON line on stdout, and model text on stderr as it arrives. |
+
+Each streamed model response ends with a newline. Only the text of the run
+you started is written; child runs execute concurrently and their text is left
+out. If a response fails partway, the text already written stays on screen.
+The text is never stored: the run's result is still its `final_answer`.
+
+Model text written to the terminal has its control characters removed, apart
+from newlines and tabs: the streamed text, the final answer `chat` prints, and
+a question the model asks. An escape sequence therefore shows as its printable
+remainder (`[31m`) instead of acting on the terminal. The `final_answer` in
+the JSON line of `run`, in the HTTP API and in the database is unchanged.
 
 `--plan` runs the turn with a read-only model tool catalog. File writes,
 commands, child delegation, scripts, and plan updates are omitted from the

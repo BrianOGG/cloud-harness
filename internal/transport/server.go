@@ -29,8 +29,10 @@ const (
 	DefaultMaxBodyBytes int64 = 1 << 20
 	// DefaultHeartbeatInterval is the SSE ": ping" heartbeat interval.
 	DefaultHeartbeatInterval = 15 * time.Second
-	// DefaultPollInterval is the store poll cadence for active SSE subscriptions.
-	DefaultPollInterval = 25 * time.Millisecond
+	// DefaultPollInterval is how often an SSE subscription re-reads the store
+	// without being notified. Events written by this process wake subscribers
+	// at once; the poll only picks up writes made by another process.
+	DefaultPollInterval = 2 * time.Second
 	// DefaultReadHeaderTimeout is the HTTP server ReadHeaderTimeout.
 	DefaultReadHeaderTimeout = 10 * time.Second
 	// DefaultIdleTimeout is the HTTP server IdleTimeout.
@@ -62,8 +64,29 @@ type Server struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	subMu sync.Mutex
-	subs  map[string]map[chan struct{}]struct{}
+	streamOnce sync.Once
+	hub        *trace.Hub
+}
+
+// stream returns the hub that carries run activity to SSE subscribers. The
+// first call connects it to the manager's model text and to the store's
+// event commits.
+func (s *Server) stream() *trace.Hub {
+	s.streamOnce.Do(func() {
+		s.hub = trace.NewHub()
+		if s.Manager == nil {
+			return
+		}
+		if s.Manager.Stream == nil {
+			s.Manager.Stream = s.hub
+		}
+		if store, ok := s.Manager.Store.(interface {
+			OnEvent(func(runID string, seq int64))
+		}); ok {
+			store.OnEvent(s.hub.Committed)
+		}
+	})
+	return s.hub
 }
 
 // NewHTTPServer builds an *http.Server with the default security timeouts.
@@ -123,6 +146,7 @@ func (s *Server) pollInterval() time.Duration {
 // Handler returns the HTTP routes wrapped with the Host and Origin checks,
 // bearer authentication, and body type and size limits.
 func (s *Server) Handler() http.Handler {
+	s.stream()
 	if s.Manager != nil {
 		if s.Now != nil && s.Manager.Now == nil {
 			s.Manager.Now = s.Now
@@ -272,15 +296,71 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "message is required"))
 		return
 	}
-	rearm := s.holdOpen(w)
-	run, err := s.Manager.RunMessage(r.Context(), r.PathValue("id"), body.Message)
-	rearm()
+	sessionID := r.PathValue("id")
+	s.execute(w, r, http.StatusCreated, func(ctx context.Context) (*agent.Execution, error) {
+		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{})
+	})
+}
+
+// defaultWait is the behavior of a request that executes a run when it does
+// not pass ?wait=: false answers as soon as the run is RUNNING, true answers
+// once the run has stopped executing, which is what every request did before
+// runs became asynchronous.
+const defaultWait = false
+
+func waitRequested(r *http.Request) (bool, error) {
+	raw := r.URL.Query().Get("wait")
+	if raw == "" {
+		return defaultWait, nil
+	}
+	switch raw {
+	case "1", "true":
+		return true, nil
+	case "0", "false":
+		return false, nil
+	}
+	return false, domain.E(domain.CodeInvalidArgument, "wait must be 0 or 1")
+}
+
+// execute starts a run in the background and answers with its view. The run
+// does not belong to the request: a client that disconnects leaves it running,
+// and only POST /v1/runs/{id}/cancel stops it. With wait the answer is held
+// until the run has stopped executing.
+func (s *Server) execute(w http.ResponseWriter, r *http.Request, status int, start func(context.Context) (*agent.Execution, error)) {
+	wait, err := waitRequested(r)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	s.Notify(run.ID)
-	writeJSON(w, http.StatusCreated, s.runView(r.Context(), run))
+	rearm := func() {}
+	if wait {
+		rearm = s.holdOpen(w)
+	}
+	ex, err := start(r.Context())
+	if err != nil {
+		rearm()
+		writeErr(w, err)
+		return
+	}
+	run := ex.Run
+	// An event stream stays open while the run executes. Tell it when that
+	// is over, whether or not this request is still here.
+	go func() {
+		<-ex.Done()
+		s.Notify(ex.Run.ID)
+	}()
+	if wait {
+		run, err = ex.Wait(r.Context())
+		if r.Context().Err() != nil {
+			return
+		}
+		rearm()
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, status, s.runView(r.Context(), run))
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
@@ -305,14 +385,15 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	subCh, unsubscribe := s.subscribe(id)
-	defer unsubscribe()
+	sub := s.stream().Subscribe(id)
+	defer sub.Close()
 
 	events, err := s.Manager.Store.ListEvents(r.Context(), id, after)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	sub.Replayed()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	for _, ev := range events {
@@ -333,7 +414,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if cur, gerr := s.Manager.Store.GetRun(r.Context(), id); gerr == nil {
 		run = cur
 	}
-	if domain.TerminalRun(run.Status) {
+	// A terminal run that is still executing has events to come.
+	if domain.TerminalRun(run.Status) && !s.Manager.Executing(id) {
 		if tail, lerr := s.Manager.Store.ListEvents(r.Context(), id, after); lerr == nil && len(tail) > 0 {
 			for _, ev := range tail {
 				if err := trace.WriteSSE(w, ev); err != nil {
@@ -351,6 +433,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	live := &liveStream{store: s.Manager.Store, executing: s.Manager.Executing, w: w, sub: sub, runID: id, after: after}
 	hbTicker := time.NewTicker(s.heartbeatInterval())
 	defer hbTicker.Stop()
 	pollTicker := time.NewTicker(s.pollInterval())
@@ -365,12 +448,24 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flushSSE(w)
-		case <-subCh:
-			if s.drainLiveEvents(r.Context(), w, id, &after) {
+		case <-sub.Wake():
+			committed, unbounded, err := live.writeQueued(r.Context())
+			if err == nil && unbounded {
+				err = live.catchUp(r.Context())
+			}
+			if err != nil {
+				return
+			}
+			flushSSE(w)
+			if committed && live.ended(r.Context()) {
 				return
 			}
 		case <-pollTicker.C:
-			if s.drainLiveEvents(r.Context(), w, id, &after) {
+			if err := live.catchUp(r.Context()); err != nil {
+				return
+			}
+			flushSSE(w)
+			if live.ended(r.Context()) {
 				return
 			}
 		}
@@ -395,89 +490,124 @@ func (s *Server) parseLastEventID(ctx context.Context, runID, header string) (in
 	return 0, domain.E(domain.CodeInvalidArgument, "Last-Event-ID must be an integer")
 }
 
-func (s *Server) drainLiveEvents(ctx context.Context, w http.ResponseWriter, runID string, after *int64) bool {
-	evs, err := s.Manager.Store.ListEvents(ctx, runID, *after)
-	if err != nil {
-		return true
-	}
-	if len(evs) > 0 {
-		for _, ev := range evs {
-			if err := trace.WriteSSE(w, ev); err != nil {
-				return true
-			}
-			if ev.Seq > *after {
-				*after = ev.Seq
-			}
-		}
-		flushSSE(w)
-	}
-	run, err := s.Manager.Store.GetRun(ctx, runID)
-	if err != nil {
-		return true
-	}
-	if domain.TerminalRun(run.Status) {
-		if tail, lerr := s.Manager.Store.ListEvents(ctx, runID, *after); lerr == nil && len(tail) > 0 {
-			for _, ev := range tail {
-				if err := trace.WriteSSE(w, ev); err != nil {
-					return true
-				}
-				if ev.Seq > *after {
-					*after = ev.Seq
-				}
-			}
-			flushSSE(w)
-		}
-		return true
-	}
-	return false
+// liveStream is one event-stream response after its replay: where it has
+// got to in the run's stored events, and the hub queue that orders those
+// events among the run's model text.
+type liveStream struct {
+	store storage.Store
+	// executing reports whether this process is still executing the run.
+	executing func(runID string) bool
+	w         http.ResponseWriter
+	sub       *trace.Subscription
+	runID     string
+	after     int64
 }
 
-func (s *Server) subscribe(runID string) (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
-	s.subMu.Lock()
-	if s.subs == nil {
-		s.subs = make(map[string]map[chan struct{}]struct{})
+func (l *liveStream) write(ev storage.Event) error {
+	if err := trace.WriteSSE(l.w, ev); err != nil {
+		return err
 	}
-	if s.subs[runID] == nil {
-		s.subs[runID] = make(map[chan struct{}]struct{})
+	if ev.Seq > l.after {
+		l.after = ev.Seq
 	}
-	s.subs[runID][ch] = struct{}{}
-	s.subMu.Unlock()
+	return nil
+}
 
-	var once sync.Once
-	unsubscribe := func() {
-		once.Do(func() {
-			s.subMu.Lock()
-			if m, ok := s.subs[runID]; ok {
-				delete(m, ch)
-				if len(m) == 0 {
-					delete(s.subs, runID)
-				}
-			}
-			s.subMu.Unlock()
-		})
+// writeStored writes the stored events not yet sent, up to sequence number
+// through.
+func (l *liveStream) writeStored(ctx context.Context, through int64) error {
+	evs, err := l.store.ListEvents(ctx, l.runID, l.after)
+	if err != nil {
+		return err
 	}
-	return ch, unsubscribe
+	for _, ev := range evs {
+		if ev.Seq > through {
+			break
+		}
+		if err := l.write(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeQueued writes what the hub has queued, in the order it happened. A
+// commit releases the stored events up to its own sequence number and no
+// further: a later event, such as the one that completes a model response,
+// is written only after the text queued ahead of it. committed reports that
+// the queue held a commit, and unbounded that one of them did not say how far
+// the store has got, so the caller should catch up.
+func (l *liveStream) writeQueued(ctx context.Context) (committed, unbounded bool, err error) {
+	for _, item := range l.sub.Take() {
+		switch item.Kind {
+		case trace.ItemPersisted:
+			committed = true
+			if item.Seq == 0 {
+				unbounded = true
+			} else if item.Seq > l.after {
+				err = l.writeStored(ctx, item.Seq)
+			}
+		case trace.ItemDelta:
+			payload, _ := json.Marshal(map[string]string{"text": item.Text})
+			err = trace.WriteSSE(l.w, storage.Event{Type: "stream.delta", Payload: payload})
+		case trace.ItemReset:
+			err = trace.WriteSSE(l.w, storage.Event{Type: "stream.reset"})
+		}
+		if err != nil {
+			return committed, unbounded, err
+		}
+	}
+	return committed, unbounded, nil
+}
+
+// catchUp writes every stored event not yet sent, including those written by
+// another process, which the hub never hears of. The store is read before
+// the queue is taken: the text of a response is queued before the event that
+// completes it is committed, so the queue taken afterwards holds all the text
+// that belongs ahead of the events that were read.
+func (l *liveStream) catchUp(ctx context.Context) error {
+	evs, err := l.store.ListEvents(ctx, l.runID, l.after)
+	if err != nil {
+		return err
+	}
+	if _, _, err := l.writeQueued(ctx); err != nil {
+		return err
+	}
+	for _, ev := range evs {
+		if ev.Seq <= l.after {
+			continue
+		}
+		if err := l.write(ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ended reports whether the stream is over: the run is terminal and this
+// process has returned from executing it, or the stream can no longer be
+// served. An execution appends events after it records the terminal status,
+// so the status alone does not end the stream. Before ending it writes
+// whatever is left.
+func (l *liveStream) ended(ctx context.Context) bool {
+	run, err := l.store.GetRun(ctx, l.runID)
+	if err != nil {
+		return true
+	}
+	if !domain.TerminalRun(run.Status) || (l.executing != nil && l.executing(l.runID)) {
+		return false
+	}
+	if err := l.catchUp(ctx); err == nil {
+		flushSSE(l.w)
+	}
+	return true
 }
 
 // Notify wakes active SSE subscribers for runID so they check the event store.
-func (s *Server) Notify(runID string) {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	for ch := range s.subs[runID] {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
+func (s *Server) Notify(runID string) { s.stream().Notify(runID) }
 
 // SubscriberCount reports the number of active SSE subscribers for runID.
-func (s *Server) SubscriberCount(runID string) int {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	return len(s.subs[runID])
-}
+func (s *Server) SubscriberCount(runID string) int { return s.stream().Subscribers(runID) }
 
 func flushSSE(w http.ResponseWriter) {
 	if flusher, ok := w.(http.Flusher); ok {
@@ -540,18 +670,16 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	id := r.PathValue("id")
-	rearm := s.holdOpen(w)
-	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{
+	s.resume(w, r, agent.ResumeInput{
 		Decision: body.Decision, Answer: body.Answer, ExtraModelCalls: body.ExtraModelCalls,
 	})
-	rearm()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	s.Notify(id)
-	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
+}
+
+func (s *Server) resume(w http.ResponseWriter, r *http.Request, in agent.ResumeInput) {
+	id := r.PathValue("id")
+	s.execute(w, r, http.StatusOK, func(ctx context.Context) (*agent.Execution, error) {
+		return s.Manager.StartResume(ctx, id, in)
+	})
 }
 
 func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
@@ -577,15 +705,7 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "answer is required").WithRef(id))
 		return
 	}
-	rearm := s.holdOpen(w)
-	resumed, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{Answer: ans})
-	rearm()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	s.Notify(id)
-	writeJSON(w, http.StatusOK, s.runView(r.Context(), resumed))
+	s.resume(w, r, agent.ResumeInput{Answer: ans})
 }
 
 func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
@@ -596,16 +716,7 @@ func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	id := r.PathValue("id")
-	rearm := s.holdOpen(w)
-	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
-	rearm()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	s.Notify(id)
-	writeJSON(w, http.StatusOK, s.runView(r.Context(), run))
+	s.resume(w, r, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
@@ -42,7 +43,7 @@ func (m *Mock) Complete(_ context.Context, req Request) (domain.ModelResponse, e
 				break
 			}
 		}
-		return domain.ModelResponse{
+		resp := domain.ModelResponse{
 			Provider:           "mock",
 			ProviderResponseID: "mock_resp",
 			Complete:           true,
@@ -51,7 +52,9 @@ func (m *Mock) Complete(_ context.Context, req Request) (domain.ModelResponse, e
 				Kind:    domain.ItemText,
 				Text:    "Mock answer: " + text,
 			}},
-		}, nil
+		}
+		emitTextDeltas(resp, req.OnDelta)
+		return resp, nil
 	}
 	resp := m.Responses[0]
 	m.Responses = m.Responses[1:]
@@ -59,7 +62,26 @@ func (m *Mock) Complete(_ context.Context, req Request) (domain.ModelResponse, e
 		resp.Provider = "mock"
 	}
 	resp.Items = domain.CloneItems(resp.Items)
+	emitTextDeltas(resp, req.OnDelta)
 	return resp, nil
+}
+
+// emitTextDeltas replays a response's text one word at a time, the way a
+// streaming provider reports it before the response is complete.
+func emitTextDeltas(resp domain.ModelResponse, onDelta func(string)) {
+	if onDelta == nil {
+		return
+	}
+	for _, item := range resp.Items {
+		if item.Kind != domain.ItemText {
+			continue
+		}
+		for _, word := range strings.SplitAfter(item.Text, " ") {
+			if word != "" {
+				onDelta(word)
+			}
+		}
+	}
 }
 
 func cloneReq(req Request) Request {

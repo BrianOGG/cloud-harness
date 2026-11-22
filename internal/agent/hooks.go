@@ -100,30 +100,40 @@ func (m *Manager) stopHooks(ctx context.Context, run storage.Run, event domain.R
 	return event, answer, cause, nil
 }
 
+// restoreHooks returns ctx carrying run's hooks. A caller outside the run's
+// execution, such as another request or a fresh manager, gets the hooks
+// frozen in the run's checkpoint, just as Resume does.
+func (m *Manager) restoreHooks(ctx context.Context, run storage.Run) (context.Context, error) {
+	if h, ok := ctx.Value(hookContextKey{}).(hookContext); ok && h.runID == run.ID {
+		return ctx, nil
+	}
+	snap, _ := m.loadCheckpoint(ctx, run.ID)
+	cfg := snap.Hooks
+	if legacyHooks(cfg) {
+		workspace := m.Workspace
+		if run.WorktreePath != "" {
+			workspace = run.WorktreePath
+		}
+		var err error
+		cfg, err = hooks.Load(workspace)
+		if err != nil {
+			return ctx, err
+		}
+	}
+	return withHooks(ctx, run, hooks.New(cfg)), nil
+}
+
 // Cancellation may come from another request or a fresh manager while a run
-// is waiting. Restore its frozen hooks, just as Resume does.
+// is waiting.
 func (m *Manager) cancelHooks(ctx context.Context, run storage.Run) error {
 	if domain.TerminalRun(run.Status) {
 		return nil
 	}
-	h, ok := ctx.Value(hookContextKey{}).(hookContext)
-	if !ok || h.runID != run.ID {
-		snap, _ := m.loadCheckpoint(ctx, run.ID)
-		cfg := snap.Hooks
-		if legacyHooks(cfg) {
-			workspace := m.Workspace
-			if run.WorktreePath != "" {
-				workspace = run.WorktreePath
-			}
-			var err error
-			cfg, err = hooks.Load(workspace)
-			if err != nil {
-				return err
-			}
-		}
-		ctx = withHooks(ctx, run, hooks.New(cfg))
+	ctx, err := m.restoreHooks(ctx, run)
+	if err != nil {
+		return err
 	}
-	_, _, _, err := m.stopHooks(context.WithoutCancel(ctx), run, domain.EventCancel, "", nil)
+	_, _, _, err = m.stopHooks(context.WithoutCancel(ctx), run, domain.EventCancel, "", nil)
 	return err
 }
 

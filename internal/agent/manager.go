@@ -68,6 +68,9 @@ type Manager struct {
 	// AllowedTools limits grants when Depth > 0. Empty uses the default child grants
 	// unless a definition supplied an explicit tool limit.
 	AllowedTools []string
+	// Stream receives a run's model text as the provider streams it. Nil
+	// drops it. Child runs report under their own run id.
+	Stream DeltaStream
 
 	definitionToolLimit bool
 	failOnToolBudget    bool
@@ -76,6 +79,11 @@ type Manager struct {
 	cancelMu    sync.Mutex
 	cancels     map[string]context.CancelFunc
 	cancelOwner *Manager
+
+	bgMu     sync.Mutex
+	bgClosed bool
+	bgRuns   map[string]struct{}
+	bgWG     sync.WaitGroup
 
 	notifyMu      sync.Mutex
 	notifyCancels map[string]map[uint64]context.CancelFunc
@@ -203,6 +211,17 @@ func (m *Manager) runPrepared(ctx context.Context, run storage.Run, message stri
 func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, message string, opts RunOptions) (result storage.Run, err error) {
 	defer m.finishWorktreeExecution(ctx, run, &result, &err)
 	defer m.releaseRunSnapshotter(ctx, run.ID)
+	// Cancel must be able to stop this execution from the moment a caller
+	// can learn the run id.
+	ctx, cancel := context.WithCancel(ctx)
+	m.trackCancel(run.ID, cancel)
+	defer func() {
+		cancel()
+		m.untrackCancel(run.ID)
+	}()
+	if run.ParentRunID == "" {
+		signalStarted(ctx, run)
+	}
 	policy, err := security.LoadPolicy(m.Workspace)
 	if err != nil {
 		result, finishErr := m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeInvalidArgument, err.Error()))
@@ -223,13 +242,9 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 	if err != nil {
 		return storage.Run{}, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	m.trackCancel(run.ID, cancel)
-	defer func() {
-		cancel()
-		m.untrackCancel(run.ID)
-	}()
-	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
+	// The context is taken here, as the direct defer did: a closure reading
+	// ctx when it runs would see whatever ctx has become by then.
+	defer func(releaseCtx context.Context) { _ = m.Store.ReleaseLease(releaseCtx, run.ID, m.owner()) }(ctx)
 	m.ensureTools()
 	if err := m.installGrants(ctx, run); err != nil {
 		return storage.Run{}, err
@@ -618,6 +633,31 @@ func (m *Manager) untrackCancel(id string) {
 	m.cancelMu.Lock()
 	defer m.cancelMu.Unlock()
 	delete(m.cancels, id)
+}
+
+func (m *Manager) tracked(id string) bool {
+	if m.cancelOwner != nil {
+		return m.cancelOwner.tracked(id)
+	}
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	return m.cancels[id] != nil
+}
+
+// onStop arranges for fn to run when Cancel stops id's tracked execution.
+func (m *Manager) onStop(id string, fn func()) {
+	if m.cancelOwner != nil {
+		m.cancelOwner.onStop(id, fn)
+		return
+	}
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	if cancel := m.cancels[id]; cancel != nil {
+		m.cancels[id] = func() {
+			fn()
+			cancel()
+		}
+	}
 }
 
 func (m *Manager) stopRun(id string) bool {

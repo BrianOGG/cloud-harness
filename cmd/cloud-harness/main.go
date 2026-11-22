@@ -41,6 +41,9 @@ var version = "0.5.0-m5"
 // fit inside the caller's shutdown grace (see serveStopGrace in serve_test.go).
 const serveShutdownTimeout = time.Second
 
+// serveRunStopTimeout bounds how long serve waits for cancelled runs to unwind.
+const serveRunStopTimeout = 5 * time.Second
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		program.ServeWorker(os.Stdin, os.Stdout)
@@ -119,8 +122,8 @@ const usage = `Cloud Harness M5
 
   cloud-harness version
   cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
-  cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
-  cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness run --message TEXT [--plan] [--stream] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
+  cloud-harness chat [--message TEXT] [--session ID] [--stream=false] [--worktree] [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
   cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
   cloud-harness eval run --task TASK [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir]
   cloud-harness eval suite [--live] [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir] [--out path] [--compare path]
@@ -434,6 +437,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "listening on http://%s %s\n", cfg.ListenAddr, safe)
 	select {
 	case <-ctx.Done():
+		stopRuns(mgr, stderr)
 		shutdownServe(srv)
 		return 0
 	case err := <-errCh:
@@ -442,6 +446,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+}
+
+// stopRuns cancels the runs executing in this process before the store
+// closes. Each is recorded as CANCELLED first, which includes running its Stop
+// hooks, so none is left RUNNING when one does not unwind within the timeout.
+func stopRuns(mgr *agent.Manager, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), serveRunStopTimeout)
+	defer cancel()
+	if err := mgr.Shutdown(ctx); err != nil {
+		_, _ = fmt.Fprintln(stderr, "stopping runs:", err)
 	}
 }
 
@@ -463,6 +478,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	useWorktree := fs.Bool("worktree", false, "run in a retained Git worktree isolated from the workspace")
 	planMode := fs.Bool("plan", false, "run in read-only plan mode")
 	disableRepoMap := fs.Bool("no-repomap", false, "disable per-request workspace Repo-Map context")
+	stream := fs.Bool("stream", false, "write model text to stderr as it is generated")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -487,6 +503,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
 	defer func() { _ = mcpSet.Close() }()
 	mgr.DisableRepoMap = *disableRepoMap
+	if *stream {
+		// stdout stays one JSON document, so the text goes to stderr.
+		mgr.Stream = newCLIStream(stderr, mgr.Store)
+	}
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
@@ -973,6 +993,7 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	message := fs.String("message", "", "initial user message")
 	session := fs.String("session", "", "session id")
 	useWorktree := fs.Bool("worktree", false, "run each turn in a retained Git worktree isolated from the workspace")
+	stream := fs.Bool("stream", true, "print model text as it is generated; --stream=false prints only each turn's final answer")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -996,6 +1017,9 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	warnUntrusted(stderr, mgr.Workspace)
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
 	defer func() { _ = mcpSet.Close() }()
+	if *stream {
+		mgr.Stream = newCLIStream(stdout, mgr.Store)
+	}
 	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
 }
 
@@ -1089,8 +1113,8 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			return run, 1, false
 		}
 		if domain.TerminalRun(run.Status) {
-			if run.FinalAnswer != "" {
-				_, _ = fmt.Fprintln(stdout, run.FinalAnswer)
+			if run.FinalAnswer != "" && !answerStreamed(mgr, run.FinalAnswer) {
+				_, _ = fmt.Fprintln(stdout, terminalText(run.FinalAnswer))
 			}
 			if run.Status == domain.RunFailed {
 				if run.Error != nil {
@@ -1114,7 +1138,7 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			if question == "" {
 				question = "Input required:"
 			}
-			_, _ = fmt.Fprintln(stdout, question)
+			_, _ = fmt.Fprintln(stdout, terminalText(question))
 			var answer string
 			for {
 				line, eof, rerr := readChatLine(reader)

@@ -189,7 +189,7 @@ export const api = {
   createSession: () => req<{ id: string }>('/v1/sessions', { method: 'POST' }),
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
   createRun: (sessionId: string, message: string) =>
-    req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`, {
+    req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
@@ -198,9 +198,9 @@ export const api = {
   getDoctor: (signal?: AbortSignal) => req<DoctorCheck[]>('/v1/doctor', { signal }),
   getRun: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}`),
   respond: (runId: string, body: { decision?: string; answer?: string; extra_model_calls?: number }) =>
-    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses`, { method: 'POST', body: JSON.stringify(body) }),
+    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses?wait=0`, { method: 'POST', body: JSON.stringify(body) }),
   addBudget: (runId: string, extra: number) =>
-    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/budget`, {
+    req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/budget?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ extra_model_calls: extra }),
     }),
