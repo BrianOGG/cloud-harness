@@ -31,7 +31,7 @@ func TestRunContextIncludesBoundedRepoMapAfterRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{{
 		Provider: "mock", Complete: true,
 		Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemText, Text: "done"}},
@@ -97,7 +97,7 @@ func TestEmptyProjectDoesNotAddRepoMapThroughRunManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock := &provider.Mock{}
 	manager.Provider = mock
 	manager.SkipPlanner = true

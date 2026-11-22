@@ -31,7 +31,7 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, agentsUsage)
+		_, _ = fmt.Fprintln(stderr, agentsUsage)
 		fs.PrintDefaults()
 	}
 	workspace := fs.String("workspace", ".", "workspace root for .agents/agents definitions")
@@ -45,16 +45,16 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 	if show && name == "" && fs.NArg() == 1 {
 		name = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, agentsUsage)
+		_, _ = fmt.Fprintln(stderr, agentsUsage)
 		return 2
 	}
 	if show && name == "" {
-		fmt.Fprintln(stderr, agentsUsage)
+		_, _ = fmt.Fprintln(stderr, agentsUsage)
 		return 2
 	}
 	registry, err := agents.Load(*workspace)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if show {
@@ -64,7 +64,7 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 			for _, available := range registry.List() {
 				names = append(names, available.Name)
 			}
-			fmt.Fprintf(stderr, "agents: unknown agent %q; available agents: %s\n", name, strings.Join(names, ", "))
+			_, _ = fmt.Fprintf(stderr, "agents: unknown agent %q; available agents: %s\n", name, strings.Join(names, ", "))
 			return 1
 		}
 		if *jsonOutput {
@@ -79,7 +79,7 @@ func cmdAgents(args []string, stdout, stderr io.Writer) int {
 		err = writeAgentsList(stdout, defs)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "agents:", err)
+		_, _ = fmt.Fprintln(stderr, "agents:", err)
 		return 1
 	}
 	return 0

@@ -39,8 +39,12 @@ func TestServeGuardsHostAndStopsOnSIGTERM(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	var processErr error
+	go func() {
+		processErr = cmd.Wait()
+		close(done)
+	}()
 	exited := false
 	defer func() {
 		if !exited {
@@ -59,9 +63,9 @@ func TestServeGuardsHostAndStopsOnSIGTERM(t *testing.T) {
 			break
 		}
 		select {
-		case err := <-done:
+		case <-done:
 			exited = true
-			t.Fatalf("serve exited before listening: %v stderr=%s", err, stderr.String())
+			t.Fatalf("serve exited before listening: %v stderr=%s", processErr, stderr.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
@@ -100,11 +104,11 @@ func TestServeGuardsHostAndStopsOnSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-done:
+	case <-done:
 		exited = true
 		// A process killed by the signal reports it here instead of exit status 0.
-		if err != nil {
-			t.Fatalf("serve did not shut down cleanly on SIGTERM: %v stderr=%s", err, stderr.String())
+		if processErr != nil {
+			t.Fatalf("serve did not shut down cleanly on SIGTERM: %v stderr=%s", processErr, stderr.String())
 		}
 	case <-time.After(serveStopGrace):
 		t.Fatalf("serve still running %s after SIGTERM", serveStopGrace)

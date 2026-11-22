@@ -36,7 +36,7 @@ func TestMCPSetRegistersHealthyServersAndIsolatesFailures(t *testing.T) {
 		{Name: "bad name", Command: bin, Args: args},
 		{Name: "good", Command: bin, Args: args},
 	}, 2*time.Second)
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	status := set.Status()
 	if len(status) != 5 {
@@ -95,7 +95,7 @@ func TestMCPSetRegistersHealthyServersAndIsolatesFailures(t *testing.T) {
 func TestMCPSetProbeWithoutBrokerRegistersNothing(t *testing.T) {
 	bin, args := helperArgs()
 	set := StartMCPServers(context.Background(), nil, []StdioMCPConfig{{Name: "probe", Command: bin, Args: args, Readonly: true}}, 5*time.Second)
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	status := set.Status()
 	if len(status) != 1 || status[0].State != MCPStateRunning || len(status[0].Tools) != 3 || !status[0].Readonly {
 		t.Fatalf("probe status = %+v", status)
@@ -107,7 +107,7 @@ func TestMCPSetSkipsToolNamesAlreadyRegistered(t *testing.T) {
 	broker := NewBroker(&memCharge{b: domain.Budget{MaxToolCalls: 10}}, memGrants{})
 	broker.Register(Spec{Name: "mcp.dup.echo", Description: "pre-existing", Readonly: true, SideEffectClass: "none"})
 	set := StartMCPServers(context.Background(), broker, []StdioMCPConfig{{Name: "dup", Command: bin, Args: args}}, 5*time.Second)
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	status := set.Status()
 	if len(status[0].Tools) != 2 || len(status[0].Warnings) != 1 || !strings.Contains(status[0].Warnings[0], "mcp.dup.echo") {
 		t.Fatalf("status = %+v", status[0])
@@ -120,7 +120,7 @@ func TestMCPSetSkipsToolNamesAlreadyRegistered(t *testing.T) {
 func TestMCPSetReportsAndReapsServerThatExitsAfterStartup(t *testing.T) {
 	bin, args := helperArgs()
 	set := StartMCPServers(context.Background(), nil, []StdioMCPConfig{{Name: "crash", Command: bin, Args: args}}, 5*time.Second)
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	pid := set.servers[0].adapter.ProcessPID()
 	if pid <= 0 {
 		t.Fatalf("invalid pid %d", pid)

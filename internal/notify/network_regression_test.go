@@ -15,7 +15,7 @@ func TestNetworkPayloadBytesUnchanged(t *testing.T) {
 			t.Run(typ+"/"+summary, func(t *testing.T) {
 				payloads := make(chan string, 1)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					defer r.Body.Close()
+					defer func() { _ = r.Body.Close() }()
 					body, err := io.ReadAll(r.Body)
 					if err != nil {
 						t.Errorf("read payload: %v", err)

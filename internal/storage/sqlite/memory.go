@@ -41,7 +41,7 @@ func (db *DB) RecentTurnSummaries(ctx context.Context, sessionID string, limit i
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.TurnSummary
 	for rows.Next() {
 		var ts storage.TurnSummary
@@ -79,7 +79,7 @@ func (db *DB) ListHistoryCatalog(ctx context.Context, sessionID string, limit in
 	for rows.Next() {
 		var id, raw, meta, created string
 		if err := rows.Scan(&id, &raw, &meta, &created); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		createdAt, _ := parseTime(created)
@@ -92,10 +92,10 @@ func (db *DB) ListHistoryCatalog(ctx context.Context, sessionID string, limit in
 		})
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	sumRows, err := db.sql.QueryContext(ctx, `
 		SELECT ts.turn_id, ts.summary, t.created_at
@@ -107,7 +107,7 @@ func (db *DB) ListHistoryCatalog(ctx context.Context, sessionID string, limit in
 	if err != nil {
 		return nil, err
 	}
-	defer sumRows.Close()
+	defer func() { _ = sumRows.Close() }()
 	for sumRows.Next() {
 		var turnID, summary, created string
 		if err := sumRows.Scan(&turnID, &summary, &created); err != nil {
@@ -211,7 +211,7 @@ func (db *DB) ListOpenSummaryJobs(ctx context.Context, sessionID string) ([]stor
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.SummaryJob
 	for rows.Next() {
 		var job storage.SummaryJob

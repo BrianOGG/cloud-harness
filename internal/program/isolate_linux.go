@@ -165,7 +165,7 @@ func probeCgroup() (bool, string) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return false, err.Error()
 	}
-	defer os.Remove(dir)
+	defer func() { _ = os.Remove(dir) }()
 	err = os.WriteFile(filepath.Join(dir, "memory.max"), []byte("134217728"), 0o200)
 	if err != nil {
 		return false, "memory.max: " + err.Error()

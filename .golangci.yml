@@ -10,8 +10,7 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    # errcheck is off: it reports 399 findings on this tree, mostly unchecked
-    # fmt.Fprint*/io.WriteString to CLI writers and deferred Close calls.
+    - errcheck
   settings:
     staticcheck:
       checks:

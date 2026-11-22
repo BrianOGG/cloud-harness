@@ -234,7 +234,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if err != nil {
 		return run, err
 	}
-	defer m.Store.ReleaseLease(ctx, run.ID, m.owner())
+	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
 	ctx, cancel := context.WithCancel(ctx)
 	m.trackCancel(run.ID, cancel)
 	defer func() {
@@ -610,7 +610,7 @@ func (m *Manager) resumeReconcile(ctx context.Context, run storage.Run, leaseVer
 			return storage.Run{}, domain.E(domain.CodeConflict, "reconcile transition mismatch")
 		}
 	}
-	batch.Recover()
+	_ = batch.Recover()
 	if err := m.Store.UpdateBatch(ctx, storage.StoredBatch{
 		ID: batch.ID, ModelResponseID: stored.ModelResponseID, RunID: run.ID,
 		Status: batch.Status, Action: batch.Action, Invocations: batch.Invocations,
@@ -646,7 +646,7 @@ func (m *Manager) Recover(ctx context.Context, runID string) (storage.Run, error
 	if _, err := m.Store.AcquireLease(ctx, run.ID, m.owner(), now, now.Add(m.leaseFor())); err != nil {
 		return run, err
 	}
-	defer m.Store.ReleaseLease(ctx, run.ID, m.owner())
+	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
 	batches, err := m.Store.LoadBatches(ctx, run.ID)
 	if err != nil {
 		return storage.Run{}, err

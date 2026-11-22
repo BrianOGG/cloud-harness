@@ -379,7 +379,7 @@ func TestRewindAutomaticSnapshotHasCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mgr.Provider = &provider.Mock{Responses: []domain.ModelResponse{
 		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{
 			ProviderCallID: "write", Name: "write_file", Arguments: []byte(`{"path":"A","content":"new"}`),
@@ -421,7 +421,7 @@ func TestReaderIsTTYRejectsNullDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if readerIsTTY(file) || readerIsTTY(strings.NewReader("yes\n")) || readerIsTTY(nil) {
 		t.Fatal("non-terminal input treated as a TTY")
 	}

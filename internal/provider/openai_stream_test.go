@@ -30,12 +30,12 @@ func TestStreamAssemblesMultipleToolCalls(t *testing.T) {
 			t.Error("api key was written into the request body")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, `data: {"id":"chatcmpl_tools","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_file","arguments":""}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"alpha.txt\"}"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"beta.txt\"}"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"id":"call_c","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"gamma.txt\"}"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]}`+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl_tools","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_file","arguments":""}}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"alpha.txt\"}"}}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"beta.txt\"}"}}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"id":"call_c","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"gamma.txt\"}"}}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 	p := &OpenAICompatible{BaseURL: srv.URL, APIKey: key, Model: "agnes-2.5-flash", Client: srv.Client()}
@@ -64,7 +64,7 @@ func TestNonStreamingMultipleToolCallsAndOpaqueReplay(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		got = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{
+		_, _ = io.WriteString(w, `{
 		  "id":"chatcmpl_json",
 		  "choices":[{
 		    "finish_reason":"tool_calls",
@@ -112,7 +112,7 @@ func TestNonStreamingMultipleToolCallsAndOpaqueReplay(t *testing.T) {
 func TestIncompleteStreamIsNotDispatchable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, `data: {"id":"chatcmpl_cut","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl_cut","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}`+"\n\n")
 	}))
 	defer srv.Close()
 	p := &OpenAICompatible{BaseURL: srv.URL, APIKey: "sk-cut", Model: "m", Client: srv.Client()}
@@ -153,14 +153,14 @@ func TestOpenAIRequestOmitsOpaqueTopLevelByDefault(t *testing.T) {
 		bodies = append(bodies, string(b))
 		w.Header().Set("Content-Type", "text/event-stream")
 		if len(bodies) == 1 {
-			io.WriteString(w, `data: {"id":"chatcmpl_1","choices":[{"index":0,"delta":{"reasoning_content":"`+reasoning+`","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"alpha.txt\"}"}}]}}]}`+"\n\n")
-			io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]}`+"\n\n")
-			io.WriteString(w, "data: [DONE]\n\n")
+			_, _ = io.WriteString(w, `data: {"id":"chatcmpl_1","choices":[{"index":0,"delta":{"reasoning_content":"`+reasoning+`","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"alpha.txt\"}"}}]}}]}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			return
 		}
-		io.WriteString(w, `data: {"id":"chatcmpl_2","choices":[{"index":0,"delta":{"content":"done"}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl_2","choices":[{"index":0,"delta":{"content":"done"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -228,9 +228,9 @@ func TestOpenAIReasoningReplayOmitMode(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, `data: {"id":"chatcmpl_omit","choices":[{"index":0,"delta":{"content":"ok"}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl_omit","choices":[{"index":0,"delta":{"content":"ok"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 

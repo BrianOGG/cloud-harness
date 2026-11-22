@@ -53,7 +53,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	body, ok := f.(io.ReadSeeker) // embed.FS files are seekable; directories are not.
 	if !ok {
 		http.NotFound(w, r)

@@ -25,11 +25,11 @@ user configuration directory, outside the workspace.`
 
 func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
-		fmt.Fprintln(stdout, trustUsage)
+		_, _ = fmt.Fprintln(stdout, trustUsage)
 		return 0
 	}
 	if len(args) == 0 || args[0] != "status" && args[0] != "approve" && args[0] != "revoke" {
-		fmt.Fprintln(stderr, trustUsage)
+		_, _ = fmt.Fprintln(stderr, trustUsage)
 		return 2
 	}
 	action := args[0]
@@ -50,7 +50,7 @@ func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, trustUsage)
+		_, _ = fmt.Fprintln(stderr, trustUsage)
 		return 2
 	}
 	abs, err := filepath.Abs(*workspace)
@@ -58,16 +58,16 @@ func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _, err = inspectWorkspace(abs)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "trust:", err)
+		_, _ = fmt.Fprintln(stderr, "trust:", err)
 		return 1
 	}
 	configDir, err := security.ConfigDirectory()
 	if err != nil {
-		fmt.Fprintln(stderr, "trust:", err)
+		_, _ = fmt.Fprintln(stderr, "trust:", err)
 		return 1
 	}
 	fail := func(err error) int {
-		fmt.Fprintln(stderr, "trust:", err)
+		_, _ = fmt.Fprintln(stderr, "trust:", err)
 		return 1
 	}
 	switch action {
@@ -80,16 +80,16 @@ func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return writeJSON(stdout, statuses)
 		}
 		for _, status := range statuses {
-			fmt.Fprintln(stdout, trustLine(status))
+			_, _ = fmt.Fprintln(stdout, trustLine(status))
 		}
-		fmt.Fprintln(stdout, "trust store:", security.TrustStorePath(configDir))
+		_, _ = fmt.Fprintln(stdout, "trust store:", security.TrustStorePath(configDir))
 		return 0
 	case "revoke":
 		removed, err := security.RevokeTrust(abs, configDir)
 		if err != nil {
 			return fail(err)
 		}
-		fmt.Fprintf(stdout, "revoked %d trust decision(s) for %s\n", removed, abs)
+		_, _ = fmt.Fprintf(stdout, "revoked %d trust decision(s) for %s\n", removed, abs)
 		return 0
 	}
 
@@ -115,30 +115,30 @@ func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(errors.New(status.Reason))
 		}
 		if !status.Pending() {
-			fmt.Fprintln(stdout, trustLine(status))
+			_, _ = fmt.Fprintln(stdout, trustLine(status))
 			continue
 		}
 		pending[name] = raw
-		fmt.Fprintln(stdout, trustLine(status))
-		fmt.Fprintln(stdout, trustEffect(name))
+		_, _ = fmt.Fprintln(stdout, trustLine(status))
+		_, _ = fmt.Fprintln(stdout, trustEffect(name))
 		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
-			fmt.Fprintln(stdout, "    | "+strings.ToValidUTF8(strings.TrimRight(line, "\r"), "\uFFFD"))
+			_, _ = fmt.Fprintln(stdout, "    | "+strings.ToValidUTF8(strings.TrimRight(line, "\r"), "\uFFFD"))
 		}
 	}
 	if len(pending) == 0 {
-		fmt.Fprintln(stdout, "nothing to trust")
+		_, _ = fmt.Fprintln(stdout, "nothing to trust")
 		return 0
 	}
 	if !*yes {
 		if !readerIsTTY(stdin) {
-			fmt.Fprintln(stderr, "trust approve requires confirmation on a TTY; review the content above and re-run with --yes to proceed")
+			_, _ = fmt.Fprintln(stderr, "trust approve requires confirmation on a TTY; review the content above and re-run with --yes to proceed")
 			return 1
 		}
-		fmt.Fprintf(stdout, "Trust this content for %s? [y/N]: ", abs)
+		_, _ = fmt.Fprintf(stdout, "Trust this content for %s? [y/N]: ", abs)
 		line, _, readErr := readChatLine(bufio.NewReader(stdin))
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if readErr != nil || answer != "y" && answer != "yes" {
-			fmt.Fprintln(stdout, "not trusted")
+			_, _ = fmt.Fprintln(stdout, "not trusted")
 			return 1
 		}
 	}
@@ -147,7 +147,7 @@ func cmdTrust(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	for _, name := range security.TrustedFiles {
 		if _, ok := pending[name]; ok {
-			fmt.Fprintf(stdout, "trusted %s; any later change needs a new approval\n", name)
+			_, _ = fmt.Fprintf(stdout, "trusted %s; any later change needs a new approval\n", name)
 		}
 	}
 	return 0
@@ -189,7 +189,7 @@ func warnUntrusted(stderr io.Writer, workspace string) {
 	}
 	for _, status := range statuses {
 		if status.Pending() {
-			fmt.Fprintln(stderr, "warning:", agent.UntrustedMessage(status))
+			_, _ = fmt.Fprintln(stderr, "warning:", agent.UntrustedMessage(status))
 		}
 	}
 }

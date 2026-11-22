@@ -128,7 +128,7 @@ func TestSnapshotUnavailableWhenGitIsNotOnPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	t.Setenv("PATH", "")
 	snap, err := Open(workspace, db)
 	if err != nil {
@@ -151,7 +151,7 @@ func TestDiffCurrentPreviewsLiveChangesWithoutSnapshotRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	snapper, err := Open(workspace, db)
 	if err != nil {
 		t.Fatal(err)

@@ -60,7 +60,7 @@ func InspectReadOnly(ctx context.Context, path string) (ReadOnlyInfo, error) {
 	if err != nil {
 		return ReadOnlyInfo{}, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var out ReadOnlyInfo
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&out.SchemaVersion); err != nil {
 		return ReadOnlyInfo{}, fmt.Errorf("read schema version: %w", err)
@@ -72,7 +72,7 @@ func InspectReadOnly(ctx context.Context, path string) (ReadOnlyInfo, error) {
 	if err != nil {
 		return ReadOnlyInfo{}, fmt.Errorf("foreign_key_check: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var table, parent string
 		var rowid sql.NullInt64
@@ -96,14 +96,14 @@ func ReadUsage(ctx context.Context, path string, since time.Time) ([]UsageRecord
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, run_id, provider, usage_json, created_at
 		FROM model_responses WHERE created_at >= ? ORDER BY created_at ASC, id ASC`, formatTime(since))
 	if err != nil {
 		return nil, fmt.Errorf("read model usage: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []UsageRecord
 	for rows.Next() {
 		var rec UsageRecord

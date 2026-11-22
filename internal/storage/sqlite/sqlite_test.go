@@ -57,7 +57,7 @@ func TestMigrationWALAndForeignKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	ver, err = db.SchemaVersion(ctx)
 	if err != nil || ver != 8 {
 		t.Fatalf("reopen version %d %v", ver, err)

@@ -42,7 +42,7 @@ func TestAskUserNotificationAndNoConfigZeroRequests(t *testing.T) {
 
 	askEvents := make(chan notify.Event, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var event notify.Event
 		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 			t.Errorf("decode ask_user notification: %v", err)
@@ -78,7 +78,7 @@ func TestAskUserNotificationAndNoConfigZeroRequests(t *testing.T) {
 func TestFailureAndCancellationShareFailureNotifications(t *testing.T) {
 	events := make(chan notify.Event, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var event notify.Event
 		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 			t.Errorf("decode notification: %v", err)

@@ -93,7 +93,7 @@ func (p *OpenAICompatible) Probe(ctx context.Context) error {
 	if err != nil {
 		return domain.E(domain.CodeProviderHTTP, scrub(err.Error(), p.APIKey))
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
 		return domain.E(domain.CodeProviderHTTP, scrub("GET /models returned "+res.Status+": "+truncate(string(body), 400), p.APIKey))
@@ -326,7 +326,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 		}
 
 		defer cancelAttempt()
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		bodyReader := &idleTimeoutReader{r: res.Body, timeout: idleTimeout, cancel: cancelAttempt}
 		if req.oracle {
 			defer func() {

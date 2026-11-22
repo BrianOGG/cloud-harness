@@ -46,7 +46,7 @@ func TestChatImageInputReachesModelWithoutPersistingImageBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var out, stderr bytes.Buffer
 	if code := runChat(ctx, mgr, "image-session", "", strings.NewReader("Analyze this @image:\"my shot.png\"\n"), &out, &stderr); code != 0 {
 		t.Fatalf("chat exit=%d out=%s stderr=%s", code, &out, &stderr)

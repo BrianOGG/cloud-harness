@@ -229,7 +229,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		cancel()
 		m.untrackCancel(run.ID)
 	}()
-	defer m.Store.ReleaseLease(ctx, run.ID, m.owner())
+	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
 	m.ensureTools()
 	if err := m.installGrants(ctx, run); err != nil {
 		return storage.Run{}, err

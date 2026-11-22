@@ -45,7 +45,7 @@ func (db *DB) ListSessions(ctx context.Context) ([]storage.SessionSummary, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]storage.SessionSummary, 0)
 	for rows.Next() {
@@ -124,7 +124,7 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Run
 	for rows.Next() {
 		r, err := scanRun(rows, "")
@@ -145,7 +145,7 @@ func (db *DB) ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]storage.Run, 0)
 	for rows.Next() {
 		r, err := scanRun(rows, "")
@@ -167,7 +167,7 @@ func (db *DB) ListExpiredRunningRuns(ctx context.Context, now time.Time) ([]stor
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Run
 	for rows.Next() {
 		r, err := scanRun(rows, "")
@@ -583,7 +583,7 @@ func (db *DB) ListEvents(ctx context.Context, runID string, afterSeq int64) ([]s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []storage.Event
 	for rows.Next() {
 		var ev storage.Event

@@ -114,13 +114,13 @@ const worktreesUsage = "usage: cloud-harness worktrees list [--json] [--workspac
 
 func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, worktreesUsage)
+		_, _ = fmt.Fprintln(stderr, worktreesUsage)
 		return 2
 	}
 	action := args[0]
 	args = args[1:]
 	if action != "list" && action != "diff" && action != "merge" && action != "discard" {
-		fmt.Fprintln(stderr, worktreesUsage)
+		_, _ = fmt.Fprintln(stderr, worktreesUsage)
 		return 2
 	}
 	// Accept the documented <run-id> before flags as well as Go-style flags first.
@@ -151,25 +151,25 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 	if action != "list" && runID == "" && fs.NArg() == 1 {
 		runID = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, worktreesUsage)
+		_, _ = fmt.Fprintln(stderr, worktreesUsage)
 		return 2
 	}
 	if action != "list" && runID == "" {
-		fmt.Fprintln(stderr, worktreesUsage)
+		_, _ = fmt.Fprintln(stderr, worktreesUsage)
 		return 2
 	}
 	if action == "merge" && len(strings.Fields(testCommand)) == 0 {
-		fmt.Fprintln(stderr, "test command must not be empty")
+		_, _ = fmt.Fprintln(stderr, "test command must not be empty")
 		return 2
 	}
 	cfg, err := load(c)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	root, err := filepath.Abs(c.workspaceOrDot())
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	cfg.DBPath = worktreeDBPath(cfg, root)
@@ -195,11 +195,11 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 				return nil
 			}
 			tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "RUN ID\tBRANCH\tBASE SHA\tPATH\tSTATE\tORPHAN")
+			_, _ = fmt.Fprintln(tw, "RUN ID\tBRANCH\tBASE SHA\tPATH\tSTATE\tORPHAN")
 			for _, row := range rows {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", row.RunID, row.Branch, row.BaseSHA, row.Path, row.State, row.Orphan)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", row.RunID, row.Branch, row.BaseSHA, row.Path, row.State, row.Orphan)
 				if row.Error != "" {
-					fmt.Fprintln(stderr, row.Error)
+					_, _ = fmt.Fprintln(stderr, row.Error)
 				}
 			}
 			return tw.Flush()
@@ -238,9 +238,9 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 				}
 				return nil
 			}
-			fmt.Fprintf(stdout, "run %s\nbranch %s\nbase %s\nfiles: %s\n%s\n%s", runID, summary.Branch, summary.BaseSHA, strings.Join(summary.Files, ", "), summary.Stat, summary.Diff)
+			_, _ = fmt.Fprintf(stdout, "run %s\nbranch %s\nbase %s\nfiles: %s\n%s\n%s", runID, summary.Branch, summary.BaseSHA, strings.Join(summary.Files, ", "), summary.Stat, summary.Diff)
 			if summary.Truncated {
-				fmt.Fprintln(stdout, "\n[diff truncated at 64 KiB]")
+				_, _ = fmt.Fprintln(stdout, "\n[diff truncated at 64 KiB]")
 			}
 			return nil
 		}
@@ -254,7 +254,7 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		if action == "discard" {
 			if selected.State != "merged" && selected.State != "discarded" && !force {
 				return errors.New("unmerged worktree; discard requires explicit --force (including committed or empty pending runs)")
@@ -267,7 +267,7 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 					return fmt.Errorf("worktree removed; retry discard --force to record state: %w", err)
 				}
 			}
-			fmt.Fprintf(stdout, "worktree %s discarded (run record retained)\n", runID)
+			_, _ = fmt.Fprintf(stdout, "worktree %s discarded (run record retained)\n", runID)
 			return nil
 		}
 		if selected.State != "pending" || selected.Orphan != "" {
@@ -284,7 +284,7 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 		}); err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "worktree %s merged; branch and directory removed\n", runID)
+		_, _ = fmt.Fprintf(stdout, "worktree %s merged; branch and directory removed\n", runID)
 		return nil
 	}
 	if action == "merge" || action == "discard" {
@@ -293,7 +293,7 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 		err = perform()
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "worktrees:", err)
+		_, _ = fmt.Fprintln(stderr, "worktrees:", err)
 		return 1
 	}
 	return 0
@@ -313,7 +313,7 @@ func runWorktreeTests(ctx context.Context, path, command string, output io.Write
 	var log bytes.Buffer
 	cmd.Stdout = io.MultiWriter(output, &log)
 	cmd.Stderr = cmd.Stdout
-	fmt.Fprintf(output, "test gate (%s): %s\n", path, command)
+	_, _ = fmt.Fprintf(output, "test gate (%s): %s\n", path, command)
 	if err := cmd.Run(); err != nil {
 		text := log.String()
 		if len(text) > 8192 {

@@ -568,7 +568,7 @@ func (g *commandGuard) Run() error {
 	if g.statusR == nil {
 		return g.cmd.Run()
 	}
-	defer g.statusR.Close()
+	defer func() { _ = g.statusR.Close() }()
 	err := g.cmd.Start()
 	_ = g.statusW.Close()
 	if err != nil {

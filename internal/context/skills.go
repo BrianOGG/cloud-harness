@@ -124,7 +124,7 @@ func openSkills(root string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	for _, path := range []string{".agents", skillDir} {
 		info, err := r.Lstat(path)
 		if err != nil {
@@ -164,7 +164,7 @@ func discoverSkills(root string, byName map[string]Skill, catalog *SkillCatalog)
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	entries, err := fs.ReadDir(dir.FS(), ".")
 	if err != nil {
 		return err
@@ -197,12 +197,12 @@ func readSkill(root, name string) (LoadedSkill, error) {
 	if err != nil {
 		return LoadedSkill{}, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	f, err := openSkill(dir, name)
 	if err != nil {
 		return LoadedSkill{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, MaxSkillBytes+1))
 	if err != nil {
 		return LoadedSkill{}, err
