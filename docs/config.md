@@ -25,6 +25,9 @@ baseline denials, examples, and run snapshot behavior.
   "disable_snapshots": false,
   "command_env_allow": [],
   "command_limits": {},
+  "servers": [
+    {"name": "files", "command": "/usr/local/bin/files-mcp", "args": ["--root", "/srv/data"], "readonly": false}
+  ],
   "notify": {
     "approval_base_url": "https://harness.example",
     "channels": [
@@ -37,6 +40,24 @@ baseline denials, examples, and run snapshot behavior.
   }
 }
 ```
+
+## MCP servers
+
+`servers` (alias `mcp_servers`; when both are set `servers` wins) lists local
+stdio MCP servers. There is no environment variable or flag for it.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Unique label made of letters, digits, `_`, and `-`. Tools are registered as `mcp.<name>.<tool>`. |
+| `command` | yes | Executable to start, resolved through `PATH` when it has no slash. It is not run through a shell. |
+| `args` | no | Arguments passed to the command. |
+| `readonly` | no | Default `false`: every call waits for approval unless `policy.json` decides otherwise. `true` declares that the server's tools have no side effects; such tools are denied unless a `policy.json` rule allows them. |
+
+`serve`, `run`, `chat`, `runs resume`, and `runs recover` start the servers,
+discover their tools, and stop them on exit. A server that fails to start is
+reported on stderr and skipped; it does not stop the command. Other commands do
+not start servers, except `doctor`, which starts each one briefly to probe it.
+See [tools.md](tools.md#mcp) for the call path, limits, and child-run rules.
 
 ## Run notifications
 

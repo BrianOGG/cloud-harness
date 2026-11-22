@@ -56,6 +56,9 @@ type StdioMCP struct {
 	pending   map[int64]chan rpcResponse
 	closed    bool
 	closedErr error
+	// closeOnce guards process teardown separately from closed: a server that
+	// exits on its own marks the connection closed but must still be reaped.
+	closeOnce sync.Once
 }
 
 type rpcResponse struct {
@@ -117,29 +120,41 @@ func (s *StdioMCP) SetTimeout(d time.Duration) {
 	s.timeout = d
 }
 
-// Close terminates the subprocess cleanly, releasing pipes and avoiding orphan processes.
-func (s *StdioMCP) Close() error {
+// Alive reports whether the subprocess was started and its stdio connection is still usable.
+func (s *StdioMCP) Alive() bool {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	cmd := s.cmd
-	stdin := s.stdin
-	cancel := s.cancel
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.cmd != nil && !s.closed
+}
 
-	if cancel != nil {
-		cancel()
-	}
-	if stdin != nil {
-		_ = stdin.Close()
-	}
-	if cmd != nil {
-		_ = killGroup(cmd)
-		_ = cmd.Wait()
-	}
+// Err returns why the connection ended, or nil while it is usable or after a plain Close.
+func (s *StdioMCP) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closedErr
+}
+
+// Close terminates the subprocess cleanly, releasing pipes and avoiding orphan processes.
+// It also reaps a server that already exited on its own. Concurrent callers wait for teardown.
+func (s *StdioMCP) Close() error {
+	s.closeOnce.Do(func() {
+		// Cancel first: it kills the process group, which unblocks a writer
+		// holding s.mu on a full stdin pipe.
+		s.cancel()
+		s.mu.Lock()
+		s.closed = true
+		cmd := s.cmd
+		stdin := s.stdin
+		s.mu.Unlock()
+
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if cmd != nil {
+			_ = killGroup(cmd)
+			_ = cmd.Wait()
+		}
+	})
 	return nil
 }
 
@@ -193,6 +208,8 @@ func (s *StdioMCP) readLoop(r io.Reader) {
 		}
 		if err != nil {
 			s.handleDisconnect(err)
+			// Reap the exited server now instead of leaving a zombie until shutdown.
+			_ = s.Close()
 			return
 		}
 	}
@@ -200,8 +217,10 @@ func (s *StdioMCP) readLoop(r io.Reader) {
 
 func (s *StdioMCP) handleDisconnect(err error) {
 	s.mu.Lock()
+	if !s.closed {
+		s.closedErr = err
+	}
 	s.closed = true
-	s.closedErr = err
 	pending := s.pending
 	s.pending = make(map[int64]chan rpcResponse)
 	s.mu.Unlock()
@@ -296,7 +315,10 @@ func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.Ra
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-		return nil, domain.E(domain.CodeToolError, "mcp tool call timed out after 15s")
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, domain.E(domain.CodeToolError, "mcp "+method+" request timed out")
+		}
+		return nil, domain.E(domain.CodeToolError, "mcp "+method+" request cancelled")
 	}
 }
 

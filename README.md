@@ -82,6 +82,14 @@ within one process; do not run concurrent lifecycle CLI processes against one
 repository. `doctor` reports orphans and `retain --prune-runs-days` can reclaim
 them. See [worktree lifecycle](docs/cli.md#worktrees) for states and recovery.
 
+Local stdio MCP servers listed under `servers` in the configuration file are
+started by `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Their tools
+appear to the model as `mcp.<server>.<tool>` and go through the same policy,
+approval, budget, hook, and audit path as built-in tools; by default every call
+waits for approval. A server that fails to start is skipped with a warning, and
+`doctor` shows each server's real state. See
+[docs/config.md](docs/config.md#mcp-servers) and [docs/tools.md](docs/tools.md#mcp).
+
 Resume flags come before the run id:
 
 ```bash
@@ -165,7 +173,7 @@ internal/agent             run manager, resume, child runs, scripts
 internal/provider          mock and OpenAI-compatible HTTP adapter
 internal/context           prefix, memory, planner, compaction
 internal/history           Chinese bigrams, paths, identifiers
-internal/tools             broker, poll, MCP spec mapping
+internal/tools             broker, poll, stdio MCP servers
 internal/security          scoped grants
 internal/program           Starlark worker and isolation gate
 internal/subagent          delegate contract; the live runner is the agent
@@ -237,7 +245,7 @@ Cross-compiled targets are built, not vetted or tested: `GOOS=windows go vet ./.
 - [docs/policy.md](docs/policy.md) layered policy, builtin baseline, and workspace file trust
 - [docs/hooks.md](docs/hooks.md) lifecycle hooks and workspace hook trust
 - [docs/api.md](docs/api.md) approval queue and HTTP authentication
-- [docs/tools.md](docs/tools.md) tool, poll, script, and MCP mapping
+- [docs/tools.md](docs/tools.md) tool, poll, script, and stdio MCP servers
 - [docs/errors.md](docs/errors.md) error codes
 - [docs/state-machine.md](docs/state-machine.md) run and invocation transitions
 - [docs/worker-starlark.md](docs/worker-starlark.md) worker isolation

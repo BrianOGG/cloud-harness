@@ -391,6 +391,8 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	warnUntrusted(stderr, mgr.Workspace)
+	mcpSet := startMCP(ctx, cfg, mgr, stderr)
+	defer mcpSet.Close()
 	if _, err := mgr.RecoverExpired(ctx); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -398,7 +400,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	if *useWorktree {
 		cfg.DBPath = worktreeDBPath(cfg, mgr.Workspace)
 	}
-	diagnostics := serveDiagnostics{cfg: cfg, workspace: mgr.Workspace}
+	diagnostics := serveDiagnostics{cfg: cfg, workspace: mgr.Workspace, mcp: mcpSet}
 	srv := (&transport.Server{
 		Manager: mgr, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
 		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
@@ -459,6 +461,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	warnUntrusted(stderr, mgr.Workspace)
+	mcpSet := startMCP(ctx, cfg, mgr, stderr)
+	defer mcpSet.Close()
 	mgr.DisableRepoMap = *disableRepoMap
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
@@ -533,6 +537,11 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	if args[0] == "recover" || args[0] == "resume" {
+		// These continue a run, so a pending MCP call must find its tool registered.
+		mcpSet := startMCP(ctx, cfg, mgr, stderr)
+		defer mcpSet.Close()
+	}
 	switch args[0] {
 	case "list":
 		runs, err := db.ListRuns(ctx, *session)
@@ -962,6 +971,8 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	warnUntrusted(stderr, mgr.Workspace)
+	mcpSet := startMCP(ctx, cfg, mgr, stderr)
+	defer mcpSet.Close()
 	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
 }
 

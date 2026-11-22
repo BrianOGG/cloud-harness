@@ -154,7 +154,8 @@ distinct. Known names are the workspace catalog (`read_file`, `write_file`,
 `retrieve_history`, `retrieve_resource`, `execute_program`, `poll_tool`).
 `ask_user` and `delegate_task` are always forbidden for child agents and are
 configuration errors even though the harness knows those tools. MCP servers
-are not started or consulted to discover additional names.
+are not started or consulted to discover additional names, so an MCP tool name
+in `tools` is a configuration error.
 
 The text after the first closing frontmatter delimiter, with leading and
 trailing whitespace trimmed, becomes `System`. It may be empty. Internal
@@ -568,8 +569,14 @@ journal mode (WAL), and `PRAGMA foreign_key_check`, and never runs migrations,
 checkpoints, or writes. Git checks only executable discovery and, when a
 snapshot shadow repository already exists, readability of its `HEAD`; it does
 not run `gc` or `fsck`. Worktree inventory is reconciled with run records and
-orphans are reported as warnings (see `worktrees`); nothing is reclaimed. MCP entries are syntax/field checked and no server
-process is started. With `--provider openai`, a configured key gets one short
+orphans are reported as warnings (see `worktrees`); nothing is reclaimed. Each
+configured MCP server is started, asked for its tool list, and stopped again,
+with a 10 second limit per server; the `mcp` line lists every server with its
+tool count or the reason it is unavailable, and is `fail` when any server is
+unavailable. `--json` adds a `servers` array with `name`, `readonly`, `state`
+(`running` or `failed`), `tools`, `warnings`, and `error`. The `/v1/doctor`
+endpoint of `serve` does not start anything: it reports the servers that the
+`serve` process already owns, including one that exited after startup. With `--provider openai`, a configured key gets one short
 `GET /models` probe; a missing `OPENAI_API_KEY` is a warning. API key material
 is redacted from diagnostics.
 

@@ -108,6 +108,11 @@ func (m *Manager) childGrants(ctx context.Context, run storage.Run) []domain.Gra
 				add(name, m.Workspace)
 			}
 		default:
+			// Naming an MCP tool in allowed_tools makes it visible to the child but
+			// never pre-grants it; otherwise delegation would skip the approval.
+			if strings.HasPrefix(name, "mcp.") {
+				continue
+			}
 			if m.Broker == nil || m.Broker.Has(name) {
 				add(name, "")
 			}

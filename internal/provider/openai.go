@@ -130,6 +130,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 		return domain.ModelResponse{}, domain.E(domain.CodeProviderConfig, "invalid openai_reasoning_replay: "+p.ReasoningReplay)
 	}
 	body := chatRequest{Model: model, Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
+	names := newWireToolNames(req.Tools)
 	for _, msg := range req.Messages {
 		cm := chatMessage{Role: msg.Role, ToolCallID: msg.ToolCallID}
 		if msg.Content != "" {
@@ -159,7 +160,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 				Function: struct {
 					Name      string `json:"name,omitempty"`
 					Arguments string `json:"arguments,omitempty"`
-				}{Name: call.Name, Arguments: args},
+				}{Name: names.wire(call.Name), Arguments: args},
 			})
 		}
 		body.Messages = append(body.Messages, cm)
@@ -172,7 +173,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 		body.Tools = append(body.Tools, chatTool{
 			Type: "function",
 			Function: chatFn{
-				Name: tool.Name, Description: tool.Description, Parameters: params,
+				Name: names.wire(tool.Name), Description: tool.Description, Parameters: params,
 			},
 		})
 	}
@@ -342,11 +343,11 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 		}
 		ctype := res.Header.Get("Content-Type")
 		if strings.Contains(ctype, "text/event-stream") {
-			return parseSSE(bodyReader, scrubber, onDelta)
+			return names.restore(parseSSE(bodyReader, scrubber, onDelta))
 		}
 		br := bufio.NewReader(bodyReader)
 		if !strings.Contains(ctype, "application/json") && looksLikeSSE(br) {
-			return parseSSE(br, scrubber, onDelta)
+			return names.restore(parseSSE(br, scrubber, onDelta))
 		}
 		respBody, err := io.ReadAll(io.LimitReader(br, 4<<20))
 		if err != nil {
@@ -356,7 +357,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 		if err != nil {
 			return domain.ModelResponse{}, err
 		}
-		return parsed, nil
+		return names.restore(parsed, nil)
 	}
 	return domain.ModelResponse{}, lastErr
 }
