@@ -11,14 +11,15 @@ import (
 // Thinking and redacted thinking blocks keep their original JSON bytes.
 func ParseAnthropicMessage(raw []byte) (domain.ModelResponse, error) {
 	var env struct {
-		ID      string            `json:"id"`
-		Content []json.RawMessage `json:"content"`
-		Usage   *anthropicUsage   `json:"usage"`
+		ID         string            `json:"id"`
+		Content    []json.RawMessage `json:"content"`
+		StopReason string            `json:"stop_reason"`
+		Usage      *anthropicUsage   `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return domain.ModelResponse{}, domain.E(domain.CodeProtocol, "anthropic message was not JSON")
 	}
-	resp := domain.ModelResponse{Provider: "anthropic", ProviderResponseID: env.ID, Complete: true}
+	resp := domain.ModelResponse{Provider: "anthropic", ProviderResponseID: env.ID, Complete: anthropicResponseComplete(env.StopReason)}
 	for _, block := range env.Content {
 		var head struct {
 			Type      string          `json:"type"`
@@ -68,6 +69,15 @@ func ParseAnthropicMessage(raw []byte) (domain.ModelResponse, error) {
 	return resp, nil
 }
 
+func anthropicResponseComplete(stopReason string) bool {
+	switch stopReason {
+	case "", "end_turn", "stop_sequence", "tool_use":
+		return true
+	default:
+		return false
+	}
+}
+
 type anthropicUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
@@ -77,7 +87,7 @@ type anthropicUsage struct {
 
 func (u anthropicUsage) domain() domain.Usage {
 	return domain.Usage{
-		InputTokens:       u.InputTokens + u.CacheCreationInputTokens,
+		InputTokens:       u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
 		OutputTokens:      u.OutputTokens,
 		CachedInputTokens: u.CacheReadInputTokens,
 	}
@@ -107,8 +117,9 @@ func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 			Content   []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type    string `json:"type"`
+				Text    string `json:"text"`
+				Refusal string `json:"refusal"`
 			} `json:"content"`
 		}
 		if err := json.Unmarshal(block, &head); err != nil {
@@ -135,6 +146,8 @@ func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 			for _, c := range head.Content {
 				if c.Type == "output_text" || c.Type == "text" {
 					text += c.Text
+				} else if c.Type == "refusal" {
+					text += c.Refusal
 				}
 			}
 			item.Kind = domain.ItemText

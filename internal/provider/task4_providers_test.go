@@ -42,7 +42,7 @@ func TestAnthropicMessagesShapeParseAndUsage(t *testing.T) {
 			t.Error(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_1","name":"mcp_files_read","input":{"path":"a"}}],"stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":2,"cache_read_input_tokens":3}}`)
+		_, _ = io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_1","name":"mcp_files_read","input":{"path":"a"}}],"stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":4,"cache_read_input_tokens":3}}`)
 	}))
 	defer srv.Close()
 	p := &Anthropic{BaseURL: srv.URL, APIKey: key, Model: "claude-test", Client: srv.Client()}
@@ -84,7 +84,7 @@ func TestAnthropicMessagesShapeParseAndUsage(t *testing.T) {
 			usage = *item.Usage
 		}
 	}
-	if usage.InputTokens != 5 || usage.OutputTokens != 2 || usage.CachedInputTokens != 3 {
+	if usage.InputTokens != 12 || usage.OutputTokens != 2 || usage.CachedInputTokens != 3 {
 		t.Fatalf("usage %+v", usage)
 	}
 }
