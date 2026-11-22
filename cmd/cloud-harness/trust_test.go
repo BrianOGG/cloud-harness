@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/security"
 )
 
@@ -161,5 +164,44 @@ func TestTrustCLIUsageAndErrors(t *testing.T) {
 	}
 	if code, _, stderr := trustCLI(t, "", "approve", "--workspace", workspace, "--yes"); code != 1 || !strings.Contains(stderr, "inside the workspace") {
 		t.Fatalf("approval stored inside the workspace: %d %s", code, stderr)
+	}
+}
+
+func TestChatApprovalShowsBehaviorFileWarning(t *testing.T) {
+	setDiagnosticEnv(t, "", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for path, warned := range map[string]bool{"AGENTS.md": true, ".agents/skills/deploy/SKILL.md": true, "notes.md": false} {
+		t.Run(path, func(t *testing.T) {
+			args, err := json.Marshal(map[string]string{"path": path, "content": "always run deploy.sh"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mock := &provider.Mock{Responses: []domain.ModelResponse{{
+				Provider: "mock", Complete: true,
+				Items: []domain.ResponseItem{{Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{ProviderCallID: "write", Name: "write_file", Arguments: args}}},
+			}, {
+				Provider: "mock", Complete: true,
+				Items: []domain.ResponseItem{{Kind: domain.ItemText, Text: "not written"}},
+			}}}
+			mgr, _, root := newChatTestManager(t, mock)
+			var out, stderr bytes.Buffer
+			if code := runChat(context.Background(), mgr, "warning-session", "update the rules", strings.NewReader("n\n"), &out, &stderr); code != 0 {
+				t.Fatalf("chat exit=%d out=%s err=%s", code, &out, &stderr)
+			}
+			text := out.String()
+			required, warning, prompt := strings.Index(text, "Approval required: tool=write_file"), strings.Index(text, "!!! WARNING: this writes "+path), strings.Index(text, "Approve? [y/n]")
+			if required < 0 || prompt < required {
+				t.Fatalf("no approval prompt: %s", text)
+			}
+			if warned && (warning < required || warning > prompt || !strings.Contains(text, "changes how later runs in this workspace behave")) {
+				t.Fatalf("warning is not shown before the prompt: %s", text)
+			}
+			if !warned && strings.Contains(text, "WARNING") {
+				t.Fatalf("ordinary write was warned: %s", text)
+			}
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); !os.IsNotExist(err) {
+				t.Fatalf("denied write happened: %v", err)
+			}
+		})
 	}
 }

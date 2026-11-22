@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/security"
+	"github.com/cloud-harness/cloud-harness/internal/storage"
 )
 
 // EventConfigUntrusted records that a workspace control file was present at
@@ -48,4 +52,51 @@ func (m *Manager) noteUntrusted(ctx context.Context, runID string, statuses ...*
 		}
 	}
 	return nil
+}
+
+// legacyHooks reports a hook snapshot that carries no trust decision: either
+// none was saved, or it was saved before workspace hooks needed trust and may
+// hold hooks nobody approved. Such a snapshot is reloaded under the check.
+func legacyHooks(cfg *hooks.Config) bool {
+	return cfg == nil || cfg.WorkspaceTrust == nil
+}
+
+// approvalWarnings describes what approving a pending file write changes
+// beyond the write itself. AGENTS.md and .agents/** are loaded into later
+// runs, so one approval there keeps steering the agent afterwards.
+func (m *Manager) approvalWarnings(run storage.Run, inv domain.Invocation) []string {
+	if m.Broker == nil {
+		return nil
+	}
+	if fact, ok := m.Broker.Lookup(inv.Name); !ok || fact.Readonly {
+		return nil
+	}
+	workspace := m.Workspace
+	if run.WorktreePath != "" {
+		workspace = run.WorktreePath
+	}
+	var warnings []string
+	seen := make(map[string]bool)
+	for _, key := range []string{"path", "file_path", "target_path"} {
+		target := jsonString(inv.Arguments, key)
+		if target == "" {
+			continue
+		}
+		kind := security.BehaviorFile(workspace, target)
+		if kind == "" || seen[kind] {
+			continue
+		}
+		seen[kind] = true
+		warnings = append(warnings, BehaviorWarning(kind, target))
+	}
+	return warnings
+}
+
+// BehaviorWarning is the approval warning for one behavior file.
+func BehaviorWarning(kind, target string) string {
+	what := "AGENTS.md files are project instructions loaded into every later run"
+	if kind == security.BehaviorAgents {
+		what = ".agents/ holds the skills and agent definitions that later runs load and follow"
+	}
+	return fmt.Sprintf("WARNING: this writes %s. %s, so approving it changes how later runs in this workspace behave. Review the full content before approving.", target, what)
 }

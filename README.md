@@ -58,6 +58,18 @@ limits (memory, CPU time, file size, open files, process count). The defaults
 fit ordinary builds and tests; adjust or disable them with `command_limits`.
 See [command resource limits](docs/config.md#command-resource-limits).
 
+Harness control files are protected from the agent. File tools cannot read or
+write anything under `.cloud-harness/` (hooks, policy, the default database,
+worktree metadata); no policy rule can override this. The workspace
+`.cloud-harness/hooks.json` and `.cloud-harness/policy.json` take effect only
+after you trust their exact content with `cloud-harness trust approve`. Trust is
+a content hash stored in the configuration directory, outside the workspace, so
+any later change needs a new approval. Until then workspace hooks are not run
+and workspace `allow` rules are not applied; `run`, `chat`, `serve`, and
+`doctor` say so. Approvals for writes to `AGENTS.md` and `.agents/` carry a
+warning that the write changes later runs. See [policy](docs/policy.md),
+[hooks](docs/hooks.md), and [`trust`](docs/cli.md#trust).
+
 `run`, `chat`, and `serve` optionally accept `--worktree` in a Git workspace. Each run
 starts from its dispatch-time HEAD on `cloud-harness/<run-id>` under
 `.cloud-harness/worktrees/<run-id>/`; files are isolated while the database
@@ -222,6 +234,8 @@ Cross-compiled targets are built, not vetted or tested: `GOOS=windows go vet ./.
 
 - [docs/cli.md](docs/cli.md) rewind modes, preview, confirmation, and safety snapshots
 - [docs/config.md](docs/config.md) configuration
+- [docs/policy.md](docs/policy.md) layered policy, builtin baseline, and workspace file trust
+- [docs/hooks.md](docs/hooks.md) lifecycle hooks and workspace hook trust
 - [docs/api.md](docs/api.md) approval queue and HTTP authentication
 - [docs/tools.md](docs/tools.md) tool, poll, script, and MCP mapping
 - [docs/errors.md](docs/errors.md) error codes

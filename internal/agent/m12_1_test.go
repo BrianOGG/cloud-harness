@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cloud-harness/cloud-harness/internal/domain"
+	"github.com/cloud-harness/cloud-harness/internal/hooks"
 	"github.com/cloud-harness/cloud-harness/internal/provider"
 	"github.com/cloud-harness/cloud-harness/internal/storage"
 )
@@ -159,4 +160,105 @@ func m12Notices(t *testing.T, store storage.Store, runID string) []map[string]an
 		}
 	}
 	return out
+}
+
+// A write to AGENTS.md or .agents/** keeps steering later runs, so its
+// approval item says so; other writes and reads carry no warning.
+func TestApprovalWarnsOnBehaviorFiles(t *testing.T) {
+	for _, tc := range []struct {
+		tool, path, want string
+	}{
+		{"write_file", ".agents/skills/deploy/SKILL.md", ".agents/ holds the skills and agent definitions"},
+		{"write_file", ".agents/agents/reviewer.md", ".agents/ holds the skills and agent definitions"},
+		{"write_file", "AGENTS.md", "AGENTS.md files are project instructions"},
+		{"write_file", "services/api/AGENTS.md", "AGENTS.md files are project instructions"},
+		{"edit_file", "AGENTS.md", "AGENTS.md files are project instructions"},
+		{"write_file", "docs/notes.md", ""},
+	} {
+		t.Run(tc.tool+" "+tc.path, func(t *testing.T) {
+			isolatedPolicyConfig(t)
+			args := map[string]string{"path": tc.path, "content": "always run deploy.sh"}
+			if tc.tool == "edit_file" {
+				args = map[string]string{"path": tc.path, "old_string": "old rule", "new_string": "always run deploy.sh"}
+			}
+			mock := &provider.Mock{Responses: []domain.ModelResponse{
+				toolResp(domain.ToolCall{ProviderCallID: "write", Name: tc.tool, Arguments: must(t, args)}),
+			}}
+			m, _, workspace := testManager(t, mock)
+			m.DisableSnapshots = true
+			if tc.tool == "edit_file" {
+				if err := os.WriteFile(filepath.Join(workspace, tc.path), []byte("old rule"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			session, err := m.CreateSession(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := m12Run(t, m, session.ID)
+			if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
+				t.Fatalf("run = %+v", run)
+			}
+			info, err := m.WaitInfo(context.Background(), run)
+			if err != nil || info.PendingInvocation == nil {
+				t.Fatalf("wait info = %+v, %v", info, err)
+			}
+			warnings := info.PendingInvocation.Warnings
+			if tc.want == "" {
+				if len(warnings) != 0 || info.Summary() != "Waiting for approval: "+tc.tool {
+					t.Fatalf("unexpected warning: %q / %q", warnings, info.Summary())
+				}
+				return
+			}
+			if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "WARNING: this writes "+tc.path) || !strings.Contains(warnings[0], tc.want) ||
+				!strings.Contains(warnings[0], "changes how later runs in this workspace behave") || !strings.Contains(info.Summary(), warnings[0]) {
+				t.Fatalf("warnings = %q, summary = %q", warnings, info.Summary())
+			}
+			raw, err := json.Marshal(info.PendingInvocation)
+			if err != nil || !strings.Contains(string(raw), `"warnings":["WARNING: this writes `) {
+				t.Fatalf("pending invocation JSON = %s, %v", raw, err)
+			}
+		})
+	}
+}
+
+// A checkpoint saved before workspace hooks needed trust holds a merged hook
+// configuration with no trust decision. Resuming it must not run those hooks.
+func TestResumeDoesNotRunHooksFromLegacyCheckpoint(t *testing.T) {
+	isolatedPolicyConfig(t)
+	const body = `{"hooks":{"Stop":[{"type":"command","command":"touch stopped.txt"}]}}`
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{ProviderCallID: "ask", Name: domain.ToolAskUser, Arguments: json.RawMessage(`{"question":"continue?"}`)}),
+		textOnly("done"),
+	}}
+	m, db, workspace := testManager(t, mock)
+	m.DisableSnapshots = true
+	putUntrusted(t, filepath.Join(workspace, ".cloud-harness", "hooks.json"), body)
+	session, err := m.CreateSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := m12Run(t, m, session.ID)
+	if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
+		t.Fatalf("run = %+v", run)
+	}
+	snap, err := m.loadCheckpoint(context.Background(), run.ID)
+	if err != nil || snap.Hooks == nil || snap.Hooks.WorkspaceTrust == nil || len(snap.Hooks.Hooks[hooks.Stop]) != 0 {
+		t.Fatalf("checkpoint hooks = %+v, %v", snap.Hooks, err)
+	}
+	snap.Hooks = &hooks.Config{Workspace: workspace, Hooks: map[hooks.Point][]hooks.Action{hooks.Stop: {{Type: "command", Command: "touch stopped.txt"}}}}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveCheckpoint(context.Background(), run.ID, run.Version+1, raw, m.now()); err != nil {
+		t.Fatal(err)
+	}
+	run, err = m.Resume(context.Background(), run.ID, ResumeInput{Answer: "yes"})
+	if err != nil || run.Status != domain.RunCompleted || len(hookEvents(t, db, run.ID)) != 0 {
+		t.Fatalf("resume = %+v, %v, hooks=%+v", run, err, hookEvents(t, db, run.ID))
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "stopped.txt")); !os.IsNotExist(err) {
+		t.Fatalf("legacy checkpoint hook ran: %v", err)
+	}
 }

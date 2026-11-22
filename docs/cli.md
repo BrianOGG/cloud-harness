@@ -581,6 +581,83 @@ contains an `oracle` summary with stable `consultations`,
 `estimated_cost_usd`, and `budget_failures` fields. These totals cover all
 recorded runs; unpriced models add zero cost.
 
+The `policy` check lists the workspace, global, and builtin policy layers. The
+`workspace_trust` check reports `missing`, `trusted`, `untrusted`, or `changed`
+for the workspace `.cloud-harness/hooks.json` and `policy.json`, with the
+content hash. An untrusted or changed file turns both checks into `warn` and
+names `cloud-harness trust approve`; file contents are never printed.
+
+## trust
+
+```bash
+cloud-harness trust status  [--workspace dir] [--json]
+cloud-harness trust approve [--workspace dir] [--yes]
+cloud-harness trust revoke  [--workspace dir]
+```
+
+The workspace files `.cloud-harness/hooks.json` and `.cloud-harness/policy.json`
+can run shell commands and skip approvals, and an approved shell command can
+write them. They therefore take effect only after you trust their exact
+content. Agent file tools cannot read or write anything under
+`.cloud-harness/`; see [policy](policy.md#效果与内置基线).
+
+Trust is recorded per workspace and per file as a SHA-256 of the content in
+`trust.json` in the configuration directory (the directory of
+`CLOUD_HARNESS_CONFIG`, or `os.UserConfigDir()/cloud-harness`), mode `0600`.
+That directory is outside the workspace, so file tools cannot reach it. If it
+is inside the workspace, nothing is trusted and `trust approve` refuses to
+write. Runs in `.cloud-harness/worktrees/<run>` use the decision recorded for
+the original workspace; the content hash must still match.
+
+| State | Meaning | Effect |
+| --- | --- | --- |
+| `missing` | The file does not exist. | Nothing to apply. |
+| `trusted` | The current content was approved. | Hooks run; all policy rules apply. |
+| `untrusted` | The file exists and was never approved. | Hooks are not run. Policy `allow` and `ask` rules are skipped; `deny` rules still apply. |
+| `changed` | Different content was approved earlier. | Same as `untrusted` until approved again. |
+
+`trust status` prints one line per file and the trust store path; `--json`
+emits an array of `{file, path, workspace, state, sha256, reason}`. It never
+writes.
+
+`trust approve` validates both files, then prints the path, hash, and full
+content of each file that is waiting, and asks
+`Trust this content for <workspace>? [y/N]` (default no). The recorded hash is
+the hash of the content shown. Without a terminal it requires `--yes`;
+otherwise it records nothing and exits 1. A file that fails validation cannot
+be trusted. With nothing waiting it prints `nothing to trust`.
+
+`trust revoke` removes every decision for the workspace.
+
+While a file is untrusted or changed, `run`, `chat`, and `serve` print a
+`warning:` line on stderr at startup, each run records a persistent
+`config.untrusted` event (file, path, state, hash, and message; no content),
+and `doctor` reports `warn`.
+
+Exit codes: 2 for usage errors, 1 when trust cannot be read or written or the
+approval was not confirmed.
+
+## Approval warnings for behavior files
+
+Writes to `AGENTS.md` (at any depth) and to `.agents/**` (skills and agent
+definitions) are ordinary workspace writes, but later runs load those files as
+instructions. Their approval item therefore carries a warning, in addition to
+the usual tool, arguments, and resources:
+
+```text
+Approval required: tool=write_file args=... resources=...
+!!! WARNING: this writes AGENTS.md. AGENTS.md files are project instructions loaded into every later run, so approving it changes how later runs in this workspace behave. Review the full content before approving.
+Approve? [y/n]:
+```
+
+The same text is in `pending_invocation.warnings` in the HTTP run view, in the
+`summary` of `GET /v1/approvals` and of approval notifications, in a
+highlighted alert on `/approval`, and above the pending tool call in `/ui`.
+Names are matched case-insensitively and through symlinks. The warning does
+not change the decision: the write still needs approval or a matching policy
+rule. A policy `allow` rule that covers these paths skips the approval and the
+warning with it.
+
 ## stats
 
 ```bash

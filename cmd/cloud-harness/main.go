@@ -1126,6 +1126,11 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 				}
 			}
 			fmt.Fprintf(stdout, "Approval required: tool=%s args=%s resources=%s\n", toolName, argsSummary, resources)
+			if info.PendingInvocation != nil {
+				for _, warning := range info.PendingInvocation.Warnings {
+					fmt.Fprintln(stdout, "!!! "+warning)
+				}
+			}
 			var decision string
 			for {
 				fmt.Fprint(stdout, "Approve? [y/n]: ")

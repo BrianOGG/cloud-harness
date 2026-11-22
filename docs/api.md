@@ -253,7 +253,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | `wait_reason` | string, optional | Reason the run is waiting. |
 | `wait_kind` | string, optional | Wait kind, matching `wait_reason` when present. |
 | `question` | string, optional | Pending user question for an `ask_user` wait. |
-| `pending_invocation` | object, optional | Invocation awaiting approval, with the same structure as the single-run view. |
+| `pending_invocation` | object, optional | Invocation awaiting approval, with the same structure as the single-run view. Its optional `warnings` string array is set when the write targets `AGENTS.md` or `.agents/**`, which changes later runs; clients must show it next to the decision. See [approval warnings](cli.md#approval-warnings-for-behavior-files). |
 | `budget` | object | Model, tool, script, and child-run limits and usage counters. |
 | `final_answer` | string, optional | Final answer for a completed run. |
 | `error` | object, optional | Error details for a failed run. |
@@ -325,7 +325,7 @@ Legacy records with no waiting event fall back to their stored `updated_at`.
 | `session_id` | string | Session that owns the run. |
 | `status` | string | Always `WAITING`. |
 | `wait_reason` | string | `approval` for a tool approval, or `ask_user` for a question. |
-| `summary` | string | Same summary as the Manager's WaitInfo and lifecycle notification: the full pending command text for `run_command`, or the original question for `ask_user`. Other tool approvals use `Waiting for approval: <tool>` as in notifications. |
+| `summary` | string | Same summary as the Manager's WaitInfo and lifecycle notification: the full pending command text for `run_command`, or the original question for `ask_user`. Other tool approvals use `Waiting for approval: <tool>` as in notifications, followed on new lines by any `pending_invocation.warnings`. |
 | `waiting_since` | string | Start of the current wait, as an ISO 8601 / RFC 3339 UTC timestamp. |
 | `waiting_seconds` | integer | Whole elapsed seconds at request time, rounded down and clamped to zero if the server clock precedes `waiting_since`. |
 | `approval_url` | string, optional | `<approval_base_url>/approval?run=<run-id>` when `notify.approval_base_url` is configured. Trailing base slashes are removed and the run ID is query encoded. Omitted when the base is unset. |

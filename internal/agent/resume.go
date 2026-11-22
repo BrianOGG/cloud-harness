@@ -24,6 +24,9 @@ type PendingInvocation struct {
 	Arguments     json.RawMessage `json:"arguments,omitempty"`
 	Resources     []string        `json:"resources,omitempty"`
 	ResourceScope string          `json:"resource_scope,omitempty"`
+	// Warnings call out effects that outlast this invocation, such as a write
+	// to AGENTS.md or .agents/**. Every approval surface must show them.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // WaitInfo describes the pending wait state when a run is in WAITING.
@@ -42,6 +45,9 @@ func (info WaitInfo) Summary() string {
 		if inv := info.PendingInvocation; inv != nil {
 			if inv.Tool == "run_command" {
 				return jsonString(inv.Arguments, "command")
+			}
+			if len(inv.Warnings) > 0 {
+				return "Waiting for approval: " + inv.Tool + "\n" + strings.Join(inv.Warnings, "\n")
 			}
 			return "Waiting for approval: " + inv.Tool
 		}
@@ -116,6 +122,7 @@ func (m *Manager) WaitInfo(ctx context.Context, run storage.Run) (WaitInfo, erro
 				Arguments:     waiting.Arguments,
 				Resources:     resources,
 				ResourceScope: scope,
+				Warnings:      m.approvalWarnings(run, *waiting),
 			}
 			return info, nil
 		}
@@ -266,7 +273,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if err != nil {
 		return run, err
 	}
-	if hookSnapshot.Hooks == nil {
+	if legacyHooks(hookSnapshot.Hooks) {
 		hookSnapshot.Hooks, err = hooks.Load(m.Workspace)
 		if err != nil {
 			return run, err

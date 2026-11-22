@@ -18,6 +18,7 @@ export interface PendingInvocation {
   arguments?: unknown;
   status?: string;
   ordinal?: number;
+  warnings?: string[];
 }
 
 export interface RunView {
