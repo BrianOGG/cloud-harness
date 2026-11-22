@@ -125,7 +125,7 @@ func (r Registry) List() []Definition {
 }
 
 func builtinRegistry() Registry {
-	readonly := []string{"read_file", "list_files", "grep", "git_status", "git_diff", "git_log"}
+	readonly := []string{"read_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log"}
 	return Registry{definitions: map[string]Definition{
 		"explorer": {
 			Name: "explorer", Description: "Read-only code exploration and location (只读代码探索/定位).",

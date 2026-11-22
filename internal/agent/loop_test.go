@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 	"github.com/BrianOGG/cloud-harness/internal/storage/sqlite"
 	"github.com/BrianOGG/cloud-harness/internal/tools"
 )
@@ -389,7 +391,7 @@ func TestEnsureToolsRegistersFileToolsetAndEditApproval(t *testing.T) {
 	for _, td := range m.toolDefs() {
 		defs[td.Name] = td
 	}
-	for _, want := range []string{"read_file", "write_file", "edit_file", "list_files", "grep", "git_status", "git_diff", "git_log", "run_command"} {
+	for _, want := range []string{"read_file", "write_file", "edit_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log", "run_command"} {
 		if _, ok := defs[want]; !ok {
 			t.Fatalf("ensureTools did not expose %q in toolDefs", want)
 		}
@@ -422,6 +424,33 @@ func TestEnsureToolsRegistersFileToolsetAndEditApproval(t *testing.T) {
 	if err != nil || string(body) != "key=NEW_VAL\n" {
 		t.Fatalf("cfg.txt after approved edit = %q %v", body, err)
 	}
+}
+
+func TestInstallGrantsIncludesListDir(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	m := &Manager{Store: db, Workspace: root}
+	if err := m.installGrants(ctx, storage.Run{ID: "run_list_dir"}); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := db.ListGrants(ctx, "run_list_dir", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range grants {
+		if g.Tool == "list_dir" {
+			if g.ResourceScope != root || g.Op != "call" || g.State != "active" {
+				t.Fatalf("list_dir grant = %+v", g)
+			}
+			return
+		}
+	}
+	t.Fatalf("installGrants missing list_dir grant: %+v", grants)
 }
 
 func TestProviderSchemasContainOnlyStandardKeys(t *testing.T) {

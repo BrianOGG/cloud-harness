@@ -16,12 +16,12 @@ import (
 )
 
 func TestDelegateAgentToolIntersection(t *testing.T) {
-	readonly := []string{"git_diff", "git_log", "git_status", "grep", "list_files", "read_file"}
+	readonly := []string{"git_diff", "git_log", "git_status", "grep", "list_dir", "list_files", "read_file"}
 	for _, tc := range []struct {
 		name, agent, definition, allowed string
 		wantTools                        []string
 	}{
-		{name: "explorer", agent: "explorer", allowed: `["git_diff","git_log","git_status","grep","list_files","read_file","write_file","edit_file","run_command","ask_user","delegate_task"]`, wantTools: readonly},
+		{name: "explorer", agent: "explorer", allowed: `["git_diff","git_log","git_status","grep","list_dir","list_files","read_file","write_file","edit_file","run_command","ask_user","delegate_task"]`, wantTools: readonly},
 		{name: "reviewer", agent: "reviewer", wantTools: readonly},
 		{name: "caller narrower", agent: "custom", definition: "tools: [read_file, grep, write_file]\n", allowed: `["read_file"]`, wantTools: []string{"read_file"}},
 		{name: "definition narrower", agent: "custom", definition: "tools: [grep]\n", allowed: `["grep","list_files","write_file"]`, wantTools: []string{"grep"}},
