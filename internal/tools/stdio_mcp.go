@@ -144,7 +144,7 @@ func (s *StdioMCP) Err() error {
 func (s *StdioMCP) Close() error {
 	s.closeOnce.Do(func() {
 		// Cancel first: it kills the process group, which unblocks a writer
-		// holding s.mu on a full stdin pipe.
+		// stuck on a full stdin pipe.
 		s.cancel()
 		s.mu.Lock()
 		s.closed = true
@@ -320,13 +320,22 @@ func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.Ra
 }
 
 // writeFrame sends one newline-terminated frame and gives up when ctx ends. A
-// write that cannot finish means the server stopped reading stdin; the frame
-// may be half written, so the server is stopped instead of reused.
+// write that started but cannot finish means the server stopped reading stdin;
+// the frame may be half written, so the server is stopped instead of reused.
 func (s *StdioMCP) writeFrame(ctx context.Context, stdin io.Writer, raw []byte) error {
+	const (
+		frameQueued int32 = iota
+		frameWriting
+		frameAbandoned
+	)
+	var state atomic.Int32
 	done := make(chan error, 1)
 	go func() {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
+		if !state.CompareAndSwap(frameQueued, frameWriting) {
+			return
+		}
 		s.mu.Lock()
 		closed := s.closed
 		s.mu.Unlock()
@@ -341,6 +350,10 @@ func (s *StdioMCP) writeFrame(ctx context.Context, stdin io.Writer, raw []byte) 
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+	}
+	if state.CompareAndSwap(frameQueued, frameAbandoned) {
+		// Still waiting behind another frame: nothing was sent.
+		return ctx.Err()
 	}
 	select {
 	case err := <-done:
