@@ -26,8 +26,9 @@ const (
 	// set rlimits on itself and then exec the real command. Setting them in
 	// the child, before the command exists, leaves no window in which the
 	// command runs unlimited.
-	limitExecArg0 = "cloud-harness-exec-limits"
-	limitExecSelf = "/proc/self/exe"
+	limitExecArg0    = "cloud-harness-exec-limits"
+	sandboxProbeArg0 = "cloud-harness-sandbox-probe"
+	limitExecSelf    = "/proc/self/exe"
 	// limitStatusFD is the close-on-exec pipe the trampoline reports failures
 	// on. The parent reads EOF without data once the command has started.
 	limitStatusFD = 3
@@ -60,6 +61,9 @@ var rlimitOrder = []struct {
 func init() {
 	if len(os.Args) > 0 && os.Args[0] == limitExecArg0 {
 		execLimited(os.Args[1:])
+	}
+	if len(os.Args) > 0 && os.Args[0] == sandboxProbeArg0 {
+		os.Exit(probeCommandSandbox())
 	}
 }
 
@@ -302,12 +306,8 @@ var commandSandboxProbe = struct {
 
 func commandSandboxAvailable() bool {
 	commandSandboxProbe.Do(func() {
-		sandboxJSON, err := json.Marshal(commandSandboxSpec{Enabled: true})
-		if err != nil {
-			return
-		}
 		cmd := exec.Command(limitExecSelf)
-		cmd.Args = []string{limitExecArg0, encodeRlimits(nil), string(sandboxJSON), "/bin/true", "/bin/true"}
+		cmd.Args = []string{sandboxProbeArg0}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 			UidMappings: []syscall.SysProcIDMap{
@@ -321,6 +321,21 @@ func commandSandboxAvailable() bool {
 		commandSandboxProbe.ok = cmd.Run() == nil
 	})
 	return commandSandboxProbe.ok
+}
+
+// probeCommandSandbox runs the same namespace, mount, and privilege-drop setup
+// as a sandboxed command without exec-ing an external binary, so availability
+// does not depend on /bin/true being installed.
+func probeCommandSandbox() int {
+	if err := applyCommandSandbox(commandSandboxSpec{Enabled: true}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := dropCommandPrivileges(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
 
 // commandGuard runs one run_command process in its own process group, under
