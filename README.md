@@ -58,6 +58,11 @@ On Linux, `run_command` processes and their children run under kernel resource
 limits (memory, CPU time, file size, open files, process count). The defaults
 fit ordinary builds and tests; adjust or disable them with `command_limits`.
 See [command resource limits](docs/config.md#command-resource-limits).
+On Linux and macOS the same processes cannot read or write `.cloud-harness`
+or the harness configuration directory; see
+[control files on macOS](docs/config.md#control-files-on-macos) for the macOS
+mechanism and its limits. On macOS the first command creates both directories,
+empty, if they do not exist yet.
 
 Harness control files are protected from the agent. File tools cannot read or
 write anything under `.cloud-harness/` (hooks, policy, the default database,
@@ -238,12 +243,13 @@ Non-Linux builds compile and refuse programmatic execution. They do not interpre
 
 ### CI
 
-`.github/workflows/ci.yml` runs the commands above on every pull request and on pushes to `main` and `dev`, in four jobs:
+`.github/workflows/ci.yml` runs the commands above on every pull request and on pushes to `main` and `dev`, in five jobs:
 
 | Job | Runs |
 |---|---|
 | `go / test` | `gofmt -l .`, `go build`, `go vet`, `go test`, `go test -race` |
 | `go / lint and govulncheck` | `golangci-lint` v2.15.0 and `govulncheck` v1.10.0 |
+| `go / macOS command sandbox` | On a macOS runner, the `run_command` tests in `internal/tools`, including the Seatbelt isolation of control files; fails rather than skips if the sandbox cannot be applied |
 | `go / build darwin/arm64`, `go / build windows/amd64` | `CGO_ENABLED=0 go build ./...` for each target |
 | `web / lint, test, build, dist` | `npm ci`, `npm run lint`, `npm test`, `npm run check:dist` on Node.js 22 |
 
