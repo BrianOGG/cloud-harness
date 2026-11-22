@@ -497,6 +497,42 @@ func TestRunCommandMasksOriginalControlInWorktree(t *testing.T) {
 	}
 }
 
+func TestRunCommandMasksOriginalControlInSymlinkedWorktree(t *testing.T) {
+	if !commandSandboxAvailable() {
+		t.Skip("user namespaces unavailable")
+	}
+	limitHelpers(t, map[string]string{"probe-symlink-worktree": "set +e\ncat note.txt\ncat ../../harness.db\n"})
+	real := t.TempDir()
+	control := filepath.Join(real, ".cloud-harness")
+	worktree := filepath.Join(control, "worktrees", "run1")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "harness.db"), []byte("DB_SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "note.txt"), []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(link, ".cloud-harness", "worktrees", "run1")
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "probe-symlink-worktree")
+	combined := out.Stdout + out.Stderr
+	if !strings.Contains(combined, "note") {
+		t.Fatalf("command could not read the preserved worktree:\n%s", combined)
+	}
+	if strings.Contains(combined, "DB_SECRET") {
+		t.Fatalf("command read the original control database through a symlinked workspace:\n%s", combined)
+	}
+	if body, err := os.ReadFile(filepath.Join(control, "harness.db")); err != nil || string(body) != "DB_SECRET" {
+		t.Fatalf("original control database changed: %q %v", body, err)
+	}
+}
+
 func TestRunCommandFailsClosedWhenConfigContainsWorkspace(t *testing.T) {
 	if !commandSandboxAvailable() {
 		t.Skip("user namespaces unavailable")

@@ -197,6 +197,9 @@ func commandSandboxSpecFor(root string) (commandSandboxSpec, error) {
 	if err != nil {
 		return commandSandboxSpec{}, err
 	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
 	spec := commandSandboxSpec{Enabled: true}
 	preserve := ""
 	if control, ok := worktreeControlDir(abs); ok {
