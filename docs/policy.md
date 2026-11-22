@@ -110,7 +110,8 @@ macOS 上命令通过系统自带的 `/usr/bin/sandbox-exec` 在 Seatbelt 沙箱
 均返回 `Operation not permitted`），`--worktree` 运行时同样只保留当前 worktree；
 这些目录之上的各级目录在命令运行期间不能被改名或删除，否则控制文件会换一个不受规则
 约束的路径。命令启动前，harness 在沙箱内确认每个受保护路径确实被内核拒绝，无法确认
-（`sandbox-exec` 不存在、harness 自身已在另一个沙箱内、路径无法写入配置文件等）时命令
+（`sandbox-exec` 不存在、harness 自身已在另一个沙箱内、路径无法写入配置文件、
+尚不存在的控制目录无法由 harness 预先创建等）时命令
 不会启动；沙箱完全不可用时与受限 Linux 内核相同：已批准的危险命令不启动，安全命令照常
 运行。两种平台上这都只约束命令自己的进程树：命令若让沙箱外的服务（launchd、
 `open` 启动的应用、Apple 事件、ssh、Docker 守护进程）代为访问文件，不在隔离范围内。

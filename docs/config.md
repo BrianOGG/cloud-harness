@@ -211,7 +211,10 @@ opened.
 - A directory that does not exist yet is created for the duration of the
   command and removed afterwards. On a case-insensitive volume this is what
   stops a command from creating `.Cloud-Harness` and having the harness read
-  it later.
+  it later. If the harness cannot create it (the parent is not writable), the
+  command is not started, since a command running as the same user could make
+  the parent writable and create the other spelling itself. A read-only volume
+  is the exception.
 - For `--worktree` runs the original workspace `.cloud-harness` is denied
   while the run worktree inside it stays usable. The two directories above the
   worktree answer `stat` so its path can be resolved, and nothing else.

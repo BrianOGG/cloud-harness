@@ -216,6 +216,36 @@ printf x > "$cfg/trust.json"
 	wantAbsent(t, filepath.Join(root, ".cloud-harness"), config, filepath.Dir(config))
 }
 
+func TestRunCommandRefusedWhenMissingConfigDirectoryCannotBeHeld(t *testing.T) {
+	needSeatbelt(t)
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	locked := filepath.Join(tempDir(t), "locked")
+	if err := os.Mkdir(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(locked, "config", "settings.json"))
+	// Without a held directory the rule names a path that does not exist, and
+	// on a case-insensitive volume this would plant a policy the harness reads.
+	limitHelpers(t, map[string]string{"plant-config": fmt.Sprintf(`set +e
+chmod u+w %[1]q
+mkdir %[1]q/Config
+printf PLANTED > %[1]q/Config/policy.json
+`, locked)})
+	root := tempDir(t)
+
+	_, out := runLimited(t, context.Background(), root, CommandLimits{}, "plant-config")
+	if !strings.Contains(out.Error, "the command was not started") || !strings.Contains(out.Error, "create control mask") {
+		t.Fatalf("expected the command to be refused: %+v", out)
+	}
+	if info, err := os.Stat(locked); err != nil || info.Mode().Perm() != 0o555 {
+		t.Fatalf("command ran and changed the parent directory: %v %v", info, err)
+	}
+	wantAbsent(t, filepath.Join(locked, "Config"), filepath.Join(locked, "config"))
+}
+
 func TestRunCommandCannotMoveDirectoriesAboveControlFiles(t *testing.T) {
 	needSeatbelt(t)
 	base := tempDir(t)

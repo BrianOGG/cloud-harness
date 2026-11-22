@@ -134,6 +134,33 @@ func TestPlanSeatbeltCreatesAndReleasesMissingMasks(t *testing.T) {
 	}
 }
 
+func TestPlanSeatbeltRefusesMaskItCannotCreate(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command runs as the same user and could chmod this directory back,
+	// then create the control directory under another spelling.
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	spec := commandSandboxSpec{Paths: []commandSandboxPath{{Path: filepath.Join(root, "made", ".cloud-harness")}, {Path: filepath.Join(locked, "config")}}}
+	_, held, err := planSeatbelt(spec, evalCanonical)
+	if err == nil || !strings.Contains(err.Error(), "create control mask") || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("expected a control directory that cannot be created to stop the plan, got %v", err)
+	}
+	releaseSeatbeltMasks(held)
+	if _, err := os.Stat(filepath.Join(root, "made")); !os.IsNotExist(err) {
+		t.Fatalf("directories created before the failure were left behind: %v", err)
+	}
+}
+
 func TestPlanSeatbeltKeepsExistingControlDirectory(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

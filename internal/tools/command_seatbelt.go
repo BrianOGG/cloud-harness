@@ -78,8 +78,9 @@ var seatbeltMasks = struct {
 // missing parents. On a case-insensitive volume a rule for a path that does
 // not exist yet would not cover a differently-cased spelling of it, so the
 // name is fixed before the command runs. It returns the directories to release
-// afterwards. A parent the harness may not write to is left alone: the command
-// runs as the same user and cannot create the directory either.
+// afterwards. A directory the harness may not create is an error, not a reason
+// to go without: the command runs as the same user and could make the parent
+// writable first. Only a read-only volume is left alone.
 func holdSeatbeltMask(path string) ([]string, error) {
 	seatbeltMasks.Lock()
 	defer seatbeltMasks.Unlock()
@@ -102,7 +103,7 @@ func holdSeatbeltMask(path string) ([]string, error) {
 		dir := chain[i]
 		if seatbeltMasks.refs[dir] == 0 {
 			if err := os.Mkdir(dir, 0o700); err != nil {
-				if errors.Is(err, syscall.EROFS) || os.IsPermission(err) {
+				if errors.Is(err, syscall.EROFS) {
 					return held, nil
 				}
 				return held, fmt.Errorf("create control mask %s: %w", dir, err)
