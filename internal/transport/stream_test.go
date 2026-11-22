@@ -357,7 +357,11 @@ func TestDeltasStreamInOrderAndReconnectLosesNoEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(stored) != len(seen) {
-		t.Fatalf("store has %d events, the two connections saw %d: %v", len(stored), len(seen), seen)
+		var types []string
+		for _, ev := range stored {
+			types = append(types, ev.Type)
+		}
+		t.Fatalf("store has %d events %v, the two connections saw %d: %v", len(stored), types, len(seen), seen)
 	}
 	for i, ev := range stored {
 		if ev.Type == "stream.delta" {
@@ -619,5 +623,64 @@ func TestFallbackReadFindsEventsFromAnotherProcess(t *testing.T) {
 	}
 	if got := liveOutput(t, rec); len(got) != 1 || got[0] != "run.resumed" {
 		t.Fatalf("wrote %v", got)
+	}
+}
+
+// heldSummaryStore holds the first write a run makes after it has recorded
+// its terminal status, until the test lets it through.
+type heldSummaryStore struct {
+	*sqlite.DB
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (s heldSummaryStore) SaveSummaryJob(ctx context.Context, job storage.SummaryJob) error {
+	s.reached <- struct{}{}
+	<-s.release
+	return s.DB.SaveSummaryJob(ctx, job)
+}
+
+// A run records turn.summary after run.completed. A subscriber that is told
+// the run is terminal while that is still to come must receive it on the same
+// connection: the stream ends when the execution has returned, not when the
+// status turns terminal.
+func TestStreamStaysOpenUntilExecutionReturns(t *testing.T) {
+	p := newGatedProvider("done")
+	f := newStreamFixture(t, p)
+	held := heldSummaryStore{DB: f.db, reached: make(chan struct{}, 1), release: make(chan struct{})}
+	f.manager.Store = held
+
+	created := f.createRun(t, "?wait=0")
+	p.emit(t, 1)
+	close(p.release)
+	select {
+	case <-held.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not reach its summary")
+	}
+	if got := f.waitStatus(t, created.ID, domain.RunCompleted); got.FinalAnswer != "done" {
+		t.Fatalf("final answer = %q", got.FinalAnswer)
+	}
+
+	// The run is terminal and its execution has not returned.
+	stream := f.subscribe(t, created.ID, "")
+	var types []string
+	for len(types) == 0 || types[len(types)-1] != "run.completed" {
+		ev, ok := stream.next(t)
+		if !ok {
+			t.Fatalf("stream ended after %v while the run was still executing", types)
+		}
+		types = append(types, ev.typ)
+	}
+	close(held.release)
+	for {
+		ev, ok := stream.next(t)
+		if !ok {
+			break
+		}
+		types = append(types, ev.typ)
+	}
+	if last := types[len(types)-1]; last != "turn.summary" {
+		t.Fatalf("stream ended with %s: %v", last, types)
 	}
 }

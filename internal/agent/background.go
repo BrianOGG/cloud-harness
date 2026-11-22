@@ -177,6 +177,16 @@ func (m *Manager) failStranded(ctx context.Context, runID string, cause error) (
 	return failed, err == nil
 }
 
+// Executing reports whether this process has not yet returned from executing
+// runID. A run can already be terminal while this is true: its execution
+// still appends events, such as turn.summary, after the status is recorded.
+func (m *Manager) Executing(runID string) bool {
+	m.bgMu.Lock()
+	_, background := m.bgRuns[runID]
+	m.bgMu.Unlock()
+	return background || m.tracked(runID)
+}
+
 // shutdownRecheck is how often Shutdown looks for an execution that recorded
 // its run after the previous pass.
 const shutdownRecheck = 20 * time.Millisecond

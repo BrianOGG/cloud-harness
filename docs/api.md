@@ -160,8 +160,14 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 A `text/event-stream` response. It first replays the run's persisted events,
 then stays open and sends new ones as they are committed. It ends once the run
-is `COMPLETED`, `FAILED`, or `CANCELLED` and its last event has been sent. For
-a run that is `WAITING` it stays open, and continues when the run is resumed.
+is `COMPLETED`, `FAILED`, or `CANCELLED` and `serve` has finished executing
+it. A run records events after its status turns terminal, such as
+`turn.summary` and `worktree.summary`, and those arrive on the same connection
+before it closes. For a run that another process is executing against the
+same database, the stream ends when it first sees the terminal status; send
+`Last-Event-ID` on a new request to read what that process wrote afterwards.
+For a run that is `WAITING` the stream stays open, and continues when the run
+is resumed.
 A `: ping` comment is sent while nothing else is.
 
 The stream carries two kinds of event:

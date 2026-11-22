@@ -342,6 +342,12 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request, status int, sta
 		return
 	}
 	run := ex.Run
+	// An event stream stays open while the run executes. Tell it when that
+	// is over, whether or not this request is still here.
+	go func() {
+		<-ex.Done()
+		s.Notify(ex.Run.ID)
+	}()
 	if wait {
 		run, err = ex.Wait(r.Context())
 		if r.Context().Err() != nil {
@@ -353,7 +359,6 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request, status int, sta
 			return
 		}
 	}
-	s.Notify(run.ID)
 	writeJSON(w, status, s.runView(r.Context(), run))
 }
 
@@ -408,7 +413,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if cur, gerr := s.Manager.Store.GetRun(r.Context(), id); gerr == nil {
 		run = cur
 	}
-	if domain.TerminalRun(run.Status) {
+	// A terminal run that is still executing has events to come.
+	if domain.TerminalRun(run.Status) && !s.Manager.Executing(id) {
 		if tail, lerr := s.Manager.Store.ListEvents(r.Context(), id, after); lerr == nil && len(tail) > 0 {
 			for _, ev := range tail {
 				if err := trace.WriteSSE(w, ev); err != nil {
@@ -426,7 +432,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	live := &liveStream{store: s.Manager.Store, w: w, sub: sub, runID: id, after: after}
+	live := &liveStream{store: s.Manager.Store, executing: s.Manager.Executing, w: w, sub: sub, runID: id, after: after}
 	hbTicker := time.NewTicker(s.heartbeatInterval())
 	defer hbTicker.Stop()
 	pollTicker := time.NewTicker(s.pollInterval())
@@ -488,10 +494,12 @@ func (s *Server) parseLastEventID(ctx context.Context, runID, header string) (in
 // events among the run's model text.
 type liveStream struct {
 	store storage.Store
-	w     http.ResponseWriter
-	sub   *trace.Subscription
-	runID string
-	after int64
+	// executing reports whether this process is still executing the run.
+	executing func(runID string) bool
+	w         http.ResponseWriter
+	sub       *trace.Subscription
+	runID     string
+	after     int64
 }
 
 func (l *liveStream) write(ev storage.Event) error {
@@ -575,15 +583,17 @@ func (l *liveStream) catchUp(ctx context.Context) error {
 	return nil
 }
 
-// ended reports whether the stream is over: the run is terminal, or the
-// stream can no longer be served. For a terminal run it first writes
+// ended reports whether the stream is over: the run is terminal and this
+// process has returned from executing it, or the stream can no longer be
+// served. An execution appends events after it records the terminal status,
+// so the status alone does not end the stream. Before ending it writes
 // whatever is left.
 func (l *liveStream) ended(ctx context.Context) bool {
 	run, err := l.store.GetRun(ctx, l.runID)
 	if err != nil {
 		return true
 	}
-	if !domain.TerminalRun(run.Status) {
+	if !domain.TerminalRun(run.Status) || (l.executing != nil && l.executing(l.runID)) {
 		return false
 	}
 	if err := l.catchUp(ctx); err == nil {
