@@ -304,20 +304,37 @@ var commandSandboxProbe = struct {
 	ok bool
 }{}
 
+func commandUsernsAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
+		},
+		GidMappingsEnableSetgroups: false,
+	}
+}
+
 func commandSandboxAvailable() bool {
 	commandSandboxProbe.Do(func() {
+		// Probe with a trivial system binary first: it is cheap, and on minimal
+		// images without one the self probe below still checks the full setup.
+		for _, path := range []string{"/bin/true", "/usr/bin/true"} {
+			if _, err := os.Lstat(path); err != nil {
+				continue
+			}
+			cmd := exec.Command(path)
+			cmd.SysProcAttr = commandUsernsAttr()
+			if cmd.Run() == nil {
+				commandSandboxProbe.ok = true
+				return
+			}
+		}
 		cmd := exec.Command(limitExecSelf)
 		cmd.Args = []string{sandboxProbeArg0}
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-			UidMappings: []syscall.SysProcIDMap{
-				{ContainerID: 0, HostID: os.Getuid(), Size: 1},
-			},
-			GidMappings: []syscall.SysProcIDMap{
-				{ContainerID: 0, HostID: os.Getgid(), Size: 1},
-			},
-			GidMappingsEnableSetgroups: false,
-		}
+		cmd.SysProcAttr = commandUsernsAttr()
 		commandSandboxProbe.ok = cmd.Run() == nil
 	})
 	return commandSandboxProbe.ok
