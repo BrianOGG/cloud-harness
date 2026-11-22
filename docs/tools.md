@@ -79,9 +79,10 @@ Local stdio MCP servers listed under `servers` in the configuration file (see
 [config.md](config.md#mcp-servers)) are started by every command that executes a
 run: `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Each server is a
 subprocess that speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. The
-harness sends `initialize`, `notifications/initialized`, and `tools/list`, then
-registers every discovered tool in the broker as `mcp.<server>.<tool>`. Only the
-stdio transport exists; HTTP and SSE servers are not supported.
+harness sends `initialize`, `notifications/initialized`, and `tools/list`
+(following `nextCursor` until the last page, at most 100 pages), then registers
+every discovered tool in the broker as `mcp.<server>.<tool>`. Only the stdio
+transport exists; HTTP and SSE servers are not supported.
 
 Lifecycle:
 
@@ -95,7 +96,12 @@ Lifecycle:
   other than letters, digits, `_`, `-`, and `.`, or when the name is already
   registered.
 - Servers are not restarted. If one exits later, its tools stay listed and each
-  call fails with a tool error until the harness process is restarted.
+  call fails with a tool error until the harness process is restarted. A server
+  that stops reading its stdin is killed when a call's time limit passes.
+- Approving a call whose tool is not registered in the current process (for
+  example `runs resume --decision approve` while the server cannot start) is
+  rejected and the run keeps waiting for approval, so the approval can be
+  repeated after the server is back.
 - When the command exits, every server's process group is killed and reaped. On
   Linux the subprocess also receives SIGKILL if the harness itself dies.
 - The subprocess inherits the harness working directory and only `PATH`, `HOME`,
@@ -106,8 +112,17 @@ Calls use the same path as built-in tools: arguments are checked against the
 server's `inputSchema`, the call is charged to the tool budget, `policy.json`
 rules match the full name (`{"tool": "mcp.files.search", "effect": "allow"}`),
 `PreToolUse` / `PostToolUse` hooks run, and the invocation, policy decision, and
-approval are stored like any other. One call is limited to 15 seconds and 64 KiB
-of result.
+approval are stored like any other. Arguments are forwarded to the server byte
+for byte. One call is limited to 15 seconds and 64 KiB of result.
+
+Results reach the model as text. `text` blocks and the text of embedded
+resources are passed on. Image, audio, and binary resource blocks are replaced
+by a note with the kind, MIME type, and size, because the bytes are not
+forwarded to the model.
+
+A call that times out is recorded as a failed tool call. For a non-readonly
+server the error says the outcome is unknown, since the server may have carried
+out the request anyway; the run is not paused for reconciliation.
 
 | Server setting | Tool class | Default without a policy rule |
 | --- | --- | --- |

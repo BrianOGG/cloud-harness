@@ -19,6 +19,8 @@ import (
 )
 
 const (
+	// maxMCPListPages bounds tools/list pagination for a server that never stops returning a cursor.
+	maxMCPListPages = 100
 	// DefaultMCPTimeout is the default per-call timeout for MCP tool calls.
 	DefaultMCPTimeout = 15 * time.Second
 	// MaxMCPResultBytes is the maximum allowed response body size for an MCP tool call (64 KiB).
@@ -48,6 +50,9 @@ type StdioMCP struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// writeMu serializes frames on stdin. It is separate from mu so a server
+	// that stops reading cannot block state checks such as Alive.
+	writeMu   sync.Mutex
 	mu        sync.Mutex
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
@@ -290,15 +295,7 @@ func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.Ra
 		return nil, domain.E(domain.CodeInvalidArgument, "failed to marshal json-rpc request: "+err.Error())
 	}
 
-	s.mu.Lock()
-	if s.closed || s.stdin == nil {
-		delete(s.pending, id)
-		s.mu.Unlock()
-		return nil, domain.E(domain.CodeToolError, "mcp server process terminated")
-	}
-	_, err = stdin.Write(append(raw, '\n'))
-	s.mu.Unlock()
-	if err != nil {
+	if err := s.writeFrame(ctx, stdin, raw); err != nil {
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
@@ -322,10 +319,45 @@ func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.Ra
 	}
 }
 
-func (s *StdioMCP) notify(method string, params any) error {
+// writeFrame sends one newline-terminated frame and gives up when ctx ends. A
+// write that cannot finish means the server stopped reading stdin; the frame
+// may be half written, so the server is stopped instead of reused.
+func (s *StdioMCP) writeFrame(ctx context.Context, stdin io.Writer, raw []byte) error {
+	done := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			done <- errors.New("mcp server process terminated")
+			return
+		}
+		_, err := stdin.Write(append(raw, '\n'))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	select {
+	case err := <-done:
+		return err
+	default:
+	}
+	s.handleDisconnect(errors.New("server stopped reading stdin"))
+	_ = s.Close()
+	return ctx.Err()
+}
+
+func (s *StdioMCP) notify(ctx context.Context, method string, params any) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.stdin == nil {
+	stdin := s.stdin
+	closed := s.closed
+	s.mu.Unlock()
+	if closed || stdin == nil {
 		return domain.E(domain.CodeToolError, "mcp server process terminated")
 	}
 	reqBody := map[string]any{
@@ -337,8 +369,7 @@ func (s *StdioMCP) notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.stdin.Write(append(raw, '\n'))
-	return err
+	return s.writeFrame(ctx, stdin, raw)
 }
 
 // Discover performs initialize handshake and tools/list discovery. It returns Spec items
@@ -359,26 +390,44 @@ func (s *StdioMCP) Discover(ctx context.Context) ([]Spec, error) {
 	if _, err := s.call(ctx, "initialize", initParams); err != nil {
 		return nil, domain.E(domain.CodeToolError, "mcp initialize failed: "+err.Error())
 	}
-	_ = s.notify("notifications/initialized", map[string]any{})
+	_ = s.notify(ctx, "notifications/initialized", map[string]any{})
 
-	listResp, err := s.call(ctx, "tools/list", map[string]any{})
-	if err != nil {
-		return nil, domain.E(domain.CodeToolError, "mcp tools/list failed: "+err.Error())
+	type listedTool struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	var listed []listedTool
+	// tools/list is paginated: keep asking while the server returns a cursor.
+	cursor := ""
+	for page := 0; ; page++ {
+		if page >= maxMCPListPages {
+			return nil, domain.E(domain.CodeToolError, fmt.Sprintf("mcp tools/list did not end within %d pages", maxMCPListPages))
+		}
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		listResp, err := s.call(ctx, "tools/list", params)
+		if err != nil {
+			return nil, domain.E(domain.CodeToolError, "mcp tools/list failed: "+err.Error())
+		}
+		var listResult struct {
+			Tools      []listedTool `json:"tools"`
+			NextCursor string       `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(listResp, &listResult); err != nil {
+			return nil, domain.E(domain.CodeToolError, "invalid tools/list response: "+err.Error())
+		}
+		listed = append(listed, listResult.Tools...)
+		if listResult.NextCursor == "" {
+			break
+		}
+		cursor = listResult.NextCursor
 	}
 
-	var listResult struct {
-		Tools []struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			InputSchema json.RawMessage `json:"inputSchema"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(listResp, &listResult); err != nil {
-		return nil, domain.E(domain.CodeToolError, "invalid tools/list response: "+err.Error())
-	}
-
-	specs := make([]Spec, 0, len(listResult.Tools))
-	for _, t := range listResult.Tools {
+	specs := make([]Spec, 0, len(listed))
+	for _, t := range listed {
 		origName := t.Name
 		toolName := fmt.Sprintf("mcp.%s.%s", s.name, origName)
 
@@ -436,30 +485,38 @@ func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.R
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var argMap any
-	if len(args) > 0 {
-		_ = json.Unmarshal(args, &argMap)
-	}
-	if argMap == nil {
-		argMap = map[string]any{}
+	// Forward the argument bytes as they are: decoding into any would turn
+	// integers above 2^53 into rounded float64 values.
+	var arguments any = map[string]any{}
+	if trimmed := bytes.TrimSpace(args); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if !json.Valid(trimmed) {
+			return nil, domain.E(domain.CodeInvalidArgument, "mcp tool arguments are not valid json")
+		}
+		arguments = json.RawMessage(trimmed)
 	}
 
 	callParams := map[string]any{
 		"name":      origName,
-		"arguments": argMap,
+		"arguments": arguments,
 	}
 
 	respRaw, err := s.call(cctx, "tools/call", callParams)
 	if err != nil {
 		if errors.Is(cctx.Err(), context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
-			return nil, domain.E(domain.CodeToolError, "mcp tool call timed out after 15s")
+			msg := fmt.Sprintf("mcp tool call timed out after %s", timeout)
+			if !s.readonly {
+				// The request may already have been carried out; say so
+				// rather than reporting a plain failure.
+				msg += "; the outcome is unknown: the server may still have performed it, so check before retrying"
+			}
+			return nil, domain.E(domain.CodeToolError, msg)
 		}
 		return nil, asDomain(err)
 	}
 
 	var callRes struct {
-		Content []MCPText `json:"content"`
-		IsError bool      `json:"isError"`
+		Content []json.RawMessage `json:"content"`
+		IsError bool              `json:"isError"`
 	}
 	_ = json.Unmarshal(respRaw, &callRes)
 
@@ -468,22 +525,18 @@ func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.R
 	var truncatedContent []MCPText
 
 	if len(callRes.Content) > 0 {
-		for _, block := range callRes.Content {
-			textBytes := []byte(block.Text)
-			if totalLen+len(textBytes) > MaxMCPResultBytes {
-				rem := MaxMCPResultBytes - totalLen
+		for _, raw := range callRes.Content {
+			block := mcpContentText(raw)
+			if rem := MaxMCPResultBytes - totalLen; len(block.Text) > rem {
 				if rem > 0 {
-					truncatedContent = append(truncatedContent, MCPText{
-						Type: block.Type,
-						Text: string(textBytes[:rem]),
-					})
+					block.Text = block.Text[:rem]
+					truncatedContent = append(truncatedContent, block)
 				}
 				truncated = true
-				totalLen = MaxMCPResultBytes
 				break
 			}
 			truncatedContent = append(truncatedContent, block)
-			totalLen += len(textBytes)
+			totalLen += len(block.Text)
 		}
 	} else if len(respRaw) > 0 {
 		text := string(respRaw)
@@ -513,6 +566,54 @@ func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.R
 		return outRaw, domain.E(domain.CodeToolError, errMsg)
 	}
 	return outRaw, nil
+}
+
+// mcpContentText turns one tools/call content block into text for the model.
+// Tool results reach the model as text, so binary payloads are replaced by a
+// note saying what was left out instead of being dropped without a trace.
+func mcpContentText(raw json.RawMessage) MCPText {
+	var block struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+		URI      string `json:"uri"`
+		Name     string `json:"name"`
+		Resource *struct {
+			URI      string `json:"uri"`
+			MimeType string `json:"mimeType"`
+			Text     string `json:"text"`
+			Blob     string `json:"blob"`
+		} `json:"resource"`
+	}
+	if err := json.Unmarshal(raw, &block); err != nil {
+		return MCPText{Type: "text", Text: string(raw)}
+	}
+	omitted := func(kind, mime string, encoded int) string {
+		if mime == "" {
+			mime = "unknown type"
+		}
+		return fmt.Sprintf("[%s omitted: %s, %d base64 bytes; binary content is not forwarded to the model]", kind, mime, encoded)
+	}
+	switch block.Type {
+	case "text":
+		return MCPText{Type: "text", Text: block.Text}
+	case "image", "audio":
+		return MCPText{Type: block.Type, Text: omitted(block.Type, block.MimeType, len(block.Data))}
+	case "resource":
+		if block.Resource == nil {
+			break
+		}
+		res := block.Resource
+		if res.Blob != "" {
+			return MCPText{Type: "resource", Text: omitted("resource "+res.URI, res.MimeType, len(res.Blob))}
+		}
+		return MCPText{Type: "resource", Text: "[resource " + res.URI + "]\n" + res.Text}
+	case "resource_link":
+		return MCPText{Type: "resource_link", Text: strings.TrimSpace("[resource link " + block.URI + "] " + block.Name)}
+	}
+	// Unrecognized block: hand over the JSON as received.
+	return MCPText{Type: "text", Text: string(raw)}
 }
 
 func isSensitiveEnv(key string) bool {
