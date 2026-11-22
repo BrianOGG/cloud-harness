@@ -14,7 +14,7 @@ for a run; project rules and the remaining context are assembled as usual.
 ## serve
 
 ```bash
-cloud-harness serve [--addr 127.0.0.1:19421] [--http-token TOKEN] [--workspace dir] [--db path] [--provider mock|openai] [--worktree]
+cloud-harness serve [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--workspace dir] [--db path] [--provider mock|openai] [--worktree]
 CLOUD_HARNESS_HTTP_TOKEN='replace-with-a-long-random-token' cloud-harness serve --addr 0.0.0.0:19421
 ```
 
@@ -26,6 +26,17 @@ Without one, serve exits before opening the store or binding a port with
 Errors never echo the token. The legacy `--http-allow-insecure`,
 `http_allow_insecure`, `CLOUD_HARNESS_HTTP_ALLOW_INSECURE`, and
 `CLOUD_HARNESS_ALLOW_EXTERNAL` settings cannot bypass this requirement.
+
+A loopback listener only answers requests whose `Host` header is `localhost`
+or a loopback IP address. To reach it under another name through a tunnel or
+reverse proxy, list that name with `--http-allowed-hosts HOST[,HOST]`,
+`CLOUD_HARNESS_HTTP_ALLOWED_HOSTS`, or the JSON `http_allowed_hosts` array.
+Every listener refuses a request whose `Origin` differs from its `Host`, and
+a write request with a body must send `Content-Type: application/json`. See
+[request checks](api.md#request-checks).
+
+`serve` stops gracefully on `SIGINT` (Ctrl+C) and `SIGTERM`; see
+[timeouts and shutdown](api.md#timeouts-and-shutdown).
 
 When a token is set, `/v1/` endpoints require `Authorization: Bearer <token>`.
 Missing or incorrect tokens return HTTP 401 with a `WWW-Authenticate: Bearer`

@@ -35,6 +35,11 @@ const (
 	DefaultReadHeaderTimeout = 10 * time.Second
 	// DefaultIdleTimeout is the HTTP server IdleTimeout.
 	DefaultIdleTimeout = 120 * time.Second
+	// DefaultReadTimeout bounds reading one request, including its body.
+	DefaultReadTimeout = 30 * time.Second
+	// DefaultWriteTimeout bounds handling one request and writing its response.
+	// Event streams and requests that execute a run are exempt.
+	DefaultWriteTimeout = 60 * time.Second
 )
 
 // Server serves the HTTP API. The default bind is loopback.
@@ -48,6 +53,14 @@ type Server struct {
 	PollInterval      time.Duration
 	Stats             http.HandlerFunc
 	Doctor            http.HandlerFunc
+	// LoopbackBind is set when the listener is bound to a loopback address.
+	// The Host header must then name a loopback address or an AllowedHosts entry.
+	LoopbackBind bool
+	// AllowedHosts lists extra accepted Host values, as "host" or "host:port".
+	// A non-empty list enables the Host check on any bind.
+	AllowedHosts []string
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 
 	subMu sync.Mutex
 	subs  map[string]map[chan struct{}]struct{}
@@ -59,8 +72,24 @@ func (s *Server) NewHTTPServer(addr string) *http.Server {
 		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		ReadTimeout:       s.readTimeout(),
+		WriteTimeout:      s.writeTimeout(),
 		IdleTimeout:       DefaultIdleTimeout,
 	}
+}
+
+func (s *Server) readTimeout() time.Duration {
+	if s.ReadTimeout > 0 {
+		return s.ReadTimeout
+	}
+	return DefaultReadTimeout
+}
+
+func (s *Server) writeTimeout() time.Duration {
+	if s.WriteTimeout > 0 {
+		return s.WriteTimeout
+	}
+	return DefaultWriteTimeout
 }
 
 func (s *Server) token() string {
@@ -91,7 +120,8 @@ func (s *Server) pollInterval() time.Duration {
 	return DefaultPollInterval
 }
 
-// Handler returns the HTTP routes wrapped with bearer authentication and body size limits.
+// Handler returns the HTTP routes wrapped with the Host and Origin checks,
+// bearer authentication, and body type and size limits.
 func (s *Server) Handler() http.Handler {
 	if s.Manager != nil {
 		if s.Now != nil && s.Manager.Now == nil {
@@ -123,7 +153,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/budget", s.budget)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 
-	return withUI(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.guard(withUI(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" && r.URL.Path != "/approval" {
 			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)
@@ -133,11 +163,17 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 		}
+		if !requireJSONBody(r) {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]*domain.Error{
+				"error": domain.E(domain.CodeInvalidArgument, "request body requires Content-Type: application/json"),
+			})
+			return
+		}
 		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes())
 		}
 		mux.ServeHTTP(w, r)
-	}))
+	})))
 }
 
 func checkBearerToken(header, expected string) bool {
@@ -236,7 +272,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "message is required"))
 		return
 	}
+	rearm := s.holdOpen(w)
 	run, err := s.Manager.RunMessage(r.Context(), r.PathValue("id"), body.Message)
+	rearm()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -255,6 +293,7 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	w = &streamWriter{ResponseWriter: w, rearm: s.holdOpen(w)}
 	id := r.PathValue("id")
 	run, err := s.Manager.Store.GetRun(r.Context(), id)
 	if err != nil {
@@ -502,9 +541,11 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	id := r.PathValue("id")
+	rearm := s.holdOpen(w)
 	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{
 		Decision: body.Decision, Answer: body.Answer, ExtraModelCalls: body.ExtraModelCalls,
 	})
+	rearm()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -536,7 +577,9 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "answer is required").WithRef(id))
 		return
 	}
+	rearm := s.holdOpen(w)
 	resumed, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{Answer: ans})
+	rearm()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -554,7 +597,9 @@ func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	rearm := s.holdOpen(w)
 	run, err := s.Manager.Resume(r.Context(), id, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
+	rearm()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -569,7 +614,9 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	rearm := s.holdOpen(w)
 	run, err := s.Manager.Cancel(r.Context(), id)
+	rearm()
 	if err != nil {
 		writeErr(w, err)
 		return

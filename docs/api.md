@@ -44,6 +44,59 @@ remain accepted for configuration compatibility and cannot waive this token
 requirement. See [serve CLI](cli.md#serve) and
 [HTTP configuration](config.md#http-authentication-and-non-loopback-rule).
 
+## Request checks
+
+These checks run on every route, before authentication, with or without a
+token. They stop a web page in the user's browser from driving the API through
+a cross-site request or DNS rebinding.
+
+| Check | Applies to | Failure |
+| --- | --- | --- |
+| `Host` names the listener | Loopback listeners, and any listener with `http_allowed_hosts` set | HTTP 403 `auth_denied` |
+| `Origin`, when sent, matches `Host` | Every listener | HTTP 403 `auth_denied` |
+| `Content-Type: application/json` | `POST`, `PUT`, `PATCH`, and `DELETE` requests with a body, after authentication | HTTP 415 `invalid_argument` |
+
+- **Host.** A loopback listener accepts `localhost`, any loopback IP address
+  (`127.0.0.0/8`, `::1`), and the entries of `http_allowed_hosts`, on any port.
+  An entry is `host` (any port) or `host:port` (that port only). Set it with
+  `serve --http-allowed-hosts HOST[,HOST]`, `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS`,
+  or the JSON `http_allowed_hosts` array when a tunnel or reverse proxy
+  forwards another name to the loopback listener, such as the host of
+  `notify.approval_base_url`. A non-loopback listener accepts any `Host`
+  unless `http_allowed_hosts` is set.
+- **Origin.** The host and port of `Origin` must equal the `Host` header. The
+  scheme is not compared, so a TLS proxy in front of the listener works.
+  `Origin: null` is refused. Requests without `Origin`, such as `curl` and
+  other non-browser clients, are not affected. The API sends no CORS headers.
+- **Content-Type.** Parameters such as `charset` are accepted. A write request
+  without a body, such as `POST /v1/sessions`, needs no `Content-Type`.
+
+```json
+{
+  "error": {
+    "code": "auth_denied",
+    "message": "cross-origin request refused"
+  }
+}
+```
+
+## Timeouts and shutdown
+
+`serve` allows 10 seconds to read request headers, 30 seconds to read a whole
+request including its body, and 60 seconds to handle a request and write its
+response. A connection that exceeds a limit is closed. Idle keep-alive
+connections close after 120 seconds.
+
+Two kinds of request have no total time limit. `GET /v1/runs/{id}/events`
+stays open, and each event or heartbeat write gets its own 60 seconds. A
+request that executes a run (`POST /v1/sessions/{id}/runs`, and the
+`/responses`, `/answer`, `/budget`, and `/cancel` routes of a run) is held
+open until the run stops, then has 60 seconds to write its response.
+
+`SIGINT` and `SIGTERM` both stop `serve` gracefully: it stops accepting
+connections, waits up to 1 second for requests in flight, closes the
+remaining connections, and closes the store.
+
 ## GET /approval
 
 Open `/approval` to see the waiting queue or `/approval?run=<run-id>` to open

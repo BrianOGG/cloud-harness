@@ -49,6 +49,7 @@ func TestMockRunOverHTTP(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.ID+"/runs", strings.NewReader(`{"message":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("run %d %s", rec.Code, rec.Body)
@@ -119,6 +120,7 @@ func TestResumeDoesNotReplaceRun(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+run.ID+"/responses", strings.NewReader(`{"answer":"yes"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("responses %d %s", rec.Code, rec.Body)
@@ -221,6 +223,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs", strings.NewReader(`{"message":"deploy app"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create run %d %s", rec.Code, rec.Body)
@@ -236,6 +239,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 	// 404 for unknown run.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/runs/run_unknown/answer", strings.NewReader(`{"answer":"eu-central-1"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown run answer %d %s", rec.Code, rec.Body)
@@ -244,6 +248,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 	// POST the answer to resume and complete the run.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer", strings.NewReader(`{"answer":"eu-central-1"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("answer %d %s", rec.Code, rec.Body)
@@ -259,6 +264,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 	// POSTing again when the run is no longer waiting yields 409 Conflict.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer", strings.NewReader(`{"answer":"eu-central-1"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409 on completed run, got %d %s", rec.Code, rec.Body)
@@ -631,6 +637,7 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 	body := `{"message":"` + largeMsg + `"}`
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413 Request Entity Too Large, got %d %s", rec.Code, rec.Body)
