@@ -91,7 +91,9 @@ export default function App() {
   const sending = pending !== null;
   const optimistic = pending && pending.sessionId === activeSession && !activeRuns.some((run) => run.id === pending.runId) ? pending : null;
   const busy = sending || (latestRun?.status === 'RUNNING') || (latestRun?.status === 'WAITING' && latestRun.wait_reason !== 'USER');
-  const answering = !sending && latestRun?.status === 'WAITING' && latestRun.wait_reason === 'USER' ? latestRun : null;
+  // A question can also wait on a run that is no longer the newest of the session.
+  const asking = useMemo(() => [...activeRuns].reverse().find((run) => run.status === 'WAITING' && run.wait_reason === 'USER') || null, [activeRuns]);
+  const answering = sending ? null : asking;
 
   const upsertRun = useCallback((run: RunView) => {
     setRuns((previous) => {
