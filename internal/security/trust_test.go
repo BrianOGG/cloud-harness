@@ -239,3 +239,37 @@ func TestBehaviorFile(t *testing.T) {
 		}
 	}
 }
+
+// A control directory that is itself a symlink keeps its protection under
+// the real name of the directory it points at.
+func TestControlPathFollowsSymlinkedControlDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	writePolicyFile(t, filepath.Join(workspace, "state", "harness.db"), "sqlite")
+	writePolicyFile(t, filepath.Join(workspace, "src", "main.go"), "package main")
+	if err := os.Symlink("state", filepath.Join(workspace, ControlDir)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := LoadPolicyFrom(workspace, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []PolicyRequest{
+		{Tool: "read_file", Paths: []string{"state/harness.db"}, FileRead: true},
+		{Tool: "write_file", Paths: []string{"state/hooks.json"}, FileWrite: true},
+		{Tool: "read_file", Paths: []string{filepath.Join(workspace, "state")}, FileRead: true},
+		{Tool: "read_file", Paths: []string{".cloud-harness/harness.db"}, FileRead: true},
+	} {
+		if got := p.Evaluate(req); got.Effect != EffectDeny || got.Source != "builtin" || got.RuleIndex != 3 {
+			t.Fatalf("%+v = %+v", req, got)
+		}
+	}
+	for _, req := range []PolicyRequest{
+		{Tool: "read_file", Paths: []string{"src/main.go"}, FileRead: true},
+		{Tool: "read_file", Paths: []string{"state-notes.txt"}, FileRead: true},
+		{Tool: "grep", Paths: []string{workspace}, FileRead: true},
+	} {
+		if got := p.Evaluate(req); got.Effect == EffectDeny {
+			t.Fatalf("%+v = %+v", req, got)
+		}
+	}
+}
