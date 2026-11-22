@@ -126,6 +126,7 @@ var liveDefaultLocalTools = []string{
 	"read_file",
 	"write_file",
 	"edit_file",
+	"list_dir",
 	"list_files",
 	"grep",
 	"git_status",

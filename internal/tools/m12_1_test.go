@@ -40,6 +40,7 @@ func TestSearchToolsSkipControlFilesBehindSymlinks(t *testing.T) {
 			grants := &memGrants{grants: []domain.Grant{
 				{ID: "g1", Tool: "grep", Op: "call", State: "active", RunID: "run", ResourceScope: root},
 				{ID: "g2", Tool: "list_files", Op: "call", State: "active", RunID: "run", ResourceScope: root},
+				{ID: "g3", Tool: "list_dir", Op: "call", State: "active", RunID: "run", ResourceScope: root},
 			}}
 			b := NewBroker(&memCharge{b: domain.Budget{MaxToolCalls: 20}}, grants)
 			if err := RegisterLocal(b, root); err != nil {
@@ -72,6 +73,22 @@ func TestSearchToolsSkipControlFilesBehindSymlinks(t *testing.T) {
 			}
 			if strings.Join(listed.Files, ",") != "notes.txt" {
 				t.Fatalf("list_files = %v", listed.Files)
+			}
+
+			res, err = b.Invoke(context.Background(), Request{RunID: "run", Tool: "list_dir", Args: json.RawMessage(`{}`)})
+			if err != nil || !res.OK {
+				t.Fatalf("list_dir: %+v %v", res, err)
+			}
+			var dirListed struct {
+				Entries []struct {
+					Name string `json:"name"`
+				} `json:"entries"`
+			}
+			if err := json.Unmarshal(res.Data, &dirListed); err != nil {
+				t.Fatal(err)
+			}
+			if len(dirListed.Entries) != 1 || dirListed.Entries[0].Name != "notes.txt" {
+				t.Fatalf("list_dir entries = %+v", dirListed.Entries)
 			}
 		})
 	}

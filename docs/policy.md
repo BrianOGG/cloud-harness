@@ -86,7 +86,7 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
    控制文件：`hooks.json`、`policy.json`、默认数据库 `harness.db`、快照和 worktree
    元数据。目录名不区分大小写，路径先规范化并解析符号链接，因此 `a/../.cloud-harness/x`
    和指向该目录的符号链接同样被拒绝；`.cloud-harness` 本身是符号链接时，它指向的目录按真实
-   路径同样受保护。`list_files` 和 `grep` 遍历工作区时跳过该目录，以及解析后位于该目录内
+   路径同样受保护。`list_dir`、`list_files` 和 `grep` 遍历工作区时跳过该目录，以及解析后位于该目录内
    的符号链接。结果为
    `policy deny (builtin): file access to .cloud-harness/** (harness control files)`。
 
