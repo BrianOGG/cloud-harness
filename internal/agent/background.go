@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -173,9 +174,11 @@ func (m *Manager) failStranded(ctx context.Context, runID string, cause error) (
 const shutdownRecheck = 20 * time.Millisecond
 
 // Shutdown refuses new background executions, cancels those still executing,
-// and waits for them to unwind or for ctx to end. A cancelled run is recorded
-// as CANCELLED before Shutdown waits, so none is left RUNNING. A run that
-// waits for a person is not executing and is left as it is.
+// and waits for them to unwind or for ctx to end. Runs are cancelled side by
+// side, so a slow Stop hook on one does not keep another executing. Shutdown
+// returns only after every cancel it began has recorded its run as CANCELLED,
+// even when ctx ends first, so none is left RUNNING. A run that waits for a
+// person is not executing and is left as it is.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.bgMu.Lock()
 	m.bgClosed = true
@@ -190,7 +193,16 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	defer ticker.Stop()
 	persist := context.WithoutCancel(ctx)
 	asked := map[string]bool{}
-	var errs []error
+	var (
+		cancels sync.WaitGroup
+		errMu   sync.Mutex
+		errs    []error
+	)
+	fail := func(err error) {
+		errMu.Lock()
+		errs = append(errs, err)
+		errMu.Unlock()
+	}
 	for {
 		// An execution accepted just before bgClosed was set may record its
 		// run only now, so every pass looks again.
@@ -198,16 +210,30 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			if asked[id] {
 				continue
 			}
-			attempted, err := m.cancelExecuting(persist, id)
-			asked[id] = attempted
+			run, err := m.Store.GetRun(persist, id)
 			if err != nil {
-				errs = append(errs, err)
+				asked[id] = true
+				fail(err)
+				continue
 			}
+			if !executing(run) {
+				continue
+			}
+			asked[id] = true
+			cancels.Add(1)
+			go func() {
+				defer cancels.Done()
+				if err := m.cancelExecuting(persist, id); err != nil {
+					fail(err)
+				}
+			}()
 		}
 		select {
 		case <-unwound:
+			cancels.Wait()
 			return errors.Join(errs...)
 		case <-ctx.Done():
+			cancels.Wait()
 			return errors.Join(append(errs, ctx.Err())...)
 		case <-ticker.C:
 		}
@@ -232,21 +258,13 @@ func executing(run storage.Run) bool {
 		(run.Status == domain.RunWaiting && run.WaitReason == domain.WaitChild)
 }
 
-// cancelExecuting cancels id if it is still executing, which also stops a
-// child it delegated to. It reports whether it tried.
-func (m *Manager) cancelExecuting(ctx context.Context, id string) (bool, error) {
-	run, err := m.Store.GetRun(ctx, id)
-	if err != nil {
-		return true, err
-	}
-	if !executing(run) {
-		return false, nil
-	}
+// cancelExecuting cancels id, which also stops a child it delegated to.
+func (m *Manager) cancelExecuting(ctx context.Context, id string) error {
 	if _, err := m.Cancel(ctx, id); err != nil {
 		// The run may have stopped by itself in the meantime.
 		if current, readErr := m.Store.GetRun(ctx, id); readErr != nil || executing(current) {
-			return true, err
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }

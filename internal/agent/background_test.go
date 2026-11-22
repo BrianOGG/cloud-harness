@@ -189,3 +189,43 @@ func TestShutdownLeavesWaitingRunResumable(t *testing.T) {
 		t.Fatalf("run = %s(%s)", got.Status, got.WaitReason)
 	}
 }
+
+// Each Stop hook here exits only once both have started, which a Shutdown
+// that cancels one run at a time never lets happen.
+func TestShutdownCancelsRunsTogether(t *testing.T) {
+	prov := newBlockingProvider(nil)
+	m, session := backgroundManager(t, prov)
+	both := `touch "stop-$$"; for i in $(seq 100); do [ "$(ls stop-* | wc -l)" -ge 2 ] && exit 0; sleep 0.05; done; exit 1`
+	putAgentHooks(t, m.Workspace, map[hooks.Point][]hooks.Action{hooks.Stop: {{Type: "command", Command: both}}}, false)
+	second, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []*Execution
+	for _, id := range []string{session.ID, second.ID} {
+		ex, err := m.StartMessage(t.Context(), id, "hello", RunOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, ex)
+		<-prov.blocked
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := m.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, ex := range runs {
+		if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunCancelled {
+			t.Errorf("run %s = %s", ex.Run.ID, got.Status)
+		}
+		var passed bool
+		for _, ev := range hookEvents(t, m.Store, ex.Run.ID) {
+			passed = passed || (ev.Point == hooks.Stop && ev.ExitCode == 0)
+		}
+		if !passed {
+			t.Errorf("run %s: Stop hook did not see the other run's hook: %+v", ex.Run.ID, hookEvents(t, m.Store, ex.Run.ID))
+		}
+	}
+}

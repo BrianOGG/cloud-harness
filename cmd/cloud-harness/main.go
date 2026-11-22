@@ -450,8 +450,8 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 }
 
 // stopRuns cancels the runs executing in this process before the store
-// closes. Each is recorded as CANCELLED first, so none is left RUNNING when
-// one does not unwind within the timeout.
+// closes. Each is recorded as CANCELLED first, which includes running its Stop
+// hooks, so none is left RUNNING when one does not unwind within the timeout.
 func stopRuns(mgr *agent.Manager, stderr io.Writer) {
 	ctx, cancel := context.WithTimeout(context.Background(), serveRunStopTimeout)
 	defer cancel()

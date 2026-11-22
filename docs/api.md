@@ -94,11 +94,19 @@ and the `/responses`, `/answer`, and `/budget` routes of a run, unless called
 with `?wait=0`) and `/cancel` are held open until the run stops, then have 60
 seconds to write the response.
 
-`SIGINT` and `SIGTERM` both stop `serve` gracefully. It refuses new runs,
-cancels every run that is executing, and waits up to 5 seconds for them to
-unwind. Each of those runs is recorded as `CANCELLED` with a `run.cancelled`
-event, so none is left `RUNNING`, and open event streams receive that event.
-A run that is `WAITING` is not touched and can be resumed after a restart.
+`SIGINT` and `SIGTERM` both stop `serve` gracefully. It refuses new runs and
+cancels every run that is executing, all at the same time. A run that is
+waiting on a child run it delegated to counts as executing, and its child is
+cancelled with it. Each of those runs is recorded as `CANCELLED` with a
+`run.cancelled` event, so none is left `RUNNING`, and open event streams
+receive that event. `serve` then waits up to 5 seconds for the cancelled runs
+to unwind. A run that is `WAITING` for approval, an answer, or budget is not
+touched and can be resumed after a restart.
+
+Cancelling a run executes its `Stop` hooks before the run is recorded, as
+`POST /v1/runs/{id}/cancel` does. Shutdown waits for those hooks even past the
+5 seconds, so a hook's own timeout (10 seconds unless `timeout_ms` is set) is
+the longest a run can hold shutdown.
 `serve` then stops accepting connections, waits up to 1 second for requests in
 flight, closes the remaining connections, and closes the store.
 
