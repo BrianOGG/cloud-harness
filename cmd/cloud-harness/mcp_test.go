@@ -419,6 +419,10 @@ func TestMCPToolFollowsPolicyFile(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "policy.json"), []byte(policy), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if tc.workspace {
+				// Allow and ask rules of a workspace policy apply only once trusted.
+				approveWorkspaceTrust(t, env.workspace)
+			}
 			status, _, _, stderr := env.run("echo hello through mcp")
 			if status != tc.wantStatus {
 				t.Fatalf("status %s, want %s (stderr %q)", status, tc.wantStatus, stderr)
