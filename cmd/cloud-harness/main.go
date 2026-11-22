@@ -478,6 +478,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	useWorktree := fs.Bool("worktree", false, "run in a retained Git worktree isolated from the workspace")
 	planMode := fs.Bool("plan", false, "run in read-only plan mode")
 	disableRepoMap := fs.Bool("no-repomap", false, "disable per-request workspace Repo-Map context")
+	stream := fs.Bool("stream", false, "write model text to stderr as it is generated")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -502,6 +503,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
 	defer func() { _ = mcpSet.Close() }()
 	mgr.DisableRepoMap = *disableRepoMap
+	if *stream {
+		// stdout stays one JSON document, so the text goes to stderr.
+		mgr.Stream = newCLIStream(stderr, mgr.Store)
+	}
 	userText, images, err := imageinput.ParseAndLoad(*message, mgr.Workspace)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
@@ -988,6 +993,7 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	message := fs.String("message", "", "initial user message")
 	session := fs.String("session", "", "session id")
 	useWorktree := fs.Bool("worktree", false, "run each turn in a retained Git worktree isolated from the workspace")
+	stream := fs.Bool("stream", false, "print model text as it is generated")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1011,6 +1017,9 @@ func cmdChat(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	warnUntrusted(stderr, mgr.Workspace)
 	mcpSet := startMCP(ctx, cfg, mgr, stderr)
 	defer func() { _ = mcpSet.Close() }()
+	if *stream {
+		mgr.Stream = newCLIStream(stdout, mgr.Store)
+	}
 	return runChat(ctx, mgr, *session, initMsg, stdin, stdout, stderr)
 }
 
@@ -1104,7 +1113,7 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			return run, 1, false
 		}
 		if domain.TerminalRun(run.Status) {
-			if run.FinalAnswer != "" {
+			if run.FinalAnswer != "" && !answerStreamed(mgr, run.FinalAnswer) {
 				_, _ = fmt.Fprintln(stdout, run.FinalAnswer)
 			}
 			if run.Status == domain.RunFailed {

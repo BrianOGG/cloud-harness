@@ -15,9 +15,13 @@ const (
 	ItemPersisted ItemKind = iota
 	// ItemDelta carries model text. It has no cursor and is never stored.
 	ItemDelta
-	// ItemReset says queued text was dropped: discard what was shown for the
-	// current model response.
+	// ItemReset says text already sent will not appear in the stored events:
+	// the response failed, or queued text was dropped. Discard what was shown
+	// for the current model response.
 	ItemReset
+	// ItemEnd marks the end of a model response. Text queued ahead of it
+	// belongs to a response the store may already report as complete.
+	ItemEnd
 )
 
 // Item is one entry in a subscriber's queue.
@@ -101,6 +105,41 @@ func (s *Subscription) Take() []Item {
 	return out
 }
 
+// Replayed tells the subscription that its owner has just read the stored
+// events. A response that ended between Subscribe and that read may already
+// be in what was read, so its queued text is dropped: the subscriber never
+// sees text arrive after the event that completed it.
+func (s *Subscription) Replayed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = afterLastEnd(s.items)
+	s.pending = 0
+	for _, item := range s.items {
+		s.pending += len(item.Text)
+	}
+}
+
+// afterLastEnd drops the text and resets queued ahead of the last ItemEnd.
+func afterLastEnd(items []Item) []Item {
+	last := -1
+	for i, item := range items {
+		if item.Kind == ItemEnd {
+			last = i
+		}
+	}
+	if last < 0 {
+		return items
+	}
+	kept := make([]Item, 0, len(items))
+	for i, item := range items {
+		if i < last && item.Kind != ItemPersisted {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept
+}
+
 func (s *Subscription) push(it Item) {
 	s.mu.Lock()
 	last := len(s.items) - 1
@@ -110,7 +149,7 @@ func (s *Subscription) push(it Item) {
 	case it.Kind == ItemDelta && s.pending+len(it.Text) > maxPendingDeltaBytes:
 		kept := s.items[:0]
 		for _, queued := range s.items {
-			if queued.Kind == ItemPersisted {
+			if queued.Kind == ItemPersisted || queued.Kind == ItemEnd {
 				kept = append(kept, queued)
 			}
 		}
@@ -172,15 +211,24 @@ func (h *Hub) Delta(runID, text string) {
 	h.publish(runID, Item{Kind: ItemDelta, Text: text})
 }
 
-// End marks the end of runID's current model response, whether it completed
-// or failed. Its text is no longer handed to new subscribers.
-func (h *Hub) End(runID string) {
+// End marks the end of runID's current model response. Its text is no longer
+// handed to new subscribers. When the response did not complete, subscribers
+// that were sent some of it are told to discard it.
+func (h *Hub) End(runID string, completed bool) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	p := h.current[runID]
 	delete(h.current, runID)
+	if p == nil {
+		return
+	}
+	if !completed {
+		h.publish(runID, Item{Kind: ItemReset})
+	}
+	h.publish(runID, Item{Kind: ItemEnd})
 }
 
 // Subscribers reports how many listeners runID has.

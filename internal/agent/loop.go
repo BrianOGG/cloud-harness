@@ -316,7 +316,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			ContinuationProvider: contProvider,
 			OnDelta:              m.deltaSink(run.ID),
 		})
-		m.endDeltas(run.ID)
+		m.endDeltas(run.ID, err == nil)
 		usage := usageOf(resp)
 		if usage.LatencyMS == 0 {
 			usage.LatencyMS = time.Since(started).Milliseconds()

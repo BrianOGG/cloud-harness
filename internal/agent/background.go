@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
@@ -27,8 +28,9 @@ func signalStarted(ctx context.Context, run storage.Run) {
 type DeltaStream interface {
 	// Delta delivers the next piece of runID's current model response.
 	Delta(runID, text string)
-	// End marks the end of that response, whether it completed or failed.
-	End(runID string)
+	// End marks the end of that response. completed is false when the
+	// response failed, so its text will not appear in the stored events.
+	End(runID string, completed bool)
 }
 
 // deltaSink returns the provider callback that reports runID's model text.
@@ -39,9 +41,9 @@ func (m *Manager) deltaSink(runID string) func(string) {
 	return func(text string) { m.Stream.Delta(runID, text) }
 }
 
-func (m *Manager) endDeltas(runID string) {
+func (m *Manager) endDeltas(runID string, completed bool) {
 	if m.Stream != nil {
-		m.Stream.End(runID)
+		m.Stream.End(runID, completed)
 	}
 }
 
@@ -141,47 +143,75 @@ func (m *Manager) start(ctx context.Context, execute func(context.Context) (stor
 	return ex, nil
 }
 
+// shutdownRecheck is how often Shutdown looks for an execution that recorded
+// its run after the previous pass.
+const shutdownRecheck = 20 * time.Millisecond
+
 // Shutdown refuses new background executions, cancels those still RUNNING,
 // and waits for them to unwind or for ctx to end. A cancelled run is recorded
 // as CANCELLED before Shutdown waits, so none is left RUNNING.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.bgMu.Lock()
 	m.bgClosed = true
-	ids := make([]string, 0, len(m.bgRuns))
-	for id := range m.bgRuns {
-		ids = append(ids, id)
-	}
 	m.bgMu.Unlock()
-	sort.Strings(ids)
-
-	persist := context.WithoutCancel(ctx)
-	var errs []error
-	for _, id := range ids {
-		run, err := m.Store.GetRun(persist, id)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if run.Status != domain.RunRunning {
-			continue
-		}
-		if _, err := m.Cancel(persist, id); err != nil {
-			// The run may have stopped by itself in the meantime.
-			if current, readErr := m.Store.GetRun(persist, id); readErr != nil || current.Status == domain.RunRunning {
-				errs = append(errs, err)
-			}
-		}
-	}
 
 	unwound := make(chan struct{})
 	go func() {
 		m.bgWG.Wait()
 		close(unwound)
 	}()
-	select {
-	case <-unwound:
-	case <-ctx.Done():
-		errs = append(errs, ctx.Err())
+	ticker := time.NewTicker(shutdownRecheck)
+	defer ticker.Stop()
+	persist := context.WithoutCancel(ctx)
+	asked := map[string]bool{}
+	var errs []error
+	for {
+		// An execution accepted just before bgClosed was set may record its
+		// run only now, so every pass looks again.
+		for _, id := range m.backgroundRunIDs() {
+			if asked[id] {
+				continue
+			}
+			asked[id] = true
+			if err := m.cancelExecuting(persist, id); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		select {
+		case <-unwound:
+			return errors.Join(errs...)
+		case <-ctx.Done():
+			return errors.Join(append(errs, ctx.Err())...)
+		case <-ticker.C:
+		}
 	}
-	return errors.Join(errs...)
+}
+
+func (m *Manager) backgroundRunIDs() []string {
+	m.bgMu.Lock()
+	defer m.bgMu.Unlock()
+	ids := make([]string, 0, len(m.bgRuns))
+	for id := range m.bgRuns {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// cancelExecuting cancels id if it is still RUNNING.
+func (m *Manager) cancelExecuting(ctx context.Context, id string) error {
+	run, err := m.Store.GetRun(ctx, id)
+	if err != nil {
+		return err
+	}
+	if run.Status != domain.RunRunning {
+		return nil
+	}
+	if _, err := m.Cancel(ctx, id); err != nil {
+		// The run may have stopped by itself in the meantime.
+		if current, readErr := m.Store.GetRun(ctx, id); readErr != nil || current.Status == domain.RunRunning {
+			return err
+		}
+	}
+	return nil
 }

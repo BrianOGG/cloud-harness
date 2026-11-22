@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 // when the test asks for it, and returns only when the test releases it.
 type gatedProvider struct {
 	chunks  []string
+	fail    error
 	started chan struct{}
 	step    chan struct{}
 	release chan struct{}
@@ -55,6 +57,9 @@ func (p *gatedProvider) Complete(ctx context.Context, req provider.Request) (dom
 	case <-p.release:
 	case <-ctx.Done():
 		return domain.ModelResponse{}, ctx.Err()
+	}
+	if p.fail != nil {
+		return domain.ModelResponse{}, p.fail
 	}
 	return domain.ModelResponse{
 		Provider: "gated", ProviderResponseID: "gated_resp", Complete: true,
@@ -385,6 +390,33 @@ func TestSubscriberWakesOnCommitWithoutPolling(t *testing.T) {
 	if !completed {
 		t.Fatal("stream ended without run.completed with polling disabled")
 	}
+}
+
+// Text of a response that then fails never reaches the event log, so the
+// subscriber is told to discard it.
+func TestFailedResponseResetsStreamedText(t *testing.T) {
+	p := newGatedProvider("half an ans")
+	p.fail = errors.New("upstream closed the stream")
+	f := newStreamFixture(t, p)
+	created := f.createRun(t, "?wait=0")
+	sub := f.subscribe(t, created.ID, "")
+	p.emit(t, 1)
+	close(p.release)
+
+	var live []string
+	for {
+		ev, ok := sub.next(t)
+		if !ok {
+			break
+		}
+		if ev.id == "" {
+			live = append(live, ev.typ)
+		}
+	}
+	if got := strings.Join(live, " "); got != "stream.delta stream.reset" {
+		t.Fatalf("unstored events = %q, want a delta then a reset", got)
+	}
+	f.waitStatus(t, created.ID, domain.RunFailed)
 }
 
 // Shutdown is what serve runs on SIGINT and SIGTERM: a run still executing is

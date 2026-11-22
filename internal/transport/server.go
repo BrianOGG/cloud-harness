@@ -383,6 +383,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	sub.Replayed()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	for _, ev := range events {
@@ -426,9 +427,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	pollTicker := time.NewTicker(s.pollInterval())
 	defer pollTicker.Stop()
 
-	// Text queued before an event commit belongs to a response the replay
-	// above may already have reported as complete, so it is not sent.
-	caughtUp := false
 	for {
 		select {
 		case <-r.Context().Done():
@@ -439,12 +437,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 			flushSSE(w)
 		case <-sub.Wake():
-			items := sub.Take()
-			if !caughtUp {
-				items = afterLastCommit(items)
-				caughtUp = true
-			}
-			for _, item := range items {
+			for _, item := range sub.Take() {
 				switch item.Kind {
 				case trace.ItemPersisted:
 					if s.drainLiveEvents(r.Context(), w, id, &after) {
@@ -468,21 +461,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-}
-
-// afterLastCommit drops the text queued ahead of the last event commit and
-// keeps one commit marker in its place.
-func afterLastCommit(items []trace.Item) []trace.Item {
-	last := -1
-	for i, item := range items {
-		if item.Kind == trace.ItemPersisted {
-			last = i
-		}
-	}
-	if last < 0 {
-		return items
-	}
-	return items[last:]
 }
 
 func (s *Server) parseLastEventID(ctx context.Context, runID, header string) (int64, error) {
