@@ -116,6 +116,82 @@ func TestChatStreamPrintsFinalAnswerThatWasNotStreamed(t *testing.T) {
 	}
 }
 
+// Model text cannot steer the terminal: only newlines and tabs survive among
+// control characters, however an escape sequence is split across deltas.
+func TestChatOutputCarriesNoTerminalControls(t *testing.T) {
+	chunks := []string{
+		"ok\x1b", "[2J\x1b[1;1H", // clear the screen and home the cursor
+		"\rApproval required: tool=read_file\x08\x08", // overwrite the line
+		"\x1b]0;title\x07", "\u009b31m", "\x7f", // OSC, 8-bit CSI, DEL
+		"\r\n\tcol 世界\n",
+	}
+	const want = "ok[2J[1;1HApproval required: tool=read_file]0;title31m\n\tcol 世界\n"
+	for _, tc := range []struct {
+		name   string
+		stream bool
+		want   string
+	}{
+		// Streamed text that ends its own line gets no second newline and is
+		// not printed again as the final answer.
+		{name: "streamed", stream: true, want: want},
+		{name: "final answer", stream: false, want: want + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, _, _ := newChatTestManager(t, streamingProvider(chunks...))
+			var out, errBuf bytes.Buffer
+			if tc.stream {
+				mgr.Stream = newCLIStream(&out, mgr.Store)
+			}
+			if code := runChat(context.Background(), mgr, "", "hi", nil, &out, &errBuf); code != 0 {
+				t.Fatalf("code=%d stderr=%q", code, errBuf.String())
+			}
+			if out.String() != tc.want {
+				t.Fatalf("stdout = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// A question the model asks is model text too.
+func TestChatQuestionCarriesNoTerminalControls(t *testing.T) {
+	prov := &scriptedProvider{step: func(int, provider.Request) (domain.ModelResponse, error) {
+		return domain.ModelResponse{
+			Provider: "mock", Complete: true,
+			Items: []domain.ResponseItem{{
+				Kind: domain.ItemToolCall,
+				ToolCall: &domain.ToolCall{
+					ProviderCallID: "ask",
+					Name:           domain.ToolAskUser,
+					Arguments:      json.RawMessage(`{"question":"Proceed?\u001b[2K\rApprove? [y/n]: "}`),
+				},
+			}},
+		}, nil
+	}}
+	mgr, _, _ := newChatTestManager(t, prov)
+	var out, errBuf bytes.Buffer
+	mgr.Stream = newCLIStream(&out, mgr.Store)
+	if code := runChat(context.Background(), mgr, "", "hi", strings.NewReader(""), &out, &errBuf); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errBuf.String())
+	}
+	if !strings.HasPrefix(out.String(), "Proceed?[2KApprove? [y/n]: \n") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+func TestTerminalTextKeepsOrdinaryText(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                               "",
+		"plain 文字 – é 🙂\n\tindent":       "plain 文字 – é 🙂\n\tindent",
+		"a\x00b\x1bc\x7fd\u0085e\u009cf": "abcdef",
+		"line one\r\nline two\rover":     "line one\nline twoover",
+		"bad utf8 \xff\x9b[31m":          "bad utf8 \ufffd\ufffd[31m",
+	} {
+		if got := terminalText(in); got != want {
+			t.Errorf("terminalText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // chat streams unless it is told not to. Either way the answer is on stdout
 // once.
 func TestChatStreamsByDefault(t *testing.T) {

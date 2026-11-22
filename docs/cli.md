@@ -275,6 +275,12 @@ you started is written; child runs execute concurrently and their text is left
 out. If a response fails partway, the text already written stays on screen.
 The text is never stored: the run's result is still its `final_answer`.
 
+Model text written to the terminal has its control characters removed, apart
+from newlines and tabs: the streamed text, the final answer `chat` prints, and
+a question the model asks. An escape sequence therefore shows as its printable
+remainder (`[31m`) instead of acting on the terminal. The `final_answer` in
+the JSON line of `run`, in the HTTP API and in the database is unchanged.
+
 `--plan` runs the turn with a read-only model tool catalog. File writes,
 commands, child delegation, scripts, and plan updates are omitted from the
 provider request. A call to one of those omitted names is recorded as an

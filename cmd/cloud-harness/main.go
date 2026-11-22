@@ -1114,7 +1114,7 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 		}
 		if domain.TerminalRun(run.Status) {
 			if run.FinalAnswer != "" && !answerStreamed(mgr, run.FinalAnswer) {
-				_, _ = fmt.Fprintln(stdout, run.FinalAnswer)
+				_, _ = fmt.Fprintln(stdout, terminalText(run.FinalAnswer))
 			}
 			if run.Status == domain.RunFailed {
 				if run.Error != nil {
@@ -1138,7 +1138,7 @@ func runChatTurn(ctx context.Context, mgr *agent.Manager, sessionID, message str
 			if question == "" {
 				question = "Input required:"
 			}
-			_, _ = fmt.Fprintln(stdout, question)
+			_, _ = fmt.Fprintln(stdout, terminalText(question))
 			var answer string
 			for {
 				line, eof, rerr := readChatLine(reader)

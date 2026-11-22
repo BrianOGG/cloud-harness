@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/BrianOGG/cloud-harness/internal/agent"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
@@ -20,7 +21,25 @@ type cliStream struct {
 	mu       sync.Mutex
 	topLevel map[string]bool
 	current  strings.Builder
+	midLine  bool
 	last     string
+}
+
+// terminalText returns model text with control characters removed, so it can
+// only add characters to the terminal: no escape sequence, carriage return or
+// backspace reaches it to move the cursor, recolor or overwrite what is on
+// screen. Newlines and tabs stay. Dropping one character at a time gives the
+// same result however the text is split into deltas.
+func terminalText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 func newCLIStream(w io.Writer, store storage.Store) *cliStream {
@@ -34,7 +53,12 @@ func (s *cliStream) Delta(runID, text string) {
 		return
 	}
 	s.current.WriteString(text)
-	_, _ = io.WriteString(s.w, text)
+	shown := terminalText(text)
+	if shown == "" {
+		return
+	}
+	s.midLine = !strings.HasSuffix(shown, "\n")
+	_, _ = io.WriteString(s.w, shown)
 }
 
 // End closes the line of the response that just ended. The text of a response
@@ -54,8 +78,9 @@ func (s *cliStream) End(runID string, completed bool) {
 	if text == "" {
 		return
 	}
-	if !strings.HasSuffix(text, "\n") {
+	if s.midLine {
 		_, _ = io.WriteString(s.w, "\n")
+		s.midLine = false
 	}
 	if completed {
 		s.last = text
