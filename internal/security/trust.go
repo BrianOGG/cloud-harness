@@ -304,6 +304,11 @@ func ControlPath(workspace, target string) bool {
 			return true
 		}
 	}
+	// A control directory that is a symlink stays protected under the real
+	// name of the directory it points at.
+	if dir, err := resolvePolicyPathHop(filepath.Join(filepath.Clean(workspace), ControlDir), 0); err == nil {
+		return inside(dir, target)
+	}
 	return false
 }
 
