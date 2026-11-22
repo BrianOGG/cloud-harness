@@ -8,7 +8,7 @@ Set `agent` in a `delegate_task` call to select `explorer`, `reviewer`, or a def
 
 ## Requirements
 
-- Go 1.27.3, pinned by the `go 1.27.3` line in `go.mod`. `go mod tidy` on this release deletes a redundant `toolchain go1.27.3` line, and `go test` then refuses the file until that line is gone. The `go` line is the pin that stays tidy.
+- Go 1.27.4, pinned by the `go 1.27.4` line in `go.mod`. `go mod tidy` on this release deletes a redundant `toolchain go1.27.4` line, and `go test` then refuses the file until that line is gone. The `go` line is the pin that stays tidy. Go 1.27.3 has a `net/http` server vulnerability ([GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859)) that `govulncheck` reports for `serve`.
 - No C compiler. SQLite is the pure-Go driver `modernc.org/sqlite` v1.62.0 (SQLite 3.54.1, FTS5 enabled).
 - Node.js 22 (22.12 or later) and npm to rebuild the Web UI. Go builds use the checked-in output in `web/dist/`.
 
@@ -165,17 +165,48 @@ Rebuild the Web UI after changing its source, and include the updated
 go build -o cloud-harness ./cmd/cloud-harness
 ```
 
+CI rebuilds the Web UI and fails when `web/dist/` differs from the result.
+[web/README.md](web/README.md) covers frontend development, tests, and this rule.
+
 ## Tests
 
 ```bash
-go test ./...
+gofmt -l .                      # prints nothing when the tree is formatted
+go build ./...
 go vet ./...
-go test -race ./...
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/cloud-harness-darwin ./cmd/cloud-harness
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/cloud-harness-windows.exe ./cmd/cloud-harness
+go test ./... -count=1
+go test -race ./... -count=1
+golangci-lint run ./...         # v2.15.0, configured by .golangci.yml
+go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+(cd web && npm ci && npm run lint && npm test && npm run check:dist)
 ```
 
 Non-Linux builds compile and refuse programmatic execution. They do not interpret Starlark in the harness process.
+
+### CI
+
+`.github/workflows/ci.yml` runs the commands above on every pull request and on pushes to `main` and `dev`, in four jobs:
+
+| Job | Runs |
+|---|---|
+| `go / test` | `gofmt -l .`, `go build`, `go vet`, `go test`, `go test -race` |
+| `go / lint and govulncheck` | `golangci-lint` v2.15.0 and `govulncheck` v1.10.0 |
+| `go / build darwin/arm64`, `go / build windows/amd64` | `CGO_ENABLED=0 go build ./...` for each target |
+| `web / lint, test, build, dist` | `npm ci`, `npm run lint`, `npm test`, `npm run check:dist` on Node.js 22 |
+
+The Go jobs read the Go version from `go.mod`; the web job reads the Node.js version from `web/.nvmrc`. `govulncheck` reads the live vulnerability database, so a newly published advisory can fail CI on a commit that passed before.
+
+### Lint baseline
+
+`.golangci.yml` enables `govet`, `ineffassign`, `staticcheck`, and `unused`. The tree had not been linted before, so the config leaves these out instead of changing `internal/` and `cmd/`:
+
+- `errcheck` is off. It reports 399 findings, mostly unchecked `fmt.Fprint*` and `io.WriteString` to CLI writers and deferred `Close` calls.
+- `staticcheck` quick-fix suggestions (`QF*`) are off. They report 11 style suggestions.
+- 13 existing findings are excluded by file and message under `linters.exclusions.rules`: four uses of the deprecated `runtime.GOROOT` in `internal/hooks`, three unused declarations, two ineffectual assignments, and four smaller `staticcheck` findings. The same finding in any other file still fails. Delete a rule when its finding is fixed.
+
+Cross-compiled targets are built, not vetted or tested: `GOOS=windows go vet ./...` fails because `internal/tools/stdio_mcp_test.go` calls `syscall.Kill`.
 
 ## Docs
 
