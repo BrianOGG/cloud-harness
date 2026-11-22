@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 // prices returns the configured model prices. A manager built without them
@@ -61,4 +63,24 @@ func (m *Manager) chargeUsage(ctx context.Context, runID, model string, usage do
 		CachedInputTokens: usage.CachedInputTokens, CostUSD: cost,
 	})
 	return cost
+}
+
+// recordMemoryCall accounts for a finished summary or memory call: its usage
+// goes to the run budget and, when the provider answered, to a stored
+// response row, so stats and exports count the calls the budget counts. The
+// row keeps no items: the summary lives in the context or memory it was
+// written for, not in the run's transcript.
+func (m *Manager) recordMemoryCall(ctx context.Context, runID string, model provider.Provider, resp domain.ModelResponse, callErr error, started time.Time) {
+	usage := usageOf(resp)
+	m.chargeUsage(ctx, runID, m.pricedModel(model, ""), usage)
+	if callErr != nil || m.Store == nil {
+		return
+	}
+	if usage.LatencyMS == 0 {
+		usage.LatencyMS = time.Since(started).Milliseconds()
+	}
+	_ = m.Store.SaveModelResponse(context.WithoutCancel(ctx), storage.StoredResponse{
+		ID: domain.NewID("rsp_"), RunID: runID, Provider: resp.Provider, ProviderResponseID: resp.ProviderResponseID,
+		Complete: resp.Complete, Usage: usage, Action: domain.ActionCompact, CreatedAt: m.now(),
+	})
 }

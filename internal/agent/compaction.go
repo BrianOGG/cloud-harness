@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
@@ -97,11 +98,12 @@ func (m *Manager) summarizeWork(ctx context.Context, run storage.Run, leaseVersi
 	perMessage := contextpkg.SummaryMessageCap(span, m.tokenLimit()*3)
 	request := "The user's request this work is for:\n" + contextpkg.ClipMiddle(view[st.userAt].Content, 2000) +
 		"\n\nEarlier work to compress:\n" + contextpkg.SummaryTranscript(span, st.toolRefs, perMessage)
+	started := time.Now()
 	resp, err := model.Complete(ctx, provider.Request{Messages: []provider.Message{
 		{Role: "system", Content: contextpkg.SummaryPrompt},
 		{Role: "user", Content: request},
 	}})
-	m.chargeUsage(ctx, run.ID, m.pricedModel(model, ""), usageOf(resp))
+	m.recordMemoryCall(ctx, run.ID, model, resp, err, started)
 	if err != nil {
 		return "", err
 	}

@@ -397,8 +397,10 @@ configured, otherwise the run's model) and replaces that work with the
 summary. The system prefix, the current user message, and the newest tool call
 with its result stay as they were, and a tool call is never separated from its
 result. A later summary folds the earlier one in. The summary call is a model
-call of the run and counts toward its budget; the run records
-`context.summarized`. If the call fails (`context.summary_failed`), or the
+call of the run: it counts toward its budget, is priced as the model that
+answered it, and appears in `stats`; the run records `context.summarized`. A
+run whose budget cannot pay for the summary waits for more budget with its
+context unchanged. If the call fails (`context.summary_failed`), or the
 context is still over the limit, older tool results are replaced by an excerpt
 with a `ref` for `retrieve_resource` and other long messages keep their start
 and end.

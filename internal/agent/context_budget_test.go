@@ -289,6 +289,22 @@ func TestCompactionReplacesOlderWorkWithAModelSummary(t *testing.T) {
 	if run.Budget.UsedModelCalls != 4 || run.Budget.UsedInputTokens != 70 || run.Budget.UsedOutputTokens != 9 {
 		t.Fatalf("summary call was not charged: %+v", run.Budget)
 	}
+	// Stats read stored responses, so they hold the summary call too.
+	stored, err := db.ListVisibleResponses(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storedUsage domain.Usage
+	for _, rec := range stored {
+		storedUsage.InputTokens += rec.Usage.InputTokens
+		storedUsage.OutputTokens += rec.Usage.OutputTokens
+		if rec.Usage.InputTokens == 70 && len(rec.Items) != 0 {
+			t.Fatalf("the summary was stored as part of the transcript: %+v", rec.Items)
+		}
+	}
+	if len(stored) < run.Budget.UsedModelCalls || storedUsage.InputTokens != 70 || storedUsage.OutputTokens != 9 {
+		t.Fatalf("stored responses=%d usage=%+v budget=%+v", len(stored), storedUsage, run.Budget)
+	}
 }
 
 func TestCompactionFallsBackOnceWhenTheSummaryFails(t *testing.T) {
