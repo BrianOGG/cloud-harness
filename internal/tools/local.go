@@ -949,7 +949,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces, harness control files are masked from the command; approved dangerous commands are not started when that sandbox is unavailable. Dangerous commands require approval.",
+		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces and on macOS, harness control files are hidden from the command; approved dangerous commands are not started when that sandbox is unavailable. Dangerous commands require approval.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,

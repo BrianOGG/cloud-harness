@@ -191,13 +191,64 @@ What the limits do and do not cover:
   namespace where `.cloud-harness` and the harness configuration directory are
   masked by empty tmpfs mounts, even when `disabled` is true; a timeout or
   cancellation kills the whole process group.
-- macOS and Windows run commands without these limits or the control-directory
-  mask. For `--worktree` runs on Linux, the original workspace `.cloud-harness`
+- For `--worktree` runs on Linux, the original workspace `.cloud-harness`
   is masked while the run worktree is preserved. If the configuration directory
   contains the workspace, `run_command` fails closed because the mask would hide
   the workspace. On a restricted Linux kernel where the mask cannot be applied,
   safe commands keep the rlimits-only path while approved dangerous commands are
   not started.
+- macOS does not apply these limits, but it does keep commands away from the
+  control files: see [Control files on macOS](#control-files-on-macos).
+  Windows runs commands without the limits or the control-file protection.
+
+### Control files on macOS
+
+On macOS every `run_command` process runs under a Seatbelt profile, applied
+with the system's `/usr/bin/sandbox-exec`. The profile allows everything except
+file operations on the workspace `.cloud-harness` directory and the harness
+configuration directory (`trust.json`, `policy.json`, and the settings file).
+There, reads, writes, `stat`, hard links, clones, renames, and deletes all fail
+with `Operation not permitted`. Linux shows the command an empty directory
+instead; on macOS the directory is visible in its parent's listing but cannot be
+opened.
+
+- The first `run_command` on macOS creates the workspace `.cloud-harness`
+  and the configuration directory, empty and with mode `0700`, if they do not
+  exist yet, and leaves them in place; in a `--worktree` run that includes a
+  `.cloud-harness` in the run worktree. On a case-insensitive volume this is
+  what stops a command, or a background process it leaves running, from
+  creating `.Cloud-Harness` and having the harness read it later. An empty
+  directory changes nothing on the next start: nothing in it is trusted, and
+  hooks, policy and trust load as if it were absent. Git does not show empty
+  directories. If the harness cannot create one (the parent is not writable),
+  the command is not started, since a command running as the same user could
+  make the parent writable and create the other spelling itself. A read-only
+  volume is the exception.
+- For `--worktree` runs the original workspace `.cloud-harness` is denied
+  while the run worktree inside it stays usable. The two directories above the
+  worktree answer `stat` so its path can be resolved, and nothing else.
+- Seatbelt rules follow a file's current path, so the directories above a
+  protected directory, up to the volume root, cannot be renamed or removed by
+  the command. That includes the workspace directory itself.
+- Before the command starts, the harness checks from inside the sandbox that
+  the kernel refuses each protected path. If it does not, or the profile cannot
+  be built (the configuration directory contains the workspace, a control path
+  is a dangling symlink, a path contains a control character), the command is
+  not started.
+- Seatbelt profiles do not nest. A command that applies its own (`swift build`
+  without `--disable-sandbox`, some browser-based test runners) fails inside
+  `run_command`. When the harness itself already runs inside a sandbox, no
+  profile can be applied: safe commands run unprotected and approved dangerous
+  commands are not started, as on a restricted Linux kernel.
+- As on Linux, a process the command leaves running stays under the same
+  restrictions for as long as it lives.
+- As on Linux, the protection covers the command's own process tree. A command
+  that asks a service outside it to touch the files (launchd, an application
+  started with `open`, Apple events, `ssh localhost`, a Docker daemon) is not
+  contained.
+- `sandbox-exec` is marked deprecated by Apple but ships with every current
+  macOS release. If a future release removes it, approved commands stop being
+  started rather than running unprotected.
 
 How a limit shows up in the `run_command` result is described in
 [tools.md](tools.md).

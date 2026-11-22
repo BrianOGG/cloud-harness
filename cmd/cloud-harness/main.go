@@ -365,12 +365,14 @@ func buildProvider(cfg config.Config) (provider.Provider, error) {
 		}, nil
 	case "openai-responses":
 		return &provider.OpenAIResponses{
-			BaseURL:         cfg.OpenAIBaseURL,
-			APIKey:          cfg.OpenAIAPIKey,
-			Model:           cfg.OpenAIModel,
-			ReasoningReplay: cfg.OpenAIReasoningReplay,
-			DisableImages:   cfg.OpenAIDisableImages,
-			RetryBaseDelay:  time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
+			BaseURL:               cfg.OpenAIBaseURL,
+			APIKey:                cfg.OpenAIAPIKey,
+			Model:                 cfg.OpenAIModel,
+			ReasoningReplay:       cfg.OpenAIReasoningReplay,
+			DisableImages:         cfg.OpenAIDisableImages,
+			ResponseHeaderTimeout: time.Duration(cfg.OpenAIHeaderTimeoutMS) * time.Millisecond,
+			IdleTimeout:           time.Duration(cfg.OpenAIIdleTimeoutMS) * time.Millisecond,
+			RetryBaseDelay:        time.Duration(cfg.OpenAIRetryBaseMS) * time.Millisecond,
 		}, nil
 	case "anthropic":
 		return &provider.Anthropic{

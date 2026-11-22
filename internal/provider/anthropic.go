@@ -24,6 +24,10 @@ type Anthropic struct {
 	MaxRetries     int
 	RetryBaseDelay time.Duration
 	DisableImages  bool
+	// ResponseHeaderTimeout and IdleTimeout bound a streamed attempt. Zero
+	// uses DefaultResponseHeaderTimeout and DefaultIdleTimeout.
+	ResponseHeaderTimeout time.Duration
+	IdleTimeout           time.Duration
 }
 
 func (p *Anthropic) Name() string { return "anthropic" }
@@ -91,6 +95,11 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 	if err != nil {
 		return domain.ModelResponse{}, err
 	}
+	onDelta := req.OnDelta
+	if req.oracle {
+		onDelta = nil
+	}
+	wire.Stream = onDelta != nil
 	body, err := json.Marshal(wire)
 	if err != nil {
 		return domain.ModelResponse{}, domain.E(domain.CodeProtocol, "anthropic request was not JSON")
@@ -99,23 +108,35 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 	if base == "" {
 		base = "https://api.anthropic.com"
 	}
-	raw, err := postJSONWithRetry(ctx, postJSONConfig{
-		URL:            base + "/v1/messages",
-		APIKey:         p.APIKey,
-		AuthHeader:     "x-api-key",
-		Headers:        map[string]string{"anthropic-version": "2023-06-01"},
-		Body:           body,
-		Client:         p.Client,
-		MaxRetries:     p.MaxRetries,
-		RetryBaseDelay: p.RetryBaseDelay,
-		SingleAttempt:  req.singleAttempt,
-	})
+	cfg := postJSONConfig{
+		URL:                   base + "/v1/messages",
+		APIKey:                p.APIKey,
+		AuthHeader:            "x-api-key",
+		Headers:               map[string]string{"anthropic-version": "2023-06-01"},
+		Body:                  body,
+		Client:                p.Client,
+		MaxRetries:            p.MaxRetries,
+		RetryBaseDelay:        p.RetryBaseDelay,
+		SingleAttempt:         req.singleAttempt,
+		ResponseHeaderTimeout: p.ResponseHeaderTimeout,
+		IdleTimeout:           p.IdleTimeout,
+	}
+	streamed := false
+	var raw []byte
+	if onDelta == nil {
+		raw, err = postJSONWithRetry(ctx, cfg)
+	} else {
+		raw, streamed, err = postDeltaStream(ctx, cfg, onDelta, parseAnthropicStream)
+	}
 	if err != nil {
 		return domain.ModelResponse{}, err
 	}
 	resp, err := ParseAnthropicMessage(raw)
 	if err != nil {
 		return domain.ModelResponse{}, err
+	}
+	if onDelta != nil && !streamed {
+		emitResponseText(resp, onDelta)
 	}
 	return names.restore(resp, nil)
 }
@@ -126,6 +147,7 @@ type anthropicRequest struct {
 	System    string             `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Stream    bool               `json:"stream,omitempty"`
 }
 
 type anthropicMessage struct {

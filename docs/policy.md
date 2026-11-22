@@ -103,8 +103,20 @@ policy deny (builtin): file read matches **/.env or **/.env.* (except .env.examp
 或 `trust.json`；`--worktree` 运行时，原工作区的 `.cloud-harness` 同样被掩盖，
 只有当前 worktree 被保留绑定，因此看不到共享的运行数据库或其他 worktree。
 如果配置目录包含工作区，无法在不隐藏工作区的情况下掩盖它，`run_command` 会直接失败；
-macOS、Windows 没有这层隔离。受限 Linux 内核无法应用该掩盖时，
-已批准的危险命令不会启动，只读安全命令仍走仅资源限制路径。允许集中的 `ls`/`pwd`/`wc`
+受限 Linux 内核无法应用该掩盖时，
+已批准的危险命令不会启动，只读安全命令仍走仅资源限制路径。
+macOS 上命令通过系统自带的 `/usr/bin/sandbox-exec` 在 Seatbelt 沙箱中运行，
+配置文件拒绝对同样这些目录的一切文件操作（读、写、stat、硬链接、克隆、改名、删除，
+均返回 `Operation not permitted`），`--worktree` 运行时同样只保留当前 worktree；
+这些目录之上的各级目录在命令运行期间不能被改名或删除，否则控制文件会换一个不受规则
+约束的路径。尚不存在的控制目录会在命令启动前被创建为空目录并保留，命令留下的后台进程
+因此也无法以其他大小写创建它。命令启动前，harness 在沙箱内确认每个受保护路径确实被内核拒绝，无法确认
+（`sandbox-exec` 不存在、harness 自身已在另一个沙箱内、路径无法写入配置文件、
+尚不存在的控制目录无法由 harness 预先创建等）时命令
+不会启动；沙箱完全不可用时与受限 Linux 内核相同：已批准的危险命令不启动，安全命令照常
+运行。两种平台上这都只约束命令自己的进程树：命令若让沙箱外的服务（launchd、
+`open` 启动的应用、Apple 事件、ssh、Docker 守护进程）代为访问文件，不在隔离范围内。
+Windows 没有这层隔离。允许集中的 `ls`/`pwd`/`wc`
 参数若直接指向该目录也会被拒绝。工作区 `hooks.json`、`policy.json` 仍按内容信任，
 见下一节。`git_diff`、`git_status` 在未指定路径时输出整个仓库的结果；如果仓库跟踪了
 `.cloud-harness/` 下的文件，其差异会出现在输出中。

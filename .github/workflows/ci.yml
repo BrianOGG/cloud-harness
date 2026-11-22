@@ -51,6 +51,22 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
+  go-test-macos:
+    name: go / macOS command sandbox
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: sw_vers
+      # The Seatbelt isolation of run_command only exists on macOS, so these
+      # tests cannot run on the Linux jobs. A runner where the sandbox cannot
+      # be applied fails the job instead of skipping the tests.
+      - run: go test ./internal/tools -count=1 -v -run 'Seatbelt|CanonicalPath|RunCommand|GuardCommand'
+        env:
+          CLOUD_HARNESS_REQUIRE_SANDBOX: "1"
+
   go-cross-build:
     name: go / build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest

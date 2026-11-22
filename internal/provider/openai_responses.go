@@ -23,6 +23,10 @@ type OpenAIResponses struct {
 	MaxRetries      int
 	RetryBaseDelay  time.Duration
 	DisableImages   bool
+	// ResponseHeaderTimeout and IdleTimeout bound a streamed attempt. Zero
+	// uses DefaultResponseHeaderTimeout and DefaultIdleTimeout.
+	ResponseHeaderTimeout time.Duration
+	IdleTimeout           time.Duration
 }
 
 func (p *OpenAIResponses) Name() string { return "openai-responses" }
@@ -62,6 +66,11 @@ func (p *OpenAIResponses) Complete(ctx context.Context, req Request) (domain.Mod
 	if err != nil {
 		return domain.ModelResponse{}, err
 	}
+	onDelta := req.OnDelta
+	if req.oracle {
+		onDelta = nil
+	}
+	wire.Stream = onDelta != nil
 	body, err := json.Marshal(wire)
 	if err != nil {
 		return domain.ModelResponse{}, domain.E(domain.CodeProtocol, "openai response request was not JSON")
@@ -70,23 +79,35 @@ func (p *OpenAIResponses) Complete(ctx context.Context, req Request) (domain.Mod
 	if base == "" {
 		base = "https://api.openai.com/v1"
 	}
-	raw, err := postJSONWithRetry(ctx, postJSONConfig{
-		URL:            base + "/responses",
-		APIKey:         p.APIKey,
-		AuthHeader:     "Authorization",
-		AuthScheme:     "Bearer ",
-		Body:           body,
-		Client:         p.Client,
-		MaxRetries:     p.MaxRetries,
-		RetryBaseDelay: p.RetryBaseDelay,
-		SingleAttempt:  req.singleAttempt,
-	})
+	cfg := postJSONConfig{
+		URL:                   base + "/responses",
+		APIKey:                p.APIKey,
+		AuthHeader:            "Authorization",
+		AuthScheme:            "Bearer ",
+		Body:                  body,
+		Client:                p.Client,
+		MaxRetries:            p.MaxRetries,
+		RetryBaseDelay:        p.RetryBaseDelay,
+		SingleAttempt:         req.singleAttempt,
+		ResponseHeaderTimeout: p.ResponseHeaderTimeout,
+		IdleTimeout:           p.IdleTimeout,
+	}
+	streamed := false
+	var raw []byte
+	if onDelta == nil {
+		raw, err = postJSONWithRetry(ctx, cfg)
+	} else {
+		raw, streamed, err = postDeltaStream(ctx, cfg, onDelta, parseOpenAIResponsesStream)
+	}
 	if err != nil {
 		return domain.ModelResponse{}, err
 	}
 	resp, err := ParseOpenAIResponses(raw)
 	if err != nil {
 		return domain.ModelResponse{}, err
+	}
+	if onDelta != nil && !streamed {
+		emitResponseText(resp, onDelta)
 	}
 	return names.restore(resp, nil)
 }
@@ -97,6 +118,7 @@ type openAIResponsesRequest struct {
 	Input        []json.RawMessage     `json:"input"`
 	Tools        []openAIResponsesTool `json:"tools,omitempty"`
 	Store        bool                  `json:"store"`
+	Stream       bool                  `json:"stream,omitempty"`
 }
 
 type openAIResponsesTool struct {

@@ -3,6 +3,7 @@ package hooks
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +173,46 @@ func TestNonDirectoryConfigParentIsMissing(t *testing.T) {
 	cfg, err := LoadFrom(workspace, t.TempDir())
 	if err != nil || len(cfg.Hooks) != 0 {
 		t.Fatalf("missing hooks under non-directory: %+v, %v", cfg, err)
+	}
+}
+
+// run_command on macOS creates an empty .cloud-harness and an empty config
+// directory before a command starts and leaves them. Neither may read as
+// initialised or trusted on the next start.
+func TestEmptyControlDirectoriesChangeNothing(t *testing.T) {
+	workspace, configDir := t.TempDir(), filepath.Join(t.TempDir(), "config")
+	load := func() (*Config, *security.Policy, []security.TrustStatus) {
+		t.Helper()
+		cfg, err := LoadFrom(workspace, configDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy, err := security.LoadPolicyFrom(workspace, configDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trust, err := security.WorkspaceTrustFrom(workspace, configDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg, policy, trust
+	}
+	cfg, policy, trust := load()
+	for _, dir := range []string{filepath.Join(workspace, security.ControlDir), configDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfgAfter, policyAfter, trustAfter := load()
+	if !reflect.DeepEqual(cfg, cfgAfter) || !reflect.DeepEqual(policy, policyAfter) || !reflect.DeepEqual(trust, trustAfter) {
+		t.Fatalf("empty control directories changed what loads:\nhooks  %+v\n       %+v\npolicy %+v\n       %+v\ntrust  %+v\n       %+v", cfg, cfgAfter, policy, policyAfter, trust, trustAfter)
+	}
+	for _, status := range trustAfter {
+		if status.State != security.TrustMissing {
+			t.Errorf("%s reads as %v with only an empty directory", status.File, status.State)
+		}
+	}
+	if len(policyAfter.WorkspaceRules) != 0 || len(policyAfter.GlobalRules) != 0 || len(trustAfter) == 0 {
+		t.Fatalf("policy = %+v, trust = %+v", policyAfter, trustAfter)
 	}
 }
