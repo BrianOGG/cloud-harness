@@ -76,6 +76,8 @@ func TestClassifyLimitOutput(t *testing.T) {
 		{"thread sanitizer shadow memory", 66, "FATAL: ThreadSanitizer can not mmap the shadow memory", limits, "memory_bytes"},
 		{"java heap", 1, "java.lang.OutOfMemoryError: Java heap space", limits, "memory_bytes"},
 		{"address space when memory is unlimited", 1, "std::bad_alloc", map[string]uint64{"address_space_bytes": 1 << 30}, "address_space_bytes"},
+		{"address space when it is the lower limit", 1, "std::bad_alloc", map[string]uint64{"memory_bytes": 8 << 30, "address_space_bytes": 1 << 30}, "address_space_bytes"},
+		{"memory when it is the lower limit", 1, "std::bad_alloc", map[string]uint64{"memory_bytes": 1 << 30, "address_space_bytes": 8 << 30}, "memory_bytes"},
 		{"limit not applied", 153, "File too large", map[string]uint64{"cpu_seconds": 5}, ""},
 		{"limits disabled", 2, "too many open files", map[string]uint64{}, ""},
 	}
@@ -117,6 +119,10 @@ func TestClassifyLimitCrash(t *testing.T) {
 	hit = classifyLimitCrash("aborted", 48<<20, map[string]uint64{"address_space_bytes": 64 << 20})
 	if hit == nil || hit.Resource != "address_space_bytes" {
 		t.Fatalf("hit = %+v, want address_space_bytes", hit)
+	}
+	hit = classifyLimitCrash("aborted", 48<<20, map[string]uint64{"memory_bytes": 8 << 30, "address_space_bytes": 64 << 20})
+	if hit == nil || hit.Resource != "address_space_bytes" || hit.Limit != 64<<20 {
+		t.Fatalf("hit = %+v, want the lower address_space_bytes limit", hit)
 	}
 	if hit := classifyLimitCrash("aborted", 1<<40, map[string]uint64{"cpu_seconds": 5}); hit != nil {
 		t.Fatalf("crash blamed on a memory limit that is not set: %+v", hit)
