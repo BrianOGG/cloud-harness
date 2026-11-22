@@ -14,6 +14,8 @@ func guardCommand(cmd *exec.Cmd, _ CommandLimits, _ string, _ bool) *commandGuar
 	return &commandGuard{cmd: cmd}
 }
 
+func warmCommandSandbox() {}
+
 func (g *commandGuard) Run() error { return g.cmd.Run() }
 
 func (g *commandGuard) limitHit(error, string) *limitHit { return nil }

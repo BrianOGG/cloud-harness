@@ -319,25 +319,18 @@ func commandUsernsAttr() *syscall.SysProcAttr {
 
 func commandSandboxAvailable() bool {
 	commandSandboxProbe.Do(func() {
-		// Probe with a trivial system binary first: it is cheap, and on minimal
-		// images without one the self probe below still checks the full setup.
-		for _, path := range []string{"/bin/true", "/usr/bin/true"} {
-			if _, err := os.Lstat(path); err != nil {
-				continue
-			}
-			cmd := exec.Command(path)
-			cmd.SysProcAttr = commandUsernsAttr()
-			if cmd.Run() == nil {
-				commandSandboxProbe.ok = true
-				return
-			}
-		}
 		cmd := exec.Command(limitExecSelf)
 		cmd.Args = []string{sandboxProbeArg0}
 		cmd.SysProcAttr = commandUsernsAttr()
 		commandSandboxProbe.ok = cmd.Run() == nil
 	})
 	return commandSandboxProbe.ok
+}
+
+// warmCommandSandbox resolves the sandbox probe during tool registration so a
+// later approved command does not pay for it inside a request deadline.
+func warmCommandSandbox() {
+	_ = commandSandboxAvailable()
 }
 
 // probeCommandSandbox runs the same namespace, mount, and privilege-drop setup

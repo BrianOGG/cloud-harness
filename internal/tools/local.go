@@ -45,6 +45,7 @@ func RegisterLocal(b *Broker, root string) error {
 	for _, spec := range specs {
 		b.Register(spec)
 	}
+	warmCommandSandbox()
 	return nil
 }
 
