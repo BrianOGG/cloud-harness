@@ -302,7 +302,7 @@ func TestRunRequestOutlivesWriteTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, body = guardedRequest{
-		method: http.MethodPost, path: "/v1/sessions/" + created.ID + "/runs",
+		method: http.MethodPost, path: "/v1/sessions/" + created.ID + "/runs?wait=1",
 		contentType: "application/json", body: `{"message":"hello"}`,
 	}.do(t, base)
 	if status != http.StatusCreated || !strings.Contains(body, string(domain.RunCompleted)) {

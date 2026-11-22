@@ -106,6 +106,16 @@ export function deltaText(data: string): string {
   return text(value.text) || text(value.delta) || text(value.content);
 }
 
+// The text of a run's model response in progress after one more event. A
+// reset says the text so far will not be stored. A response that ends in a
+// tool call hands its text to that step. Either way the next delta starts over.
+export function liveText(current: string, event: HarnessEvent): string {
+  if (event.type === 'stream.delta') return current + deltaText(event.data);
+  if (event.type === 'stream.reset') return '';
+  if (event.type === 'model.completed' && !event.data.includes('"ANSWER"')) return '';
+  return current;
+}
+
 // Merges fresh events into a sorted list, keeping one entry per sequence number.
 export function mergeEvents(current: HarnessEvent[], fresh: HarnessEvent[]): HarnessEvent[] {
   const seen = new Set(current.map((event) => event.seq));

@@ -7,7 +7,7 @@ import { actionLabels, dayGroup, elapsedLabel, errorText, isActive, shortId, sta
 import { Icon } from './Icon';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
-import { deltaText, mergeEvents } from './timeline';
+import { liveText, mergeEvents } from './timeline';
 import './App.css';
 
 type View = 'chat' | 'approvals' | 'observability';
@@ -78,7 +78,7 @@ export default function App() {
   const lastSeq = useRef<Record<string, number>>({});
   const streamedAt = useRef<Record<string, number>>({});
   const seenVersion = useRef<Record<string, number>>({});
-  const liveBuffer = useRef<Record<string, string>>({});
+  const liveNow = useRef<Record<string, string>>({});
   const liveFrame = useRef(0);
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -128,39 +128,39 @@ export default function App() {
     setApprovals(await api.listApprovals());
   }, []);
 
+  // Live text is drawn once per frame from what the stream has delivered so far.
   const flushLive = useCallback(() => {
     liveFrame.current = 0;
-    const buffered = liveBuffer.current;
-    liveBuffer.current = {};
+    const latest = { ...liveNow.current };
     setLive((previous) => {
-      const next = { ...previous };
-      for (const [runId, text] of Object.entries(buffered)) next[runId] = (next[runId] || '') + text;
+      let next = previous;
+      for (const [runId, text] of Object.entries(latest)) {
+        if ((previous[runId] || '') === text) continue;
+        if (next === previous) next = { ...previous };
+        next[runId] = text;
+      }
       return next;
     });
   }, []);
 
+  const setLiveText = useCallback((runId: string, text: string) => {
+    if ((liveNow.current[runId] || '') === text) return;
+    liveNow.current[runId] = text;
+    if (!liveFrame.current) liveFrame.current = window.requestAnimationFrame(flushLive);
+  }, [flushLive]);
+
   const onEvent = useCallback((runId: string, event: HarnessEvent) => {
     streamedAt.current[runId] = Date.now();
-    if (event.seq <= 0) {
-      // Stream deltas are not stored and carry no id. They are drawn once per frame.
-      const text = event.type === 'stream.delta' ? deltaText(event.data) : '';
-      if (!text) return;
-      liveBuffer.current[runId] = (liveBuffer.current[runId] || '') + text;
-      if (!liveFrame.current) liveFrame.current = window.requestAnimationFrame(flushLive);
-      return;
-    }
+    setLiveText(runId, liveText(liveNow.current[runId] || '', event));
+    // Stream deltas and resets are not stored and carry no id.
+    if (event.seq <= 0) return;
     lastSeq.current[runId] = Math.max(lastSeq.current[runId] || 0, event.seq);
     setEvents((previous) => {
       const current = previous[runId] || [];
       const merged = mergeEvents(current, [event]);
       return merged === current ? previous : { ...previous, [runId]: merged };
     });
-    // Text streamed before a tool call belongs to that step, not to the answer.
-    if (event.type === 'model.completed' && !event.data.includes('"ANSWER"')) {
-      delete liveBuffer.current[runId];
-      setLive((previous) => (previous[runId] ? { ...previous, [runId]: '' } : previous));
-    }
-  }, [flushLive]);
+  }, [setLiveText]);
 
   const pullEvents = useCallback(async (runId: string) => {
     const fresh = await api.fetchEvents(runId, lastSeq.current[runId] || 0);
@@ -251,6 +251,9 @@ export default function App() {
     const controller = new AbortController();
     const follow = async (runId: string) => {
       while (!controller.signal.aborted) {
+        // A new connection starts with the text so far of the response in
+        // progress, so what an earlier connection showed is dropped first.
+        setLiveText(runId, '');
         try {
           await api.streamEvents(runId, lastSeq.current[runId] || 0, (event) => onEvent(runId, event), controller.signal);
         } catch {
@@ -280,7 +283,7 @@ export default function App() {
       refreshSessions().catch(() => undefined);
       refreshApprovals().catch(() => undefined);
     };
-  }, [followKey, onEvent, pullEvents, refreshApprovals, refreshRun, refreshSessions]);
+  }, [followKey, onEvent, pullEvents, refreshApprovals, refreshRun, refreshSessions, setLiveText]);
 
   // Name a session after its first message when this browser has it.
   useEffect(() => {

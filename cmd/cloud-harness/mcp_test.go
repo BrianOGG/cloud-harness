@@ -730,13 +730,13 @@ func TestServeRunsMCPToolAndStopsServerOnShutdown(t *testing.T) {
 		WaitReason  domain.WaitReason `json:"wait_reason"`
 		FinalAnswer string            `json:"final_answer"`
 	}
-	if code := call(http.MethodPost, "/v1/sessions/"+session.ID+"/runs", `{"message":"echo hello through mcp"}`, &run); code != http.StatusCreated {
+	if code := call(http.MethodPost, "/v1/sessions/"+session.ID+"/runs?wait=1", `{"message":"echo hello through mcp"}`, &run); code != http.StatusCreated {
 		t.Fatalf("create run %d", code)
 	}
 	if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval || len(env.calls()) != 0 {
 		t.Fatalf("serve run must wait for approval before the mcp call: %+v calls=%v", run, env.calls())
 	}
-	if code := call(http.MethodPost, "/v1/runs/"+run.ID+"/responses", `{"decision":"approve"}`, &run); code != http.StatusOK {
+	if code := call(http.MethodPost, "/v1/runs/"+run.ID+"/responses?wait=1", `{"decision":"approve"}`, &run); code != http.StatusOK {
 		t.Fatalf("approve %d", code)
 	}
 	if run.Status != domain.RunCompleted || run.FinalAnswer != "model saw tool result" {

@@ -48,7 +48,7 @@ func TestMockRunOverHTTP(t *testing.T) {
 		t.Fatal(rec.Body)
 	}
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.ID+"/runs", strings.NewReader(`{"message":"hello"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.ID+"/runs?wait=1", strings.NewReader(`{"message":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -119,7 +119,7 @@ func TestResumeDoesNotReplaceRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+run.ID+"/responses", strings.NewReader(`{"answer":"yes"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+run.ID+"/responses?wait=1", strings.NewReader(`{"answer":"yes"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -222,7 +222,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs", strings.NewReader(`{"message":"deploy app"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs?wait=1", strings.NewReader(`{"message":"deploy app"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -247,7 +247,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 
 	// POST the answer to resume and complete the run.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer", strings.NewReader(`{"answer":"eu-central-1"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer?wait=1", strings.NewReader(`{"answer":"eu-central-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -263,7 +263,7 @@ func TestHTTPAnswerEndpointResumesRun(t *testing.T) {
 
 	// POSTing again when the run is no longer waiting yields 409 Conflict.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer", strings.NewReader(`{"answer":"eu-central-1"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runs/"+started.ID+"/answer?wait=1", strings.NewReader(`{"answer":"eu-central-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -639,7 +639,7 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 	largeMsg := strings.Repeat("a", (1<<20)+1024)
 	body := `{"message":"` + largeMsg + `"}`
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs", strings.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+ses.ID+"/runs?wait=1", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {

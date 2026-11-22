@@ -295,6 +295,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if err != nil {
 		return storage.Run{}, err
 	}
+	signalStarted(ctx, running)
 	defer m.finishWorktreeExecution(ctx, running, &result, &err)
 	snap := hookSnapshot
 	if snap.Policy == nil {

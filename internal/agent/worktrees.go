@@ -41,7 +41,7 @@ func (m *Manager) worktreeManager(run storage.Run) (*Manager, error) {
 		SkipPlanner: m.SkipPlanner, ForcePlanner: m.ForcePlanner, ContextTokenLimit: m.ContextTokenLimit,
 		Summarizer: m.Summarizer, Depth: m.Depth, AllowedTools: append([]string(nil), m.AllowedTools...),
 		definitionToolLimit: m.definitionToolLimit, failOnToolBudget: m.failOnToolBudget,
-		cancelOwner: m,
+		cancelOwner: m, Stream: m.Stream,
 	}
 	if m.Broker != nil {
 		broker, err := m.Broker.ForkWorkspace(run.WorktreePath, "retrieve_resource", "retrieve_history",

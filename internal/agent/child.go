@@ -294,6 +294,7 @@ func (m *Manager) executeDelegate(ctx context.Context, args json.RawMessage) (js
 		definitionToolLimit: def.Tools != nil,
 		failOnToolBudget:    def.MaxToolCalls > 0,
 		SkipPlanner:         true,
+		Stream:              m.Stream,
 	}
 	message := childUserMessage(body.Goal, body.RelevantContext, body.SuccessCriteria, body.OutputContract)
 	finished, runErr := childMgr.runPrepared(childCtx, childRun, message)
