@@ -234,7 +234,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if err != nil {
 		return run, err
 	}
-	defer func() { _ = m.Store.ReleaseLease(ctx, run.ID, m.owner()) }()
+	defer func(releaseCtx context.Context) { _ = m.Store.ReleaseLease(releaseCtx, run.ID, m.owner()) }(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	m.trackCancel(run.ID, cancel)
 	defer func() {
