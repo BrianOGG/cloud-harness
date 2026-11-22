@@ -92,6 +92,7 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 	persist := context.WithoutCancel(ctx)
 	if lastModel != "" {
 		usage := usageOf(resp)
+		m.chargeUsage(persist, runID, lastModel, usage)
 		elapsed := time.Since(started).Milliseconds()
 		if eventErr := m.event(persist, runID, "oracle.asked", map[string]any{
 			"question_length": input.QuestionLength, "code_bytes": input.CodeBytes, "model": lastModel,

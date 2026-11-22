@@ -102,6 +102,7 @@ Resume flags come before the run id:
 cloud-harness runs resume --decision deny RUN_ID
 cloud-harness runs resume --answer "the user's reply" RUN_ID
 cloud-harness runs resume --extra-model-calls 10 RUN_ID
+cloud-harness runs resume --extra-tokens 200000 --extra-cost-usd 2 RUN_ID
 ```
 
 Putting the run id first makes the flag parser stop early and return `run id required`.
@@ -177,6 +178,10 @@ Release builds produce Go binaries for Linux, macOS, and Windows plus a containe
 go build -o cloud-harness ./cmd/cloud-harness
 docker build -t cloud-harness .
 ```
+
+## Context and run limits
+
+A new turn in a session starts with the user and assistant messages of the last six turns, oldest first, within a third of the context limit. When a run's context passes the limit, a model writes a summary of the turn's older work and that summary replaces it; the system prefix, the current user message, and the latest tool exchange are kept as they were. A run can also be limited by tokens and by estimated cost, on top of its call counts: it waits for budget when a limit is reached and continues after `runs resume --extra-tokens N` or `--extra-cost-usd USD`. See [docs/config.md](docs/config.md#conversation-history-and-compaction).
 
 ## Trace and events
 

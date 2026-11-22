@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
-import type { ApprovalView, HarnessEvent, RunView, SessionView, TraceView } from './api';
+import type { ApprovalView, BudgetExtension, HarnessEvent, RunView, SessionView, TraceView } from './api';
 import { Composer, PendingTurn, Turn } from './Chat';
 import type { Exchange, TurnActions } from './Chat';
 import { actionLabels, dayGroup, elapsedLabel, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
@@ -418,10 +418,10 @@ export default function App() {
     }
   };
 
-  const addBudget = async (runId: string) => {
+  const addBudget = async (runId: string, extension: BudgetExtension) => {
     setActing((previous) => ({ ...previous, [runId]: true }));
     try {
-      upsertRun(await api.addBudget(runId, 10));
+      upsertRun(await api.addBudget(runId, extension));
     } catch (reason) {
       setError(`补充预算失败：${errorText(reason)}`);
     } finally {
@@ -472,7 +472,7 @@ export default function App() {
 
   const actions: TurnActions = {
     respond: (runId, body) => void respond(runId, body),
-    addBudget: (runId) => void addBudget(runId),
+    addBudget: (runId, extension) => void addBudget(runId, extension),
     cancel: (runId) => void cancel(runId),
     inspect: (runId) => {
       setInspected(runId);

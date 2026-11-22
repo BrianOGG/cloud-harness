@@ -757,6 +757,7 @@ func TestResumePreservesPrefixHashAndCompactionGuard(t *testing.T) {
 	m.System = longSystem
 	m.ContextTokenLimit = 80
 	m.SkipPlanner = true
+	structuralCompactionOnly(m)
 	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(longFile), 0o644); err != nil {
 		t.Fatal(err)
 	}

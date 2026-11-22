@@ -12,6 +12,9 @@ const (
 	ActionPlan     Action = "PLAN"
 	ActionAskUser  Action = "ASK_USER"
 	ActionProtocol Action = "PROTOCOL_ERROR"
+	// ActionCompact marks a stored response the harness asked for to
+	// summarize context or memory. It is never the result of Classify.
+	ActionCompact Action = "COMPACT"
 )
 
 const (

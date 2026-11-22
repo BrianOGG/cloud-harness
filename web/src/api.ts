@@ -9,6 +9,19 @@ export interface Budget {
   used_script_calls: number;
   max_child_runs: number;
   used_child_runs: number;
+  // Token and estimated-cost usage. A limit of 0 is unlimited.
+  max_tokens?: number;
+  used_input_tokens?: number;
+  used_output_tokens?: number;
+  used_cached_input_tokens?: number;
+  max_cost_usd?: number;
+  used_cost_usd?: number;
+}
+
+export interface BudgetExtension {
+  extra_model_calls?: number;
+  extra_tokens?: number;
+  extra_cost_usd?: number;
 }
 
 export interface PendingInvocation {
@@ -199,10 +212,10 @@ export const api = {
   getRun: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}`),
   respond: (runId: string, body: { decision?: string; answer?: string; extra_model_calls?: number }) =>
     req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/responses?wait=0`, { method: 'POST', body: JSON.stringify(body) }),
-  addBudget: (runId: string, extra: number) =>
+  addBudget: (runId: string, extension: BudgetExtension) =>
     req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/budget?wait=0`, {
       method: 'POST',
-      body: JSON.stringify({ extra_model_calls: extra }),
+      body: JSON.stringify(extension),
     }),
   cancel: (runId: string) => req<RunView>(`/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
   getTrace: (runId: string) => req<TraceView>(`/v1/runs/${encodeURIComponent(runId)}/trace`),

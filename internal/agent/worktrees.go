@@ -35,6 +35,7 @@ func (m *Manager) worktreeManager(run storage.Run) (*Manager, error) {
 		Store: m.Store, Provider: m.Provider, OwnerID: m.OwnerID, Now: m.Now,
 		Notifier: m.Notifier, ApprovalBaseURL: m.ApprovalBaseURL,
 		LeaseFor: m.LeaseFor, InitialBudget: m.InitialBudget, UseBudget: m.UseBudget,
+		MaxRunTokens: m.MaxRunTokens, MaxRunCostUSD: m.MaxRunCostUSD,
 		System: m.System, Model: m.Model, ToolDigest: m.ToolDigest,
 		Workspace: run.WorktreePath, DisableRepoMap: m.DisableRepoMap, DisableSnapshots: m.DisableSnapshots,
 		Grants: append([]domain.Grant(nil), m.Grants...), CrashOnTool: m.CrashOnTool,

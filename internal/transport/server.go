@@ -654,9 +654,11 @@ func childNodes(ctx context.Context, store storage.Store, run storage.Run) ([]tr
 
 func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Decision        string `json:"decision"`
-		Answer          string `json:"answer"`
-		ExtraModelCalls int    `json:"extra_model_calls"`
+		Decision        string  `json:"decision"`
+		Answer          string  `json:"answer"`
+		ExtraModelCalls int     `json:"extra_model_calls"`
+		ExtraTokens     int64   `json:"extra_tokens"`
+		ExtraCostUSD    float64 `json:"extra_cost_usd"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := decode(r, &body); err != nil {
@@ -666,6 +668,7 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
 	}
 	s.resume(w, r, agent.ResumeInput{
 		Decision: body.Decision, Answer: body.Answer, ExtraModelCalls: body.ExtraModelCalls,
+		ExtraTokens: body.ExtraTokens, ExtraCostUSD: body.ExtraCostUSD,
 	})
 }
 
@@ -704,13 +707,15 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) budget(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ExtraModelCalls int `json:"extra_model_calls"`
+		ExtraModelCalls int     `json:"extra_model_calls"`
+		ExtraTokens     int64   `json:"extra_tokens"`
+		ExtraCostUSD    float64 `json:"extra_cost_usd"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, err)
 		return
 	}
-	s.resume(w, r, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls})
+	s.resume(w, r, agent.ResumeInput{ExtraModelCalls: body.ExtraModelCalls, ExtraTokens: body.ExtraTokens, ExtraCostUSD: body.ExtraCostUSD})
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {

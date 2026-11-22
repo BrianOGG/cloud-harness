@@ -115,6 +115,12 @@ type Config struct {
 	ModelPrices map[string]ModelPrice `json:"model_prices,omitempty"`
 	// OracleMaxCostUSD limits estimated ask_oracle cost per run. Zero is unlimited.
 	OracleMaxCostUSD float64 `json:"oracle_max_cost_usd,omitempty"`
+	// MaxRunTokens limits input plus output tokens per root run, its child
+	// runs included. Zero is unlimited.
+	MaxRunTokens int64 `json:"max_run_tokens,omitempty"`
+	// MaxRunCostUSD limits a root run's estimated cost from ModelPrices, its
+	// child runs included. Zero is unlimited.
+	MaxRunCostUSD float64 `json:"max_run_cost_usd,omitempty"`
 	// Notify configures optional run lifecycle notifications.
 	Notify notify.Config `json:"notify,omitempty"`
 }
@@ -327,6 +333,20 @@ func Load(path string, env func(string) string) (Config, error) {
 		}
 		cfg.OracleMaxCostUSD = limit
 	}
+	if v := env("CLOUD_HARNESS_MAX_RUN_TOKENS"); v != "" {
+		limit, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || limit < 0 {
+			return Config{}, domain.E(domain.CodeInvalidArgument, "CLOUD_HARNESS_MAX_RUN_TOKENS must be a non-negative integer")
+		}
+		cfg.MaxRunTokens = limit
+	}
+	if v := env("CLOUD_HARNESS_MAX_RUN_COST_USD"); v != "" {
+		limit, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 {
+			return Config{}, domain.E(domain.CodeInvalidArgument, "CLOUD_HARNESS_MAX_RUN_COST_USD must be a non-negative finite number")
+		}
+		cfg.MaxRunCostUSD = limit
+	}
 	if cfg.Provider == "" {
 		cfg.Provider = "mock"
 	}
@@ -345,6 +365,9 @@ func Load(path string, env func(string) string) (Config, error) {
 	if err := ValidateOracleMaxCostUSD(cfg.OracleMaxCostUSD); err != nil {
 		return Config{}, err
 	}
+	if err := ValidateRunLimits(cfg.MaxRunTokens, cfg.MaxRunCostUSD); err != nil {
+		return Config{}, err
+	}
 	if len(cfg.Servers) == 0 && len(cfg.MCPServers) > 0 {
 		cfg.Servers = cfg.MCPServers
 	} else if len(cfg.MCPServers) == 0 && len(cfg.Servers) > 0 {
@@ -359,6 +382,18 @@ func Load(path string, env func(string) string) (Config, error) {
 	}
 	cfg.HTTPAllowedHosts = hosts
 	return cfg, nil
+}
+
+// ValidateRunLimits accepts zero as unlimited and otherwise requires a
+// positive token count and a positive finite dollar amount.
+func ValidateRunLimits(maxTokens int64, maxCostUSD float64) error {
+	if maxTokens < 0 {
+		return domain.E(domain.CodeInvalidArgument, "max_run_tokens must be a non-negative integer")
+	}
+	if math.IsNaN(maxCostUSD) || math.IsInf(maxCostUSD, 0) || maxCostUSD < 0 {
+		return domain.E(domain.CodeInvalidArgument, "max_run_cost_usd must be a non-negative finite number")
+	}
+	return nil
 }
 
 // ValidateOracleMaxCostUSD accepts zero as unlimited and otherwise requires a

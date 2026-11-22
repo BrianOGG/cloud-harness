@@ -104,7 +104,7 @@ func (m *Manager) injectModelPlan(ctx context.Context, run storage.Run, leaseVer
 	defer stopHeartbeat()
 	// Bind a provider for this call without changing Manager.Provider or the
 	// planner's existing prompt, history lookup, and event code.
-	scoped := &Manager{Store: m.Store, Provider: planner, Now: m.Now}
+	scoped := &Manager{Store: m.Store, Provider: planner, Now: m.Now, ModelPrices: m.prices()}
 	messages = scoped.injectPlan(ctx, run, messages, text)
 	return messages, ctx.Err()
 }
@@ -137,7 +137,7 @@ func (m *Manager) runModelSummary(ctx context.Context, run storage.Run, job stor
 	if fast == nil {
 		return m.runSummaryJob(ctx, run, job, answer)
 	}
-	scoped := &Manager{Store: prepaidSummaryStore{Store: m.Store, runID: run.ID}, Summarizer: fast, Now: m.Now}
+	scoped := &Manager{Store: prepaidSummaryStore{Store: m.Store, runID: run.ID}, Summarizer: fast, Now: m.Now, ModelPrices: m.prices()}
 	return scoped.runSummaryJob(ctx, run, job, answer)
 }
 

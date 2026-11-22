@@ -201,6 +201,9 @@ type Store interface {
 	CompareAndSwapRun(ctx context.Context, next Run, expectedVersion int64) error
 	Charge(ctx context.Context, runID string, kind domain.ChargeKind, n int) error
 	ChargePair(ctx context.Context, parentID, childID string, kind domain.ChargeKind, n int) error
+	// ChargeUsage records a finished model call's tokens and cost on the run
+	// and on its parent. It does not fail when a limit is passed.
+	ChargeUsage(ctx context.Context, runID string, u domain.UsageCharge) error
 	AcquireLease(ctx context.Context, runID, owner string, now, expires time.Time) (Lease, error)
 	HeartbeatLease(ctx context.Context, runID, owner string, version int64, now, expires time.Time) error
 	RequireLease(ctx context.Context, runID, owner string, version int64, now time.Time) error
@@ -222,7 +225,7 @@ type Store interface {
 	LatestCheckpoint(ctx context.Context, runID string) ([]byte, error)
 	LookupIdempotency(ctx context.Context, runID, toolName, key string) (json.RawMessage, bool, error)
 	SaveIdempotency(ctx context.Context, runID, toolName, key string, result json.RawMessage, now time.Time) error
-	ExtendModelBudget(ctx context.Context, runID string, extra int) error
+	ExtendBudget(ctx context.Context, runID string, x domain.BudgetExtension) (domain.Budget, error)
 	SaveApproval(ctx context.Context, a domain.Approval) error
 	UpdateApprovalState(ctx context.Context, runID, invocationID, state string) error
 	ListApprovals(ctx context.Context, runID string) ([]domain.Approval, error)

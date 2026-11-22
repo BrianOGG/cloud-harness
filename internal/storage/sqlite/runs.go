@@ -508,32 +508,74 @@ func (db *DB) SaveIdempotency(ctx context.Context, runID, toolName, key string, 
 	return err
 }
 
-func (db *DB) ExtendModelBudget(ctx context.Context, runID string, extra int) error {
-	if extra <= 0 {
-		return domain.E(domain.CodeInvalidArgument, "extra model calls must be positive")
+// ExtendBudget raises the limits of one run and returns the stored budget.
+func (db *DB) ExtendBudget(ctx context.Context, runID string, x domain.BudgetExtension) (domain.Budget, error) {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Budget{}, err
 	}
+	defer func() { _ = tx.Rollback() }()
+	b, err := loadBudget(ctx, tx, runID)
+	if err != nil {
+		return domain.Budget{}, err
+	}
+	next, err := b.Extend(x)
+	if err != nil {
+		return domain.Budget{}, err
+	}
+	if err := saveBudget(ctx, tx, runID, next, formatTime(db.now())); err != nil {
+		return domain.Budget{}, err
+	}
+	return next, tx.Commit()
+}
+
+// ChargeUsage records the tokens and cost of a finished model call on the run
+// and, for a child run, on its parent in the same transaction.
+func (db *DB) ChargeUsage(ctx context.Context, runID string, u domain.UsageCharge) error {
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var parentID string
+	if err := tx.QueryRowContext(ctx, `SELECT parent_run_id FROM runs WHERE id = ?`, runID).Scan(&parentID); err != nil {
+		return mapErr(err, runID)
+	}
+	when := formatTime(db.now())
+	for _, id := range []string{runID, parentID} {
+		if id == "" {
+			continue
+		}
+		b, err := loadBudget(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if err := saveBudget(ctx, tx, id, b.AddUsage(u), when); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func loadBudget(ctx context.Context, tx *sql.Tx, runID string) (domain.Budget, error) {
 	var raw string
 	if err := tx.QueryRowContext(ctx, `SELECT budget_json FROM runs WHERE id = ?`, runID).Scan(&raw); err != nil {
-		return mapErr(err, runID)
+		return domain.Budget{}, mapErr(err, runID)
 	}
 	var b domain.Budget
 	if err := json.Unmarshal([]byte(raw), &b); err != nil {
-		return err
+		return domain.Budget{}, err
 	}
-	b.MaxModelCalls += extra
-	encoded, err := json.Marshal(b)
+	return b, nil
+}
+
+func saveBudget(ctx context.Context, tx *sql.Tx, runID string, b domain.Budget, when string) error {
+	raw, err := json.Marshal(b)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET budget_json = ?, updated_at = ? WHERE id = ?`, string(encoded), formatTime(db.now()), runID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = tx.ExecContext(ctx, `UPDATE runs SET budget_json = ?, updated_at = ? WHERE id = ?`, string(raw), when, runID)
+	return err
 }
 
 func (db *DB) ReleaseLease(ctx context.Context, runID, owner string) error {

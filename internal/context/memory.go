@@ -29,8 +29,11 @@ type Memory struct {
 	// removed from the visible context. Raw events and history rows remain in
 	// storage for audit and retrieval.
 	CompactionSummary string `json:"compaction_summary,omitempty"`
-	seqFacts          int
-	seqDecisions      int
+	// CompactedThrough is the newest turn CompactionSummary covers. Turns
+	// after it are still shown as they were said.
+	CompactedThrough string `json:"compacted_through,omitempty"`
+	seqFacts         int
+	seqDecisions     int
 }
 
 // Delta is one memory edit from finish_turn or a post-hoc summary.

@@ -105,6 +105,42 @@ func TestMockRunOverHTTP(t *testing.T) {
 	}
 }
 
+func TestBudgetRouteRaisesTheTokenLimit(t *testing.T) {
+	m, h := newServer(t)
+	m.Provider = &provider.Mock{Responses: []domain.ModelResponse{
+		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{
+			{Ordinal: 0, Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{ProviderCallID: "c1", Name: "retrieve_history", Arguments: json.RawMessage(`{"query":"anything"}`)}},
+			{Ordinal: 1, Kind: domain.ItemUsage, Usage: &domain.Usage{InputTokens: 90, OutputTokens: 20}},
+		}},
+		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemText, Text: "done"}}},
+	}}
+	m.SkipPlanner = true
+	m.MaxRunTokens = 100
+	ctx := context.Background()
+	ses, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, ses.ID, "use tokens")
+	if err != nil || run.WaitReason != domain.WaitBudget {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+run.ID+"/budget?wait=1", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post(`{"extra_model_calls":10}`); rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "token budget exhausted") {
+		t.Fatalf("model calls alone resumed a run that is out of tokens: %d %s", rec.Code, rec.Body)
+	}
+	rec := post(`{"extra_tokens":500}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"COMPLETED"`) || !strings.Contains(rec.Body.String(), `"max_tokens":600`) || !strings.Contains(rec.Body.String(), `"used_input_tokens":90`) {
+		t.Fatalf("budget %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestResumeDoesNotReplaceRun(t *testing.T) {
 	m, h := newServer(t)
 	m.UseBudget = true

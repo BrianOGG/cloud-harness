@@ -182,6 +182,10 @@ type ResumeInput struct {
 	Answer          string
 	Images          []provider.Image
 	ExtraModelCalls int
+	// ExtraTokens and ExtraCostUSD raise a run's token and cost limits when
+	// it waits for budget. They have no effect on a run without that limit.
+	ExtraTokens  int64
+	ExtraCostUSD float64
 }
 
 // Resume continues the same waiting run after a lease is acquired.
@@ -244,10 +248,16 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	m.ensureTools()
 	switch run.WaitReason {
 	case domain.WaitBudget:
-		if in.ExtraModelCalls <= 0 {
+		extension := domain.BudgetExtension{ModelCalls: in.ExtraModelCalls, Tokens: in.ExtraTokens, CostUSD: in.ExtraCostUSD}
+		// Check the whole extension first so a refused resume changes nothing.
+		extended, err := run.Budget.Extend(extension)
+		if err != nil {
 			return run, domain.E(domain.CodeBudget, "budget was not extended").WithRef(run.ID)
 		}
-		if err := m.Store.ExtendModelBudget(ctx, run.ID, in.ExtraModelCalls); err != nil {
+		if _, err := extended.Charge(domain.ChargeModel, 1); err != nil {
+			return run, domain.E(domain.CodeBudget, "budget was not extended enough: "+asDomain(err).Message).WithRef(run.ID)
+		}
+		if _, err := m.Store.ExtendBudget(ctx, run.ID, extension); err != nil {
 			return storage.Run{}, err
 		}
 	case domain.WaitApproval:

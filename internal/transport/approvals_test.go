@@ -104,7 +104,7 @@ func TestApprovalsQueueContextAndOrder(t *testing.T) {
 	}
 	approvalNotification := notifications.next(t)
 	// A later timestamp update and event do not restart the waiting clock.
-	if err := m.Store.ExtendModelBudget(ctx, approval.ID, 1); err != nil {
+	if _, err = m.Store.ExtendBudget(ctx, approval.ID, domain.BudgetExtension{ModelCalls: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Store.AppendEvent(ctx, storage.Event{RunID: approval.ID, Type: "notify.failed", Persistent: true, CreatedAt: now.Add(-time.Second)}); err != nil {

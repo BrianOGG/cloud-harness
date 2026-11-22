@@ -168,6 +168,9 @@ func (m *Manager) ensureTools() {
 }
 
 type loopState struct {
+	// summaryOff stops summary attempts for this stretch of the run after one
+	// fails, so a broken summary model costs one model call, not one per step.
+	summaryOff     bool
 	sensitive      bool
 	reminded       bool
 	obs            []runtime.Observation
@@ -285,6 +288,18 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			messages = append(messages, provider.Message{Role: "user", Content: runtime.RepeatReminder})
 			st.reminded = true
 		}
+		beforePrefix := ""
+		if st.prefixN > 0 && st.prefixN <= len(messages) {
+			beforePrefix = contextpkg.PrefixHash(toContext(messages[:st.prefixN]))
+		}
+		// Compaction comes before this step's charge: a summary is a model
+		// call of its own, and the step must not run on a budget it used up.
+		compacted, err := m.compactContext(ctx, run, leaseVersion, messages, st)
+		if err != nil {
+			_ = m.saveCheckpoint(ctx, run, messages, continuation, contProvider, st)
+			return m.finish(ctx, run, domain.EventBudgetExhausted, "", asDomain(err))
+		}
+		messages = compacted
 		if err := m.Store.Charge(ctx, run.ID, domain.ChargeModel, 1); err != nil {
 			_ = m.saveCheckpoint(ctx, run, messages, continuation, contProvider, st)
 			return m.finish(ctx, run, domain.EventBudgetExhausted, "", asDomain(err))
@@ -292,11 +307,6 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		if err := m.Store.RequireLease(ctx, run.ID, m.owner(), leaseVersion, m.now()); err != nil {
 			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
 		}
-		beforePrefix := ""
-		if st.prefixN > 0 && st.prefixN <= len(messages) {
-			beforePrefix = contextpkg.PrefixHash(toContext(messages[:st.prefixN]))
-		}
-		messages = maybeCompact(messages, st.prefixN, st.userAt, m.tokenLimit(), st.toolRefs)
 		var prefix []provider.Message
 		if st.prefixN > 0 && st.prefixN <= len(messages) {
 			prefix = append([]provider.Message(nil), messages[:st.prefixN]...)
@@ -318,6 +328,8 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		})
 		m.endDeltas(run.ID, err == nil)
 		usage := usageOf(resp)
+		// Tokens a failed call reported are spent too.
+		costUSD := m.chargeUsage(ctx, run.ID, m.pricedModel(model, m.Model), usage)
 		if usage.LatencyMS == 0 {
 			usage.LatencyMS = time.Since(started).Milliseconds()
 		}
@@ -356,6 +368,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			"prefix_hash":  contextpkg.PrefixHash(toContext(prefix)),
 			"input_tokens": usage.InputTokens, "cached_input_tokens": usage.CachedInputTokens,
 			"output_tokens": usage.OutputTokens, "latency_ms": usage.LatencyMS,
+			"cost_usd": costUSD,
 		}); err != nil {
 			return storage.Run{}, err
 		}

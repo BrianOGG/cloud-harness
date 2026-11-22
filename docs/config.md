@@ -21,6 +21,8 @@ baseline denials, examples, and run snapshot behavior.
   "anthropic_model": "claude-sonnet-4-5",
   "model_prices": {},
   "oracle_max_cost_usd": 0,
+  "max_run_tokens": 0,
+  "max_run_cost_usd": 0,
   "http_token": "",
   "http_allowed_hosts": [],
   "http_allow_insecure": false,
@@ -123,6 +125,8 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_ALLOW_EXTERNAL` | unset | Deprecated legacy compatibility setting; cannot bypass the HTTP token requirement |
 | `CLOUD_HARNESS_OWNER` | `local` | lease owner id |
 | `CLOUD_HARNESS_RETENTION_DAYS` | `0` | history-index age limit; `0` keeps every row |
+| `CLOUD_HARNESS_MAX_RUN_TOKENS` | `0` | Input plus output tokens one root run may use, child runs included; `0` is unlimited. See [Run token and cost limits](#run-token-and-cost-limits) |
+| `CLOUD_HARNESS_MAX_RUN_COST_USD` | `0` | Estimated USD one root run may cost, child runs included; `0` is unlimited |
 | `CLOUD_HARNESS_CONFIG` | unset | optional JSON file |
 | `CLOUD_HARNESS_DISABLE_SNAPSHOTS` | `false` | Disable automatic workspace snapshots (`1` or `true`); the default captures pre/post snapshots around batches with side effects |
 | `CLOUD_HARNESS_COMMAND_LIMITS` | unset | `off`, or `name=value` pairs overriding single `command_limits` fields; see [Command resource limits](#command-resource-limits) |
@@ -340,6 +344,66 @@ current pricing; the example configuration leaves this map empty by default.
 CLI flags `--addr`, `--db`, `--provider`, and `--http-token` override the environment for that process. `--http-allow-insecure` remains accepted for compatibility and cannot waive the HTTP token requirement.
 
 `openai-responses` reuses the OpenAI base URL, model, API key, reasoning replay, image, and retry settings, and posts to `/responses`. `anthropic` uses the Anthropic base URL, model, and API key, and posts to `/v1/messages`. Both providers are stdlib HTTP clients and return `provider.HTTPStatusError` for HTTP status failures. Unmapped calls retry HTTP 429 and 5xx responses with exponential backoff and jitter before any response items are produced; mapped profile calls leave retries and fallback to `ProfileProvider`.
+
+## Run token and cost limits
+
+Every run counts the tokens its model calls report and their estimated cost,
+next to its model, tool, script, and child-run counters. The run's `budget`
+object carries `used_input_tokens`, `used_output_tokens`,
+`used_cached_input_tokens` (the cached part of the input, not added to the
+total), and `used_cost_usd`. The executor, the planner, turn summaries,
+compaction summaries, and `ask_oracle` are all counted. A child run's usage is
+counted on the child and on its parent.
+
+`max_run_tokens` (`CLOUD_HARNESS_MAX_RUN_TOKENS`) limits input plus output
+tokens for a root run, and `max_run_cost_usd`
+(`CLOUD_HARNESS_MAX_RUN_COST_USD`) limits its estimated cost. Both default to
+`0`, which is unlimited. Cost uses [`model_prices`](#model-prices): a model
+without a price counts tokens and costs zero, so a cost limit needs a price for
+each model the run calls.
+
+Token counts are known only after a call returns, so a limit is checked before
+each model call: the call that crosses a limit completes and is recorded, and
+the next one is refused. The run then waits with `wait_reason` `BUDGET`, the
+same wait as an exhausted model-call count, and keeps its checkpoint. Resume it
+with a higher limit:
+
+```bash
+cloud-harness runs resume --extra-tokens 200000 RUN_ID
+cloud-harness runs resume --extra-cost-usd 2 RUN_ID
+```
+
+or `POST /v1/runs/{id}/budget` with `extra_tokens` or `extra_cost_usd`. A
+resume that leaves the run without room for one more model call is refused and
+changes nothing. `extra_tokens` and `extra_cost_usd` have no effect on a run
+that has no such limit. A child run starts with the tokens and cost its parent
+has left.
+
+## Conversation history and compaction
+
+A new turn's context holds, after memory and before the new user message, the
+user and assistant messages of the session's most recent turns, oldest first.
+At most six turns are carried, and together they take at most a third of the
+context limit: older turns are dropped first, and a message that is too long
+on its own keeps its start and end with a pointer to the full text for
+`retrieve_resource`. Child runs are not part of the history. The run records a
+`context.history` event with the number of turns, messages, and tokens. After
+`/compact`, the compacted summary stands in for the turns it covers and only
+later turns are carried as messages.
+
+When a run's context grows past the limit, the run asks a model to summarise
+the turn's older work (the `fast` [model profile](#model-profiles) when one is
+configured, otherwise the run's model) and replaces that work with the
+summary. The system prefix, the current user message, and the newest tool call
+with its result stay as they were, and a tool call is never separated from its
+result. A later summary folds the earlier one in. The summary call is a model
+call of the run: it counts toward its budget, is priced as the model that
+answered it, and appears in `stats`; the run records `context.summarized`. A
+run whose budget cannot pay for the summary waits for more budget with its
+context unchanged. If the call fails (`context.summary_failed`), or the
+context is still over the limit, older tool results are replaced by an excerpt
+with a `ref` for `retrieve_resource` and other long messages keep their start
+and end.
 
 ## HTTP authentication and non-loopback rule
 
