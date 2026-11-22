@@ -36,6 +36,11 @@ go build -o cloud-harness ./cmd/cloud-harness
 A non-loopback address requires `--http-token TOKEN`, `CLOUD_HARNESS_HTTP_TOKEN`,
 or JSON `http_token` (at least 16 characters), checked before binding a port.
 Legacy insecure/allow-external settings cannot bypass this requirement.
+A loopback listener refuses a `Host` header that is not `localhost` or a
+loopback IP address unless it is listed in `http_allowed_hosts`. Every listener
+refuses a cross-origin `Origin` and requires `Content-Type: application/json`
+on write requests with a body; see [request checks](docs/api.md#request-checks).
+`serve` stops gracefully on `SIGINT` and `SIGTERM`.
 With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
 `/healthz` and the static pages at `/approval` and `/ui` are public. Open
 `/approval` on desktop or mobile to view the pending queue, make an approval

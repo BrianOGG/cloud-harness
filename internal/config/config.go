@@ -90,6 +90,9 @@ type Config struct {
 	HTTPAllowInsecure        bool   `json:"http_allow_insecure"` // Deprecated; cannot bypass HTTP token requirements.
 	AllowExternal            bool   `json:"-"`                   // Deprecated legacy setting, retained for config compatibility.
 	OwnerID                  string `json:"-"`
+	// HTTPAllowedHosts lists Host header values serve accepts besides loopback
+	// names, as "host" or "host:port".
+	HTTPAllowedHosts []string `json:"http_allowed_hosts,omitempty"`
 	// RetentionDays prunes the history index. Zero keeps every history row.
 	RetentionDays int `json:"retention_days"`
 	// CommandEnvAllow lists extra environment variable names passed to run_command subprocesses.
@@ -207,6 +210,9 @@ func Load(path string, env func(string) string) (Config, error) {
 	if v := env("CLOUD_HARNESS_HTTP_TOKEN"); v != "" {
 		cfg.HTTPToken = v
 	}
+	if v := env("CLOUD_HARNESS_HTTP_ALLOWED_HOSTS"); v != "" {
+		cfg.HTTPAllowedHosts = strings.Split(v, ",")
+	}
 	if v := env("CLOUD_HARNESS_HTTP_ALLOW_INSECURE"); v != "" {
 		cfg.HTTPAllowInsecure = v == "1" || strings.EqualFold(v, "true")
 	}
@@ -266,6 +272,11 @@ func Load(path string, env func(string) string) (Config, error) {
 	if err := ValidateHTTPToken(cfg.HTTPToken); err != nil {
 		return Config{}, err
 	}
+	hosts, err := ParseHTTPAllowedHosts(cfg.HTTPAllowedHosts)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.HTTPAllowedHosts = hosts
 	return cfg, nil
 }
 
@@ -339,6 +350,50 @@ func ValidateHTTPToken(token string) error {
 		return domain.E(domain.CodeInvalidArgument, "http_token must be at least 16 characters")
 	}
 	return nil
+}
+
+// ParseHTTPAllowedHosts normalizes extra Host header values to lower case and
+// drops blanks. Each entry is a host name or IP address with an optional port.
+func ParseHTTPAllowedHosts(entries []string) ([]string, error) {
+	var hosts []string
+	for _, entry := range entries {
+		host := strings.ToLower(strings.TrimSpace(entry))
+		if host == "" {
+			continue
+		}
+		name := host
+		if h, port, err := net.SplitHostPort(host); err == nil {
+			if n, perr := strconv.Atoi(port); perr != nil || n < 1 || n > 65535 {
+				return nil, domain.E(domain.CodeInvalidArgument, "http_allowed_hosts entry "+strconv.Quote(entry)+" has an invalid port")
+			}
+			name = h
+		} else {
+			name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+			host = name
+		}
+		if net.ParseIP(name) == nil && !validHostName(name) {
+			return nil, domain.E(domain.CodeInvalidArgument, "http_allowed_hosts entry "+strconv.Quote(entry)+" must be a host name or IP address with an optional port, without a scheme or path")
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
+func validHostName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // IsLoopback reports whether a host:port listen address is on the loopback interface.
@@ -416,6 +471,9 @@ func (c Config) Redacted() map[string]any {
 		"allow_external":          c.AllowExternal,
 		"owner":                   c.OwnerID,
 		"disable_snapshots":       c.DisableSnapshots,
+	}
+	if len(c.HTTPAllowedHosts) > 0 {
+		redacted["http_allowed_hosts"] = c.HTTPAllowedHosts
 	}
 	if len(c.Notify.Channels) > 0 || c.Notify.ApprovalBaseURL != "" {
 		redacted["notify"] = map[string]any{"channels": notifyChannels, "approval_base_url": notify.SafeTarget(c.Notify.ApprovalBaseURL)}

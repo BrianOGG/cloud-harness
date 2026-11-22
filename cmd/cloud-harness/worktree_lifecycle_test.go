@@ -351,6 +351,7 @@ func TestServeWorktreeHTTPApprovalAndSummary(t *testing.T) {
 	request := func(path, body string, want int) map[string]any {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != want {

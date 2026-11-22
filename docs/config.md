@@ -20,6 +20,7 @@ baseline denials, examples, and run snapshot behavior.
   "model_prices": {},
   "oracle_max_cost_usd": 0,
   "http_token": "",
+  "http_allowed_hosts": [],
   "http_allow_insecure": false,
   "disable_snapshots": false,
   "command_env_allow": [],
@@ -93,6 +94,7 @@ omitted, the notification contains no approval link.
 | `CLOUD_HARNESS_DB` | `.cloud-harness/harness.db` | SQLite file |
 | `CLOUD_HARNESS_PROVIDER` | `mock` | `mock` or `openai` |
 | `CLOUD_HARNESS_HTTP_TOKEN` | `""` | Bearer token required on `/v1/` endpoints (minimum 16 characters when set) |
+| `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS` | unset | Comma-separated extra `Host` header values `serve` accepts, replacing `http_allowed_hosts` from the file |
 | `CLOUD_HARNESS_HTTP_ALLOW_INSECURE` | `false` | Deprecated compatibility setting; non-loopback `serve` still requires `http_token` |
 | `CLOUD_HARNESS_ALLOW_EXTERNAL` | unset | Deprecated legacy compatibility setting; cannot bypass the HTTP token requirement |
 | `CLOUD_HARNESS_OWNER` | `local` | lease owner id |
@@ -201,6 +203,8 @@ CLI flags `--addr`, `--db`, `--provider`, and `--http-token` override the enviro
 - `http_token` (or `CLOUD_HARNESS_HTTP_TOKEN`) defaults to `""`. When set, it must be at least 16 characters long; shorter tokens are rejected at config load time.
 - When `http_token` is set, every `/v1/` endpoint requires `Authorization: Bearer <token>` (verified in constant time); `/healthz` remains open without authentication.
 - Loopback binds (`127.0.0.1`, `localhost`, `::1`) work without `http_token`.
+- A loopback bind refuses requests whose `Host` header is not `localhost` or a loopback IP address (HTTP 403). `http_allowed_hosts` (or `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS`, or `serve --http-allowed-hosts`) lists extra accepted values, each a host name or IP address with an optional port and no scheme or path, for example `["harness.example", "proxy.example:8443"]`. An entry without a port matches every port. Invalid entries are rejected at config load time. On a non-loopback bind the `Host` header is unrestricted unless this list is set.
+- Every bind refuses a request whose `Origin` header differs from its `Host`, and requires `Content-Type: application/json` on write requests with a body. See [request checks](api.md#request-checks).
 - Every non-loopback listen address (for example `0.0.0.0:19421`, `[::]:19421`, or `:19421`) requires a token. Without one, `cloud-harness serve` exits before opening the database or binding the listener with `non-loopback listen requires an HTTP token` and instructions to configure `--http-token`, `CLOUD_HARNESS_HTTP_TOKEN`, or `http_token` (at least 16 characters). The token is never printed in an error.
 - `http_allow_insecure`, `--http-allow-insecure`, `CLOUD_HARNESS_HTTP_ALLOW_INSECURE`, and `CLOUD_HARNESS_ALLOW_EXTERNAL` remain accepted as legacy settings but no longer allow a non-loopback listener without a token.
 - A missing or incorrect bearer token returns HTTP 401 with `WWW-Authenticate: Bearer realm="cloud-harness"`. The [API reference](api.md) includes the error envelope and the read-only `/v1/approvals` queue.

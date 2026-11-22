@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cloud-harness/cloud-harness/internal/agent"
@@ -115,7 +116,7 @@ func MainWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 const usage = `Cloud Harness M5
 
   cloud-harness version
-  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--db path] [--workspace dir] [--provider mock|openai]
+  cloud-harness serve [--worktree] [--addr 127.0.0.1:19421] [--http-token TOKEN] [--http-allowed-hosts HOST[,HOST]] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness run --message TEXT [--plan] [--worktree] [--no-repomap] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness chat [--message TEXT] [--session ID] [--worktree] [--db path] [--workspace dir] [--provider mock|openai]
   cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai]
@@ -352,6 +353,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	c := addCommon(fs)
 	useWorktree := fs.Bool("worktree", false, "run HTTP-created runs in retained isolated Git worktrees")
+	allowedHosts := fs.String("http-allowed-hosts", "", "comma-separated extra Host header values accepted by the HTTP API")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -360,11 +362,23 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if *allowedHosts != "" {
+		if cfg.HTTPAllowedHosts, err = config.ParseHTTPAllowedHosts(strings.Split(*allowedHosts, ",")); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	if err := cfg.ValidateBind(); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	loopback, err := config.IsLoopback(cfg.ListenAddr)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	// On Windows, SIGTERM is delivered for console close, logoff, and shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	mgr, db, err := openRunManager(ctx, cfg, c.workspace, *useWorktree)
 	if err != nil {
@@ -380,12 +394,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		cfg.DBPath = worktreeDBPath(cfg, mgr.Workspace)
 	}
 	diagnostics := serveDiagnostics{cfg: cfg, workspace: mgr.Workspace}
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           (&transport.Server{Manager: mgr, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor}).Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := (&transport.Server{
+		Manager: mgr, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
+		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
+	}).NewHTTPServer(cfg.ListenAddr)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	safe, _ := json.Marshal(cfg.Redacted())
