@@ -55,6 +55,7 @@
     .run-id, #detail-text[data-command] { font-family: ui-monospace, monospace; }
     .run-id { margin: 0 0 .75rem; overflow-wrap: anywhere; }
     #error { color: var(--error); }
+    #warnings { padding: .75rem; border: 2px solid var(--error); border-radius: .4rem; color: var(--error); font-weight: 600; }
     label { display: block; font-weight: 600; margin-bottom: .35rem; }
     input, textarea, button { font: inherit; }
     input, textarea {
@@ -108,6 +109,7 @@
       <p id="run-id" class="run-id muted"></p>
       <h2 id="run-status" role="status"></h2>
       <p id="wait-time" class="muted" hidden></p>
+      <p id="warnings" class="message" role="alert" hidden></p>
       <p id="detail-text" class="message" hidden></p>
       <div id="decisions" class="actions" hidden>
         <button id="deny" type="button">Deny</button>
@@ -239,6 +241,7 @@
       element("run-status").textContent = status;
       element("run-id").textContent = run.id;
       element("detail-text").toggleAttribute("data-command", approval);
+      showText("warnings", approval ? (invocation?.warnings || []).join("\n\n") : "");
       showText("detail-text", summary);
       element("decisions").hidden = !approval;
       element("answer-form").hidden = !question;

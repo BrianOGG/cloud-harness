@@ -34,6 +34,9 @@ policy 已拒绝、未获审批或审批被拒绝的调用不运行 PreToolUse�
 `$XDG_CONFIG_HOME/cloud-harness` 或 `~/.config/cloud-harness`。使用 worktree 时，
 工作区层来自工具实际执行的 worktree。
 
+工作区的 `hooks.json` 需要用户显式信任后才生效，见[工作区钩子的信任](#工作区钩子的信任)。
+以下合并规则描述已信任的工作区文件。
+
 同名钩子点由工作区的整个数组覆盖全局数组；未声明的钩子点继承全局配置。空数组
 可清空一个继承的钩子点。`go_check` 单独按工作区优先合并。不依赖主配置增加字段。
 
@@ -68,6 +71,36 @@ policy 已拒绝、未获审批或审批被拒绝的调用不运行 PreToolUse�
 run 启动时读取并合并一次，配置随 checkpoint 保存。审批、用户、预算等恢复使用
 原配置，包括由新 manager 恢复；修改配置只影响以后启动的 run。旧 checkpoint
 首次恢复时装载 hooks。配置变更不改变 policy 的加载和求值。
+
+## 工作区钩子的信任
+
+工作区钩子会在每个 run 中不经审批地运行 shell 命令和脚本，而
+`.cloud-harness/hooks.json` 所在的目录可以被已审批的命令写入。为了避免一次普通的写入
+审批变成后续 run 的任意命令执行，工作区的 `hooks.json` 只有在用户信任其当前内容后才
+参与合并：
+
+- 内置基线拒绝 agent 的文件工具读写 `.cloud-harness/**`，见
+  [policy 文档](policy.md#效果与内置基线)。
+- 信任按内容的 SHA-256 记录在 `<配置目录>/trust.json`，位于工作区之外。内容变化后
+  需要重新确认。存储位置、状态和 worktree 的处理与 `policy.json` 相同，见
+  [工作区文件的信任](policy.md#工作区文件的信任)。
+- 文件未被信任（`untrusted`）或内容已变更（`changed`）时，其中的全部内容都不生效：
+  不运行任何工作区钩子，不覆盖或清空全局钩子点，`go_check` 设置也被忽略。全局钩子和
+  内置 Go 自检照常运行。文件仍然会被校验，格式错误同样报错。
+- `run`、`chat`、`serve` 启动时在 stderr 输出
+  `warning: workspace hooks.json is not trusted: its hooks are not run. Review <path>, then run
+  `cloud-harness trust approve`.`；每个 run 记录 `config.untrusted` 事件；`doctor` 的
+  `workspace_trust` 检查为 `warn`。
+
+```sh
+cloud-harness trust status
+cloud-harness trust approve   # 显示完整内容并确认；非终端环境需要 --yes
+cloud-harness trust revoke
+```
+
+checkpoint 中保存的是已按信任状态合并的配置和当时的信任状态。引入信任机制之前保存的
+checkpoint 没有信任状态，恢复时会按当前信任状态重新装载 hooks，而不是直接使用其中
+保存的工作区钩子。
 
 ## 动作与输入
 

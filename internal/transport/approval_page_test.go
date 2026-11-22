@@ -60,6 +60,11 @@ func TestApprovalPagePublicStatic(t *testing.T) {
 		!strings.Contains(static, `json("/v1/approvals")`) {
 		t.Fatal("the approval page without a run ID must load /v1/approvals")
 	}
+	// Behavior-file warnings are rendered as text in their own alert element.
+	if !strings.Contains(static, `<p id="warnings" class="message" role="alert" hidden></p>`) ||
+		!strings.Contains(static, `showText("warnings", approval ? (invocation?.warnings || []).join("\n\n") : "");`) {
+		t.Fatal("the approval page must show pending_invocation.warnings")
+	}
 }
 
 func TestApprovalPageAuthExemptionIsExact(t *testing.T) {

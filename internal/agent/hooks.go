@@ -110,7 +110,7 @@ func (m *Manager) cancelHooks(ctx context.Context, run storage.Run) error {
 	if !ok || h.runID != run.ID {
 		snap, _ := m.loadCheckpoint(ctx, run.ID)
 		cfg := snap.Hooks
-		if cfg == nil {
+		if legacyHooks(cfg) {
 			workspace := m.Workspace
 			if run.WorktreePath != "" {
 				workspace = run.WorktreePath

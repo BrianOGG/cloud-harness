@@ -306,3 +306,38 @@ func ControlPath(workspace, target string) bool {
 	}
 	return false
 }
+
+// Behavior files are ordinary workspace files, but later runs load them as
+// instructions: a write to one outlives the run that made it.
+const (
+	BehaviorAgents = "agents"
+	BehaviorRules  = "rules"
+)
+
+// BehaviorFile classifies target as BehaviorAgents (under the workspace
+// .agents directory, which holds skills and agent definitions), BehaviorRules
+// (an AGENTS.md at any depth), or "". Like ControlPath it compares names
+// case-insensitively and also inspects the symlink-resolved target.
+func BehaviorFile(workspace, target string) string {
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(workspace, target)
+	}
+	target = filepath.Clean(target)
+	kind := ""
+	for _, name := range []string{target, resolvePolicyPath(target)} {
+		for _, root := range []string{filepath.Clean(workspace), resolvePolicyPath(workspace)} {
+			rel, err := filepath.Rel(root, name)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+			if strings.EqualFold(first, ".agents") {
+				return BehaviorAgents
+			}
+			if strings.EqualFold(filepath.Base(rel), "AGENTS.md") {
+				kind = BehaviorRules
+			}
+		}
+	}
+	return kind
+}

@@ -200,3 +200,42 @@ func TestControlPathFollowsSymlinks(t *testing.T) {
 		}
 	}
 }
+
+func TestBehaviorFile(t *testing.T) {
+	workspace := t.TempDir()
+	for _, dir := range []string{".agents/skills", "sub", "plain"} {
+		if err := os.MkdirAll(filepath.Join(workspace, filepath.FromSlash(dir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(workspace, ".agents"), filepath.Join(workspace, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(workspace, "AGENTS.md"), filepath.Join(workspace, "plain", "notes.md")); err != nil {
+		t.Fatal(err)
+	}
+	for target, want := range map[string]string{
+		".agents/skills/deploy/SKILL.md":              BehaviorAgents,
+		".agents/agents/reviewer.md":                  BehaviorAgents,
+		".AGENTS/skills/x.md":                         BehaviorAgents,
+		"alias/skills/x.md":                           BehaviorAgents,
+		filepath.Join(workspace, ".agents", "new.md"): BehaviorAgents,
+		"sub/../.agents/x":                            BehaviorAgents,
+		"AGENTS.md":                                   BehaviorRules,
+		"agents.md":                                   BehaviorRules,
+		"sub/AGENTS.md":                               BehaviorRules,
+		"plain/notes.md":                              BehaviorRules,
+		"sub/.agents/x.md":                            "",
+		"AGENTS.md.bak":                               "",
+		"plain/other.md":                              "",
+		"agents/readme.md":                            "",
+		filepath.Join(filepath.Dir(workspace), "AGENTS.md"): "",
+	} {
+		if got := BehaviorFile(workspace, target); got != want {
+			t.Errorf("BehaviorFile(%q) = %q, want %q", target, got, want)
+		}
+	}
+}

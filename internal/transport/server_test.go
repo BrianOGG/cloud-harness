@@ -397,6 +397,9 @@ func TestHTTPGetRunState(t *testing.T) {
 	if apprState.PendingInvocation.Tool != "write_file" {
 		t.Fatalf("expected pending tool write_file, got %q", apprState.PendingInvocation.Tool)
 	}
+	if len(apprState.PendingInvocation.Warnings) != 0 {
+		t.Fatalf("ordinary write carries a warning: %q", apprState.PendingInvocation.Warnings)
+	}
 	if !strings.Contains(apprState.PendingInvocation.ArgsSummary, "db.conf") {
 		t.Fatalf("expected args_summary to mention db.conf, got %q", apprState.PendingInvocation.ArgsSummary)
 	}
