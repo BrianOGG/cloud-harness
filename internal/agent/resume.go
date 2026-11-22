@@ -254,6 +254,11 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		if in.Decision != "approve" && in.Decision != "deny" {
 			return run, domain.E(domain.CodeInvalidArgument, "approval resume requires decision approve or deny").WithRef(run.ID)
 		}
+		if in.Decision == "approve" {
+			if err := m.approvalToolRegistered(ctx, run.ID); err != nil {
+				return run, err
+			}
+		}
 	case domain.WaitUser:
 		if in.Answer == "" && len(in.Images) == 0 {
 			return run, domain.E(domain.CodeInvalidArgument, "ask_user resume requires an answer").WithRef(run.ID)
@@ -387,6 +392,32 @@ func (m *Manager) markRunning(ctx context.Context, run storage.Run) (storage.Run
 		return storage.Run{}, err
 	}
 	return m.Store.GetRun(ctx, run.ID)
+}
+
+// approvalToolRegistered rejects an approval whose tool is not registered in
+// this process, for example an MCP server that failed to start. It runs before
+// the run leaves WAITING so the approval can be repeated once the tool is back.
+func (m *Manager) approvalToolRegistered(ctx context.Context, runID string) error {
+	if m.Broker == nil || m.Store == nil {
+		return nil
+	}
+	batches, err := m.Store.LoadBatches(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if len(batches) == 0 {
+		return nil
+	}
+	for _, inv := range batches[len(batches)-1].Invocations {
+		if inv.Status != domain.InvWaitingApproval {
+			continue
+		}
+		if !m.Broker.Has(inv.Name) {
+			return domain.E(domain.CodeToolError, "tool "+inv.Name+" is not available in this process; the run is still waiting for approval").WithRef(runID)
+		}
+		return nil
+	}
+	return nil
 }
 
 func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVersion int64, snap snapshot, st *loopState, decision string) (storage.Run, error) {
