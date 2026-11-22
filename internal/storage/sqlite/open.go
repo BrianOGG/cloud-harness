@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
@@ -27,6 +28,27 @@ var _ storage.Store = (*DB)(nil)
 type DB struct {
 	sql *sql.DB
 	now func() time.Time
+
+	hookMu     sync.RWMutex
+	eventHooks []func(runID string)
+}
+
+// OnEvent registers fn to be called after each commit that appends a
+// persistent event, with the event's run id. Hooks cannot be removed. Writes
+// made by other processes do not reach them.
+func (db *DB) OnEvent(fn func(runID string)) {
+	db.hookMu.Lock()
+	defer db.hookMu.Unlock()
+	db.eventHooks = append(db.eventHooks, fn)
+}
+
+func (db *DB) eventCommitted(runID string) {
+	db.hookMu.RLock()
+	hooks := db.eventHooks
+	db.hookMu.RUnlock()
+	for _, fn := range hooks {
+		fn(runID)
+	}
 }
 
 // Open creates the file, enables WAL and foreign keys, and migrates.

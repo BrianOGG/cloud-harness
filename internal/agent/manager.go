@@ -68,6 +68,9 @@ type Manager struct {
 	// AllowedTools limits grants when Depth > 0. Empty uses the default child grants
 	// unless a definition supplied an explicit tool limit.
 	AllowedTools []string
+	// Stream receives a run's model text as the provider streams it. Nil
+	// drops it. Child runs report under their own run id.
+	Stream DeltaStream
 
 	definitionToolLimit bool
 	failOnToolBudget    bool
@@ -76,6 +79,11 @@ type Manager struct {
 	cancelMu    sync.Mutex
 	cancels     map[string]context.CancelFunc
 	cancelOwner *Manager
+
+	bgMu     sync.Mutex
+	bgClosed bool
+	bgRuns   map[string]struct{}
+	bgWG     sync.WaitGroup
 
 	notifyMu      sync.Mutex
 	notifyCancels map[string]map[uint64]context.CancelFunc
@@ -192,6 +200,7 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 			return storage.Run{}, err
 		}
 	}
+	signalStarted(ctx, run)
 	return executor.runPreparedWithOptions(ctx, run, message, opts)
 }
 

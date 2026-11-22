@@ -41,6 +41,9 @@ var version = "0.5.0-m5"
 // fit inside the caller's shutdown grace (see serveStopGrace in serve_test.go).
 const serveShutdownTimeout = time.Second
 
+// serveRunStopTimeout bounds how long serve waits for cancelled runs to unwind.
+const serveRunStopTimeout = 5 * time.Second
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		program.ServeWorker(os.Stdin, os.Stdout)
@@ -434,6 +437,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "listening on http://%s %s\n", cfg.ListenAddr, safe)
 	select {
 	case <-ctx.Done():
+		stopRuns(mgr, stderr)
 		shutdownServe(srv)
 		return 0
 	case err := <-errCh:
@@ -442,6 +446,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+}
+
+// stopRuns cancels the runs executing in this process before the store
+// closes. Each is recorded as CANCELLED first, so none is left RUNNING when
+// one does not unwind within the timeout.
+func stopRuns(mgr *agent.Manager, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), serveRunStopTimeout)
+	defer cancel()
+	if err := mgr.Shutdown(ctx); err != nil {
+		fmt.Fprintln(stderr, "stopping runs:", err)
 	}
 }
 

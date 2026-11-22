@@ -396,7 +396,11 @@ func (db *DB) CommitRunTransition(ctx context.Context, next storage.Run, expecte
 	if _, err := insertEvent(ctx, tx, ev); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	db.eventCommitted(next.ID)
+	return nil
 }
 
 func (db *DB) SaveCheckpoint(ctx context.Context, runID string, version int64, snapshot []byte, now time.Time) error {
@@ -552,6 +556,7 @@ func (db *DB) AppendEvent(ctx context.Context, ev storage.Event) (int64, error) 
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	db.eventCommitted(ev.RunID)
 	return seq, nil
 }
 
@@ -641,7 +646,11 @@ func (db *DB) CommitInvocation(ctx context.Context, runID string, inv domain.Inv
 	if _, err := insertEvent(ctx, tx, ev); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	db.eventCommitted(runID)
+	return nil
 }
 
 type scanner interface {
