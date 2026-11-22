@@ -109,3 +109,60 @@ func TestBackgroundExecutionErrorFailsRun(t *testing.T) {
 		t.Fatalf("status = %s, error = %v", got.Status, got.Error)
 	}
 }
+
+// While a parent delegates it is WAITING(CHILD) and its child is RUNNING
+// inside the parent's execution. Shutdown stops both.
+func TestShutdownCancelsParentWaitingOnChild(t *testing.T) {
+	delegate := toolResp(domain.ToolCall{ProviderCallID: "d1", Name: domain.ToolDelegateTask, Arguments: json.RawMessage(`{"goal":"look around"}`)})
+	prov := newBlockingProvider(func(call int) *domain.ModelResponse {
+		if call == 1 {
+			return &delegate
+		}
+		return nil
+	})
+	m, session := backgroundManager(t, prov)
+	ex, err := m.StartMessage(t.Context(), session.ID, "hello", RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-prov.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("child did not reach the model")
+	}
+	if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunWaiting || got.WaitReason != domain.WaitChild {
+		t.Fatalf("parent = %s(%s)", got.Status, got.WaitReason)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := m.Store.ListRuns(context.Background(), session.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs = %d, err = %v", len(runs), err)
+	}
+	for _, run := range runs {
+		if run.Status != domain.RunCancelled {
+			t.Errorf("run %s (parent %q) = %s(%s)", run.ID, run.ParentRunID, run.Status, run.WaitReason)
+		}
+	}
+}
+
+// A run waiting for a person is not executing. Shutdown leaves it resumable.
+func TestShutdownLeavesWaitingRunResumable(t *testing.T) {
+	ask := toolResp(domain.ToolCall{ProviderCallID: "a1", Name: domain.ToolAskUser, Arguments: json.RawMessage(`{"question":"continue?"}`)})
+	m, session := backgroundManager(t, newBlockingProvider(func(int) *domain.ModelResponse { return &ask }))
+	ex, err := m.StartMessage(t.Context(), session.ID, "hello", RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, ex)
+	if err := m.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(t, m, ex.Run.ID); got.Status != domain.RunWaiting || got.WaitReason != domain.WaitUser {
+		t.Fatalf("run = %s(%s)", got.Status, got.WaitReason)
+	}
+}

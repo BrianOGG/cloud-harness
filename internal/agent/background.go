@@ -164,9 +164,10 @@ func (m *Manager) failStranded(ctx context.Context, runID string, cause error) (
 // its run after the previous pass.
 const shutdownRecheck = 20 * time.Millisecond
 
-// Shutdown refuses new background executions, cancels those still RUNNING,
+// Shutdown refuses new background executions, cancels those still executing,
 // and waits for them to unwind or for ctx to end. A cancelled run is recorded
-// as CANCELLED before Shutdown waits, so none is left RUNNING.
+// as CANCELLED before Shutdown waits, so none is left RUNNING. A run that
+// waits for a person is not executing and is left as it is.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.bgMu.Lock()
 	m.bgClosed = true
@@ -189,8 +190,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			if asked[id] {
 				continue
 			}
-			asked[id] = true
-			if err := m.cancelExecuting(persist, id); err != nil {
+			attempted, err := m.cancelExecuting(persist, id)
+			asked[id] = attempted
+			if err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -215,20 +217,28 @@ func (m *Manager) backgroundRunIDs() []string {
 	return ids
 }
 
-// cancelExecuting cancels id if it is still RUNNING.
-func (m *Manager) cancelExecuting(ctx context.Context, id string) error {
+// executing reports whether a background run is still doing work: it is
+// RUNNING, or it waits on a child that runs inside its own execution.
+func executing(run storage.Run) bool {
+	return run.Status == domain.RunRunning ||
+		(run.Status == domain.RunWaiting && run.WaitReason == domain.WaitChild)
+}
+
+// cancelExecuting cancels id if it is still executing, which also stops a
+// child it delegated to. It reports whether it tried.
+func (m *Manager) cancelExecuting(ctx context.Context, id string) (bool, error) {
 	run, err := m.Store.GetRun(ctx, id)
 	if err != nil {
-		return err
+		return true, err
 	}
-	if run.Status != domain.RunRunning {
-		return nil
+	if !executing(run) {
+		return false, nil
 	}
 	if _, err := m.Cancel(ctx, id); err != nil {
 		// The run may have stopped by itself in the meantime.
-		if current, readErr := m.Store.GetRun(ctx, id); readErr != nil || current.Status == domain.RunRunning {
-			return err
+		if current, readErr := m.Store.GetRun(ctx, id); readErr != nil || executing(current) {
+			return true, err
 		}
 	}
-	return nil
+	return true, nil
 }
