@@ -6,7 +6,7 @@ Live provider calls are not part of CI. Rows marked "httptest" are covered by st
 | --- | --- | --- | --- | --- |
 | One text completion | Required | Required | Required | Request shape, parsing, and usage covered for all three stdlib clients. Live call not run (no key). |
 | Multiple tool calls in one response | Required | Required | Required | Domain batch contract plus provider parsing tests. No live provider. |
-| Tool arguments split across stream chunks | Required | Required | Required | Chat Completions stream test exists. Responses and Anthropic clients use non-streaming JSON. |
+| Tool arguments split across stream chunks | Required | Required | Required | Stream tests for all three clients. Responses and Anthropic streams are hand-written fixtures in `internal/provider/testdata/stream`; they stream only when the caller takes text deltas and use non-streaming JSON otherwise. Live stream not run (no key). |
 | Text plus tool calls is non-terminal | Required | Required | Required | Provider parsing preserves ordered text and tool-call items. |
 | `finish_turn` exclusive | Harness protocol | Harness protocol | Harness protocol | Mock contract. Mixed with another call: zero dispatches. |
 | `ask_user` exclusive | Harness protocol | Harness protocol | Harness protocol | Mock contract. |
