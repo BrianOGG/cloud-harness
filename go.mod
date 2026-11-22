@@ -1,6 +1,6 @@
 module github.com/cloud-harness/cloud-harness
 
-go 1.27.3
+go 1.27.4
 
 require (
 	go.starlark.net v0.0.0-20261021141710-4f4267fb140d
