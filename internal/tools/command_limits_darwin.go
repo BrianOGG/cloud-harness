@@ -39,7 +39,7 @@ func canonicalPath(path string) (string, error) {
 	if err != nil {
 		return "", &os.PathError{Op: "open", Path: path, Err: err}
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	seatbeltPathBuf.Lock()
 	defer seatbeltPathBuf.Unlock()
 	buf := seatbeltPathBuf.path[:]

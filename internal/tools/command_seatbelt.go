@@ -321,7 +321,7 @@ func runSeatbelt(cmd *exec.Cmd, sandboxExec string, plan seatbeltPlan, target st
 	if err != nil {
 		return sandboxNotApplied(err.Error())
 	}
-	defer statusR.Close()
+	defer func() { _ = statusR.Close() }()
 	cmd.Path = sandboxExec
 	cmd.Args = []string{sandboxExec, "-p", profile, self, seatbeltExecArg, string(check)}
 	if target != "" {
@@ -447,7 +447,7 @@ func probeSeatbelt(sandboxExec string, canonical func(string) (string, error)) e
 	if err != nil {
 		return err
 	}
-	defer os.Remove(dir)
+	defer func() { _ = os.Remove(dir) }()
 	resolved, err := canonical(dir)
 	if err != nil {
 		return err
