@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
     "test": "tsx scripts/test-events.ts && tsx scripts/test-observability.ts",
+    "check:dist": "bash scripts/check-dist.sh",
     "preview": "vite preview"
   },
   "dependencies": {

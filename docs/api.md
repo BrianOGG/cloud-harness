@@ -87,6 +87,11 @@ To rebuild the assets, run `(cd web && npm ci && npm run build)` with Node.js
 can embed the UI into the executable. Rebuild the Go binary to serve updated
 assets.
 
+CI rebuilds the assets and fails when `web/dist/` differs from the result, so
+commit the rebuilt `web/dist/` with the source change. Run
+`(cd web && npm run check:dist)` to make the same comparison locally. See
+[web/README.md](../web/README.md).
+
 ## GET /v1/stats and GET /v1/doctor
 
 The Web UI observation page reads these authenticated, read-only endpoints from
