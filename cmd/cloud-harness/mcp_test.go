@@ -678,6 +678,9 @@ func TestServeRunsMCPToolAndStopsServerOnShutdown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			return 0
