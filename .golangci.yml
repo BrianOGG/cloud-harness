@@ -49,9 +49,6 @@ linters:
       - path: internal/agent/child\.go
         linters: [ineffassign]
         text: "ineffectual assignment to runErr"
-      - path: internal/tools/stdio_mcp\.go
-        linters: [ineffassign]
-        text: "ineffectual assignment to totalLen"
       - path: internal/agent/loop\.go
         linters: [unused]
         text: "func \\(\\*Manager\\)\\.loop is unused"

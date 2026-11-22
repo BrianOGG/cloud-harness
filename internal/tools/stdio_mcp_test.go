@@ -14,7 +14,9 @@ import (
 	"github.com/cloud-harness/cloud-harness/internal/domain"
 )
 
-func runMockMCPServer() {
+// runMockMCPServer serves the mock tools. mode "paged" splits tools/list over
+// two pages; mode "deaf" stops reading stdin once discovery is done.
+func runMockMCPServer(mode string) {
 	s := bufio.NewScanner(os.Stdin)
 	s.Buffer(make([]byte, 1024), 256*1024)
 	for s.Scan() {
@@ -27,6 +29,44 @@ func runMockMCPServer() {
 			continue
 		}
 		var res any
+		switch {
+		case req.Method == "tools/list" && mode == "paged":
+			var p struct {
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			tool := func(name string) any {
+				return map[string]any{"name": name, "description": name, "inputSchema": map[string]any{"type": "object"}}
+			}
+			page := map[string]any{"tools": []any{tool("first")}, "nextCursor": "page-2"}
+			if p.Cursor == "page-2" {
+				page = map[string]any{"tools": []any{tool("second")}}
+			}
+			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": page})
+			os.Stdout.Write(append(out, '\n'))
+			continue
+		case req.Method == "tools/call" && mode == "media":
+			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
+				"content": []any{
+					map[string]any{"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"},
+					map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///notes.txt", "mimeType": "text/plain", "text": "note body"}},
+					map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///a.bin", "mimeType": "application/octet-stream", "blob": "AAAA"}},
+					map[string]any{"type": "resource_link", "uri": "file:///big.log", "name": "big.log"},
+				},
+			}})
+			os.Stdout.Write(append(out, '\n'))
+			continue
+		case req.Method == "tools/call" && mode == "raw":
+			var p struct {
+				Args json.RawMessage `json:"arguments"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
+				"content": []any{map[string]string{"type": "text", "text": string(p.Args)}},
+			}})
+			os.Stdout.Write(append(out, '\n'))
+			continue
+		}
 		switch req.Method {
 		case "initialize":
 			res = map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
@@ -61,6 +101,9 @@ func runMockMCPServer() {
 		}
 		out, _ := json.Marshal(res)
 		os.Stdout.Write(append(out, '\n'))
+		if mode == "deaf" && req.Method == "tools/list" {
+			time.Sleep(time.Hour)
+		}
 	}
 }
 
@@ -68,9 +111,13 @@ func TestHelperProcess(t *testing.T) {
 	if len(os.Args) < 3 {
 		return
 	}
-	for _, a := range os.Args {
+	for i, a := range os.Args {
 		if a == "mock-mcp-server" {
-			runMockMCPServer()
+			mode := ""
+			if i+1 < len(os.Args) {
+				mode = os.Args[i+1]
+			}
+			runMockMCPServer(mode)
 			os.Exit(0)
 		}
 	}
@@ -78,6 +125,142 @@ func TestHelperProcess(t *testing.T) {
 
 func helperArgs() (string, []string) {
 	return os.Args[0], []string{"-test.run=TestHelperProcess", "--", "mock-mcp-server"}
+}
+
+func helperModeArgs(mode string) (string, []string) {
+	bin, args := helperArgs()
+	return bin, append(args, mode)
+}
+
+func discoverMock(t *testing.T, mode string) (*StdioMCP, map[string]Spec) {
+	t.Helper()
+	bin, args := helperModeArgs(mode)
+	adapter, err := NewStdioMCP(context.Background(), StdioMCPConfig{Name: "srv", Command: bin, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	specs, err := adapter.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Spec, len(specs))
+	for _, sp := range specs {
+		byName[sp.Name] = sp
+	}
+	return adapter, byName
+}
+
+func TestStdioMCPDiscoverFollowsToolListCursor(t *testing.T) {
+	_, specs := discoverMock(t, "paged")
+	if len(specs) != 2 || specs["mcp.srv.first"].Name == "" || specs["mcp.srv.second"].Name == "" {
+		t.Fatalf("tools from every tools/list page must be discovered, got %v", specs)
+	}
+}
+
+func TestStdioMCPForwardsLargeIntegerArgumentsExactly(t *testing.T) {
+	_, specs := discoverMock(t, "raw")
+	out, err := specs["mcp.srv.echo"].Execute(context.Background(), json.RawMessage(`{"id":9007199254740993}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `{\"id\":9007199254740993}`) {
+		t.Fatalf("integer argument was altered on the way to the server: %s", out)
+	}
+	out, err = specs["mcp.srv.echo"].Execute(context.Background(), nil)
+	if err != nil || !strings.Contains(string(out), `"text":"{}"`) {
+		t.Fatalf("missing arguments must be sent as an empty object: %s %v", out, err)
+	}
+}
+
+func TestStdioMCPReportsNonTextContentToTheModel(t *testing.T) {
+	_, specs := discoverMock(t, "media")
+	out, err := specs["mcp.srv.echo"].Execute(context.Background(), json.RawMessage(`{"msg":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Content []MCPText `json:"content"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := []MCPText{
+		{Type: "image", Text: "[image omitted: image/png, 8 base64 bytes; binary content is not forwarded to the model]"},
+		{Type: "resource", Text: "[resource file:///notes.txt]\nnote body"},
+		{Type: "resource", Text: "[resource file:///a.bin omitted: application/octet-stream, 4 base64 bytes; binary content is not forwarded to the model]"},
+		{Type: "resource_link", Text: "[resource link file:///big.log] big.log"},
+	}
+	if len(got.Content) != len(want) {
+		t.Fatalf("content = %+v", got.Content)
+	}
+	for i := range want {
+		if got.Content[i] != want[i] {
+			t.Fatalf("content[%d] = %+v, want %+v", i, got.Content[i], want[i])
+		}
+	}
+}
+
+func TestStdioMCPTimeoutOfWriteToolSaysOutcomeIsUnknown(t *testing.T) {
+	for _, readonly := range []bool{false, true} {
+		bin, args := helperArgs()
+		adapter, err := NewStdioMCP(context.Background(), StdioMCPConfig{Name: "srv", Command: bin, Args: args, Readonly: readonly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		specs, err := adapter.Discover(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		adapter.SetTimeout(200 * time.Millisecond)
+		var slow Spec
+		for _, sp := range specs {
+			if sp.Name == "mcp.srv.slow" {
+				slow = sp
+			}
+		}
+		_, err = slow.Execute(context.Background(), json.RawMessage(`{}`))
+		if err == nil || !strings.Contains(err.Error(), "timed out after 200ms") {
+			t.Fatalf("readonly=%v: err = %v", readonly, err)
+		}
+		if got := strings.Contains(err.Error(), "outcome is unknown"); got == readonly {
+			t.Fatalf("readonly=%v: unknown-outcome note present=%v in %q", readonly, got, err.Error())
+		}
+	}
+}
+
+func TestStdioMCPCallDoesNotHangWhenServerStopsReadingStdin(t *testing.T) {
+	adapter, specs := discoverMock(t, "deaf")
+	adapter.SetTimeout(500 * time.Millisecond)
+	// Larger than any pipe buffer, so the write cannot complete on its own.
+	args, err := json.Marshal(map[string]string{"msg": strings.Repeat("x", 4<<20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := specs["mcp.srv.echo"].Execute(context.Background(), args)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("call to a server that stopped reading must fail")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("call blocked past its timeout on a server that stopped reading stdin")
+	}
+	if adapter.Alive() {
+		t.Fatal("a server with a half-written frame must be stopped, not reused")
+	}
+	if err := adapter.Err(); err == nil || !strings.Contains(err.Error(), "stopped reading stdin") {
+		t.Fatalf("adapter error = %v", err)
+	}
 }
 
 func TestStdioMCPDiscoverAndInvoke(t *testing.T) {
