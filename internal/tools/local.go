@@ -409,6 +409,7 @@ func listFilesSpec(abs string) Spec {
 			if err := validateGlob(pattern); err != nil {
 				return nil, err
 			}
+			isControl := controlFiles(abs)
 			files := []string{}
 			total := 0
 			truncated := false
@@ -424,6 +425,12 @@ func listFilesSpec(abs string) Spec {
 				}
 				resolved, rerr := resolveInside(abs, p)
 				if rerr != nil {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if isControl(resolved) {
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
@@ -526,6 +533,7 @@ func grepSpec(abs string) Spec {
 			if limit > hardGrepMaxHits {
 				limit = hardGrepMaxHits
 			}
+			isControl := controlFiles(abs)
 			matches := []string{}
 			total := 0
 			truncated := false
@@ -541,6 +549,12 @@ func grepSpec(abs string) Spec {
 				}
 				resolved, rerr := resolveInside(abs, p)
 				if rerr != nil {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if isControl(resolved) {
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
@@ -1135,6 +1149,28 @@ func SensitivePath(p string) bool {
 		return true
 	default:
 		return strings.Contains(base, "secret") || strings.Contains(base, "credential")
+	}
+}
+
+// controlFiles returns a test for whether a path returned by resolveInside is
+// the harness control directory or lies inside it. list_files and grep walk
+// the workspace without a policy decision per file, so a symlink into that
+// directory, or a control directory that is itself a symlink, must not expose
+// what the builtin policy denies to read_file.
+func controlFiles(root string) func(resolved string) bool {
+	clean := filepath.Clean(root)
+	dir, dirErr := resolveInside(clean, ".cloud-harness")
+	return func(resolved string) bool {
+		if rel, err := filepath.Rel(clean, resolved); err == nil {
+			if first, _, _ := strings.Cut(filepath.ToSlash(rel), "/"); strings.EqualFold(first, ".cloud-harness") {
+				return true
+			}
+		}
+		if dirErr != nil {
+			return false
+		}
+		rel, err := filepath.Rel(dir, resolved)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	}
 }
 
