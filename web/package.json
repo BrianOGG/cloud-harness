@@ -7,17 +7,16 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
-    "test": "tsx scripts/test-events.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts",
+    "test": "tsx scripts/test-events.ts && tsx scripts/test-timeline.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts",
     "check:dist": "bash scripts/check-dist.sh",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
-    "@lobehub/ui": "^6.15.3",
-    "antd": "^6.7.0",
-    "motion": "^14.12.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
