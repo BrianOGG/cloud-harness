@@ -119,9 +119,9 @@ type CompactOptions struct {
 	Refs        map[string]string
 }
 
-// fallbackClipRunes is what an ordinary message keeps when Compact has to
+// fallbackClipBytes is what an ordinary message keeps when Compact has to
 // shorten it: its start and its end.
-const fallbackClipRunes = 1200
+const fallbackClipBytes = 1200
 
 // Compact is the structural fallback for a context over TokenLimit, used when
 // a model-written summary is not possible or was not enough. Older tool
@@ -156,8 +156,8 @@ func Compact(msgs []Message, opt CompactOptions) []Message {
 		if !editable(i) || out[i].Role == "tool" || IsWorkSummary(out[i]) || strings.HasPrefix(out[i].Content, SessionSummaryPrefix) {
 			continue
 		}
-		if len([]rune(out[i].Content)) > fallbackClipRunes {
-			out[i].Content = ClipMiddle(out[i].Content, fallbackClipRunes) + "\n[compacted; raw history retained]"
+		if len(out[i].Content) > fallbackClipBytes {
+			out[i].Content = ClipMiddle(out[i].Content, fallbackClipBytes) + "\n[compacted; raw history retained]"
 		}
 	}
 	return out

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
@@ -128,6 +129,45 @@ func TestHistoryKeepsTheNewestTurnsWithinItsLimits(t *testing.T) {
 		if len(line) >= len(long) || !strings.Contains(line, "HEAD-MARK") || !strings.Contains(line, "TAIL-MARK") || !strings.Contains(line, "[retrieve_resource id ") {
 			t.Fatalf("long history message was not clipped around its middle: %d bytes", len(line))
 		}
+	}
+}
+
+func TestHistoryBudgetCountsBytesNotCharacters(t *testing.T) {
+	ctx := context.Background()
+	mock := &provider.Mock{}
+	m, db, _ := testManager(t, mock)
+	m.SkipPlanner = true
+	m.ContextTokenLimit = 900
+	ses, _ := m.CreateSession(ctx)
+	// Three bytes a character: 6000 bytes where a count of characters sees 2000.
+	long := "开头标记" + strings.Repeat("历史消息", 500) + "结尾标记"
+	if _, err := m.RunMessage(ctx, ses.ID, long); err != nil {
+		t.Fatal(err)
+	}
+	before := len(mock.Requests)
+	run, err := m.RunMessage(ctx, ses.ID, "after the long one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := mock.Requests[before]
+	var history []contextpkg.Message
+	for _, msg := range toContext(req.Messages) {
+		if msg.Role != "system" && msg.Content != "after the long one" {
+			history = append(history, msg)
+		}
+	}
+	budget := m.ContextTokenLimit / 3
+	if got := contextpkg.Estimate(history); len(history) != 2 || got > budget {
+		t.Fatalf("history of %d messages takes %d tokens of a %d token budget", len(history), got, budget)
+	}
+	for _, msg := range history {
+		if !utf8.ValidString(msg.Content) || !strings.Contains(msg.Content, "开头标记") || !strings.Contains(msg.Content, "结尾标记") || !strings.Contains(msg.Content, "[retrieve_resource id ") {
+			t.Fatalf("clipped history message lost its start, end or id: %q", msg.Content)
+		}
+	}
+	events := eventPayloads(t, db, run.ID, "context.history")
+	if len(events) != 1 || events[0]["tokens"].(float64) > float64(budget) {
+		t.Fatalf("context.history=%v", events)
 	}
 }
 

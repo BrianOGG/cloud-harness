@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // WorkSummaryPrefix opens the message that stands in for the part of a turn
@@ -62,9 +63,9 @@ func SummaryRange(msgs []Message, opt CompactOptions, minTokens int) (start, end
 }
 
 // SummaryTranscript renders the messages a summary replaces for the model
-// that writes it. Each message keeps at most maxRunes characters, its start
-// and its end, so the request stays near the size of the context it shrinks.
-func SummaryTranscript(msgs []Message, refs map[string]string, maxRunes int) string {
+// that writes it. Each message keeps at most maxBytes bytes, its start and
+// its end, so the request stays near the size of the context it shrinks.
+func SummaryTranscript(msgs []Message, refs map[string]string, maxBytes int) string {
 	var b strings.Builder
 	for _, m := range msgs {
 		switch {
@@ -75,14 +76,14 @@ func SummaryTranscript(msgs []Message, refs map[string]string, maxRunes int) str
 			if refs[m.ToolCallID] != "" {
 				ref = refs[m.ToolCallID]
 			}
-			fmt.Fprintf(&b, "[tool result %s ref=%s]\n%s\n\n", m.ToolCallID, ref, ClipMiddle(m.Content, maxRunes))
+			fmt.Fprintf(&b, "[tool result %s ref=%s]\n%s\n\n", m.ToolCallID, ref, ClipMiddle(m.Content, maxBytes))
 		default:
 			fmt.Fprintf(&b, "[%s]\n", m.Role)
 			if strings.TrimSpace(m.Content) != "" {
-				fmt.Fprintf(&b, "%s\n", ClipMiddle(m.Content, maxRunes))
+				fmt.Fprintf(&b, "%s\n", ClipMiddle(m.Content, maxBytes))
 			}
 			for _, call := range m.ToolCalls {
-				fmt.Fprintf(&b, "tool call %s: %s %s\n", call.ID, call.Name, ClipMiddle(string(call.Arguments), maxRunes))
+				fmt.Fprintf(&b, "tool call %s: %s %s\n", call.ID, call.Name, ClipMiddle(string(call.Arguments), maxBytes))
 			}
 			b.WriteString("\n")
 		}
@@ -90,14 +91,14 @@ func SummaryTranscript(msgs []Message, refs map[string]string, maxRunes int) str
 	return b.String()
 }
 
-// SummaryMessageCap is the largest per-message size, in characters, at which
-// the transcript of msgs stays within budget characters: short messages are
+// SummaryMessageCap is the largest per-message size, in bytes, at which the
+// transcript of msgs stays within budget bytes: short messages are
 // kept whole and what they leave unused goes to the long ones.
 func SummaryMessageCap(msgs []Message, budget int) int {
 	const floor = 200
 	sizes := make([]int, 0, len(msgs))
 	for _, m := range msgs {
-		sizes = append(sizes, len([]rune(m.Content)))
+		sizes = append(sizes, len(m.Content))
 	}
 	slices.Sort(sizes)
 	for i, size := range sizes {
@@ -116,13 +117,19 @@ func SummaryMessageCap(msgs []Message, budget int) int {
 }
 
 // ClipMiddle keeps the start and the end of a long text and says how much
-// is missing between them.
-func ClipMiddle(text string, maxRunes int) string {
-	runes := []rune(text)
-	if maxRunes <= 0 || len(runes) <= maxRunes {
+// is missing between them. maxBytes is in UTF-8 bytes, the unit Estimate
+// counts, so text in any script takes the same room in the context.
+func ClipMiddle(text string, maxBytes int) string {
+	if maxBytes <= 0 || len(text) <= maxBytes {
 		return text
 	}
-	head := maxRunes * 2 / 3
-	tail := maxRunes - head
-	return string(runes[:head]) + fmt.Sprintf("\n[... %d characters omitted ...]\n", len(runes)-maxRunes) + string(runes[len(runes)-tail:])
+	head := maxBytes * 2 / 3
+	for head > 0 && !utf8.RuneStart(text[head]) {
+		head--
+	}
+	tail := len(text) - (maxBytes - maxBytes*2/3)
+	for tail < len(text) && !utf8.RuneStart(text[tail]) {
+		tail++
+	}
+	return text[:head] + fmt.Sprintf("\n[... %d characters omitted ...]\n", utf8.RuneCountInString(text[head:tail])) + text[tail:]
 }

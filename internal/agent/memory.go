@@ -21,7 +21,11 @@ const (
 	// historyTurns is how many earlier turns a new turn carries word for
 	// word, within a third of the context limit. Older turns are covered by
 	// turn summaries, session memory and the history tools.
-	historyTurns         = 6
+	historyTurns = 6
+	// historyMarkerBytes covers what a clipped history message adds to the
+	// text it keeps: the omission marker, the retrieve_resource note and the
+	// per-message overhead of the context estimate.
+	historyMarkerBytes   = 160
 	defaultContextTokens = 12000
 	plannerCatalogLimit  = 20
 	repoMapMaxBytes      = 8 << 10
@@ -257,8 +261,9 @@ func (m *Manager) sessionTurns(ctx context.Context, sessionID, excludeTurn strin
 // text.
 func (m *Manager) recentHistory(ctx context.Context, sessionID, excludeTurn, after string, maxTurns, tokenBudget int) ([]contextpkg.Message, []string) {
 	turns := m.sessionTurns(ctx, sessionID, excludeTurn)
-	// One message may take at most half the budget, so the newest turn fits.
-	maxRunes := max(tokenBudget*2-64, 256)
+	// One message may take at most half the budget, so the newest turn fits:
+	// two bytes per budget token, less the room its clip markers take.
+	maxBytes := max(tokenBudget*2-historyMarkerBytes, 256)
 	start, used := len(turns), 0
 	for start > 0 && len(turns)-start < maxTurns {
 		turn := turns[start-1]
@@ -266,8 +271,8 @@ func (m *Manager) recentHistory(ctx context.Context, sessionID, excludeTurn, aft
 			break
 		}
 		cost := contextpkg.Estimate([]contextpkg.Message{
-			{Role: "user", Content: clipMiddle(turn.User, maxRunes, turn.TurnID)},
-			{Role: "assistant", Content: clipMiddle(turn.Answer, maxRunes, turn.AnswerID)},
+			{Role: "user", Content: clipMiddle(turn.User, maxBytes, turn.TurnID)},
+			{Role: "assistant", Content: clipMiddle(turn.Answer, maxBytes, turn.AnswerID)},
 		})
 		if start < len(turns) && used+cost > tokenBudget {
 			break
@@ -279,8 +284,8 @@ func (m *Manager) recentHistory(ctx context.Context, sessionID, excludeTurn, aft
 	var turnIDs []string
 	for _, turn := range turns[start:] {
 		out = append(out,
-			contextpkg.Message{Role: "user", Content: clipMiddle(turn.User, maxRunes, turn.TurnID)},
-			contextpkg.Message{Role: "assistant", Content: clipMiddle(turn.Answer, maxRunes, turn.AnswerID)},
+			contextpkg.Message{Role: "user", Content: clipMiddle(turn.User, maxBytes, turn.TurnID)},
+			contextpkg.Message{Role: "assistant", Content: clipMiddle(turn.Answer, maxBytes, turn.AnswerID)},
 		)
 		turnIDs = append(turnIDs, turn.TurnID)
 	}
@@ -300,8 +305,8 @@ func (m *Manager) historyAfterCompaction(ctx context.Context, sessionID, exclude
 
 // clipMiddle keeps the start and end of a long message and says where the
 // rest is.
-func clipMiddle(text string, maxRunes int, historyID string) string {
-	clipped := contextpkg.ClipMiddle(text, maxRunes)
+func clipMiddle(text string, maxBytes int, historyID string) string {
+	clipped := contextpkg.ClipMiddle(text, maxBytes)
 	if clipped != text && historyID != "" {
 		clipped += "\n[retrieve_resource id " + historyID + " has the full text]"
 	}

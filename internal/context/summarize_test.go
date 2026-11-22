@@ -3,6 +3,7 @@ package context
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func summaryFixture() []Message {
@@ -111,5 +112,28 @@ func TestSummaryMessageCapGivesUnusedRoomToLongMessages(t *testing.T) {
 	}
 	if got := SummaryMessageCap(msgs, 10); got != 200 {
 		t.Fatalf("cap floor=%d", got)
+	}
+}
+
+func TestClipMiddleCountsBytesAndCutsBetweenCharacters(t *testing.T) {
+	if got := ClipMiddle("short", 100); got != "short" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	// Three bytes a character.
+	text := "头" + strings.Repeat("中", 400) + "尾"
+	for _, limit := range []int{100, 101, 102, 301} {
+		got := ClipMiddle(text, limit)
+		kept := strings.Replace(got, "\n[... ", "", 1)
+		kept = kept[:strings.Index(kept, " characters omitted")-3] + kept[strings.Index(kept, "...]\n")+5:]
+		if !utf8.ValidString(got) || len(kept) > limit || !strings.HasPrefix(got, "头") || !strings.HasSuffix(got, "尾") {
+			t.Fatalf("limit %d kept %d bytes: %q", limit, len(kept), got)
+		}
+	}
+	if got := ClipMiddle(text, 120); !strings.Contains(got, "[... 363 characters omitted ...]") {
+		t.Fatalf("omitted count: %q", got)
+	}
+	msgs := []Message{{Content: strings.Repeat("中", 1000)}, {Content: "ab"}}
+	if got := SummaryMessageCap(msgs, 600); got != 598 {
+		t.Fatalf("cap counts characters, not bytes: %d", got)
 	}
 }
