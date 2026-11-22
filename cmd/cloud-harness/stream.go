@@ -42,15 +42,21 @@ func (s *cliStream) Delta(runID, text string) {
 func (s *cliStream) End(runID string, completed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.isTopLevel(runID) || s.current.Len() == 0 {
+	if !s.isTopLevel(runID) {
 		return
 	}
 	text := s.current.String()
 	s.current.Reset()
+	// What the caller may skip printing is the text of this response only. A
+	// response that streamed nothing leaves nothing to skip, whatever an
+	// earlier response wrote.
+	s.last = ""
+	if text == "" {
+		return
+	}
 	if !strings.HasSuffix(text, "\n") {
 		_, _ = io.WriteString(s.w, "\n")
 	}
-	s.last = ""
 	if completed {
 		s.last = text
 	}

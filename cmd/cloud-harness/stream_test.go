@@ -64,6 +64,36 @@ func TestChatWithoutStreamPrintsOnlyTheFinalAnswer(t *testing.T) {
 	}
 }
 
+// A turn whose answer was not streamed must print it, even when an earlier
+// turn streamed the same words.
+func TestChatPrintsUnstreamedAnswerThatRepeatsAnEarlierOne(t *testing.T) {
+	prov := &scriptedProvider{step: func(call int, req provider.Request) (domain.ModelResponse, error) {
+		if call == 1 {
+			req.OnDelta("Yes.")
+		}
+		// The second turn's response arrives without any streamed text.
+		return domain.ModelResponse{
+			Provider: "mock", Complete: true,
+			Items: []domain.ResponseItem{{Kind: domain.ItemText, Text: "Yes."}},
+		}, nil
+	}}
+	mgr, _, _ := newChatTestManager(t, prov)
+	var out, errBuf bytes.Buffer
+	mgr.Stream = newCLIStream(&out, mgr.Store)
+	session, err := mgr.CreateSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for turn := 1; turn <= 2; turn++ {
+		if _, code, _ := runChatTurn(context.Background(), mgr, session.ID, "is it?", nil, &out, &errBuf); code != 0 {
+			t.Fatalf("turn %d: code=%d stderr=%q", turn, code, errBuf.String())
+		}
+	}
+	if out.String() != "Yes.\nYes.\n" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
 // A response that fails after streaming some text leaves that text on screen;
 // the answer the run finally gives is still printed.
 func TestChatStreamPrintsFinalAnswerThatWasNotStreamed(t *testing.T) {
