@@ -116,7 +116,7 @@
 ## M11-8：Web 真 serve 全流程（旧界面的验收记录）
 
 - 会话列表、运行记录、审批队列均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
-- 当前查看的 RUNNING/WAITING run 保持一条 SSE 连接（`api.streamRun`），事件按 seq 合并，断线后带 `Last-Event-ID` 重连；`stream.delta` 实时显示在「模型输出」卡片。会话里其余活跃 run 只轮询状态（约 1 秒）。可见轨迹只包含编排层状态，不展示模型思维链。
+- 当前会话里每个 RUNNING/WAITING run 保持一条 SSE 连接（`api.streamEvents`），事件按 seq 合并，断线后带 `Last-Event-ID` 重连，重连前先清空该 run 已显示的流式文本；`stream.delta` 实时显示在对话气泡里，`stream.reset` 清空当前响应的文本（`liveText`）。另有约 1 秒一次的 run 视图轮询。可见轨迹只包含编排层状态，不展示模型思维链。
 - 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行（请求立即返回），前端通过事件流跟进状态。
 - token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
 - `npm test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。
@@ -150,7 +150,7 @@
 | 11 回答提问 | 问题显示为 agent 的消息，在输入框里回答 |
 | 15 错误与终态 | 对话里的失败卡片和「已取消」，接口错误显示在顶部 |
 
-- `POST /v1/sessions/{id}/runs` 可能要等到 run 停下才返回。等待期间前端轮询会话的 run 列表，找到新 run 后立即跟随它的事件流；接口改成立即返回后同样适用。
+- `POST /v1/sessions/{id}/runs` 立即返回 `RUNNING` 的 run（M13-2 起的默认行为，前端仍显式带 `?wait=0`）。请求在途时前端轮询会话的 run 列表，找到新 run 后立即跟随它的事件流，所以对等到 run 停下才返回的旧服务端同样适用。
 - `stream.delta`（没有 `id`，payload `{"text": "..."}`）到达时逐段显示在回答位置，run 结束后以 `final_answer` 为准。约束 3 在 serve 发出 delta 之前仍然成立。
 - 带 `parent_id` 的 run 是子 run，不作为对话轮次显示。
 - 没有模型 key 时用 `scripts/demo-provider.py` 演示工具调用、审批、提问、子任务和失败。

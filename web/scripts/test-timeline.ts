@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { api, parseEventStream } from '../src/api';
 import type { HarnessEvent } from '../src/api';
 import { dayGroup } from '../src/format';
-import { buildWork, deltaText, mergeEvents } from '../src/timeline';
+import { buildWork, deltaText, liveText, mergeEvents } from '../src/timeline';
 
 // The event log of a run that waits for approval, runs two tools, delegates a child, and answers.
 const log = parseEventStream([
@@ -84,5 +84,29 @@ assert.equal(request?.headers.get('Last-Event-ID'), '2');
 assert.equal(request?.headers.has('Authorization'), false);
 assert.deepEqual(seen.map((event) => `${event.seq}:${event.type}`), ['3:run.resumed', '0:stream.delta', '0:stream.delta', '4:run.completed']);
 assert.equal(seen.filter((event) => event.seq === 0).map((event) => deltaText(event.data)).join(''), 'hello');
+
+// Live text follows one response: deltas append, a reset or a response that
+// ends in a tool call starts over, and stored events otherwise leave it alone.
+const wire: HarnessEvent[] = [
+  { seq: 1, type: 'run.created', data: '{}' },
+  { seq: 0, type: 'stream.delta', data: '{"text":"Hel"}' },
+  { seq: 0, type: 'stream.delta', data: '{"text":"lo"}' },
+  { seq: 0, type: 'stream.reset', data: 'null' },
+  { seq: 0, type: 'stream.delta', data: '{"text":"Let me look. "}' },
+  { seq: 2, type: 'model.completed', data: '{"action":"TOOLS"}' },
+  { seq: 3, type: 'tool.batch', data: '{}' },
+  { seq: 0, type: 'stream.delta', data: '{"text":"Hi 世界"}' },
+  { seq: 4, type: 'model.completed', data: '{"action":"ANSWER"}' },
+  { seq: 5, type: 'run.completed', data: '{}' },
+];
+const shown: string[] = [];
+wire.reduce((text, event) => {
+  const next = liveText(text, event);
+  shown.push(next);
+  return next;
+}, '');
+assert.deepEqual(shown, ['', 'Hel', 'Hello', '', 'Let me look. ', '', '', 'Hi 世界', 'Hi 世界', 'Hi 世界']);
+// A reconnect resends the response so far as one delta; the caller starts from empty.
+assert.equal(liveText('', { seq: 0, type: 'stream.delta', data: '{"text":"Hello wor"}' }), 'Hello wor');
 
 console.log('work timeline, event merge, session groups, and live event stream: ok');
