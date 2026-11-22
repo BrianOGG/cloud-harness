@@ -446,6 +446,11 @@ const (
 // It must not be recorded as an ordinary failure or retried automatically.
 var ErrUnknownOutcome = errors.New("tool outcome unknown")
 
+// ErrUncertainOutcome means a dispatched call may have run but its result was
+// not confirmed. Drive records the invocation UNKNOWN and stops the batch for
+// reconciliation instead of recording an ordinary failure.
+var ErrUncertainOutcome = errors.New("tool outcome uncertain")
+
 // ExecFunc performs one external tool call. It is not used for protocol errors.
 type ExecFunc func(Invocation) (json.RawMessage, error)
 
@@ -464,6 +469,12 @@ func Drive(b *Batch, gate func(Invocation) GateDecision, exec ExecFunc) error {
 			data, err := exec(*inv)
 			if errors.Is(err, ErrUnknownOutcome) {
 				return err
+			}
+			if errors.Is(err, ErrUncertainOutcome) {
+				if recErr := b.MarkUnknown(inv.ID); recErr != nil {
+					return recErr
+				}
+				continue
 			}
 			if err != nil {
 				cause := asDomain(err)

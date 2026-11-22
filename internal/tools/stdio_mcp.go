@@ -52,23 +52,57 @@ type StdioMCP struct {
 
 	// writeMu serializes frames on stdin. It is separate from mu so a server
 	// that stops reading cannot block state checks such as Alive.
-	writeMu   sync.Mutex
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	seq       atomic.Int64
-	pending   map[int64]chan rpcResponse
-	closed    bool
-	closedErr error
-	// closeOnce guards process teardown separately from closed: a server that
-	// exits on its own marks the connection closed but must still be reaped.
+	writeMu sync.Mutex
+	// lifeMu serializes process startup, handshake, and restart so two calls
+	// cannot race to replace a dead server.
+	lifeMu      sync.Mutex
+	mu          sync.Mutex
+	conn        *mcpConn
+	seq         atomic.Int64
+	pending     map[int64]chan rpcResponse
+	closed      bool
+	closedErr   error
+	shutdown    bool
+	initialized bool
+	// closeOnce makes Close idempotent. It is separate from closed: a server
+	// that exits on its own is reaped and may be restarted by the next call.
 	closeOnce sync.Once
 }
 
 type rpcResponse struct {
-	result json.RawMessage
-	err    error
+	result    json.RawMessage
+	err       error
+	transport bool
+}
+
+// mcpConn is one server process generation. waitOnce guarantees the child is
+// reaped exactly once even when both the read loop and Close reach teardown.
+type mcpConn struct {
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   io.ReadCloser
+	waitOnce sync.Once
+}
+
+func (c *mcpConn) reap() {
+	c.waitOnce.Do(func() {
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		if c.cmd != nil {
+			_ = killGroup(c.cmd)
+			_ = c.cmd.Wait()
+		}
+	})
+}
+
+// uncertainOutcomeError carries a human message while marking the call as
+// uncertain to the broker through domain.ErrUncertainOutcome.
+type uncertainOutcomeError struct{ msg string }
+
+func (e *uncertainOutcomeError) Error() string { return e.msg }
+func (e *uncertainOutcomeError) Is(target error) bool {
+	return target == domain.ErrUncertainOutcome
 }
 
 // NewStdioMCP builds a local stdio MCP adapter with the given parent context and configuration.
@@ -112,8 +146,8 @@ func (s *StdioMCP) ServerLabel() string { return s.name }
 func (s *StdioMCP) ProcessPID() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd != nil && s.cmd.Process != nil {
-		return s.cmd.Process.Pid
+	if s.conn != nil && s.conn.cmd != nil && s.conn.cmd.Process != nil {
+		return s.conn.cmd.Process.Pid
 	}
 	return 0
 }
@@ -129,7 +163,7 @@ func (s *StdioMCP) SetTimeout(d time.Duration) {
 func (s *StdioMCP) Alive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cmd != nil && !s.closed
+	return s.conn != nil && !s.closed && !s.shutdown
 }
 
 // Err returns why the connection ended, or nil while it is usable or after a plain Close.
@@ -147,31 +181,88 @@ func (s *StdioMCP) Close() error {
 		// stuck on a full stdin pipe.
 		s.cancel()
 		s.mu.Lock()
+		s.shutdown = true
 		s.closed = true
-		cmd := s.cmd
-		stdin := s.stdin
+		conn := s.conn
 		s.mu.Unlock()
-
-		if stdin != nil {
-			_ = stdin.Close()
-		}
-		if cmd != nil {
-			_ = killGroup(cmd)
-			_ = cmd.Wait()
+		if conn != nil {
+			conn.reap()
 		}
 	})
 	return nil
 }
 
-func (s *StdioMCP) ensureStarted() error {
+// ensureReady starts the server when needed and repeats the initialize
+// handshake after a restart. It returns the generation that is safe to use;
+// callers must not fall through to a newer generation that is still starting.
+func (s *StdioMCP) ensureReady(ctx context.Context) (*mcpConn, error) {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	conn, err := s.ensureProcessLocked()
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cmd != nil {
-		return nil
+	ready := s.conn == conn && s.initialized && !s.closed && !s.shutdown
+	s.mu.Unlock()
+	if ready {
+		return conn, nil
 	}
-	if s.closed {
-		return domain.E(domain.CodeToolError, "mcp adapter is closed")
+
+	initParams := map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo": map[string]string{
+			"name":    "cloud-harness",
+			"version": "1.0.0",
+		},
 	}
+	if _, _, err := s.callDetailed(ctx, conn, "initialize", initParams); err != nil {
+		return nil, domain.E(domain.CodeToolError, "mcp initialize failed: "+err.Error())
+	}
+	if err := s.notify(ctx, conn, "notifications/initialized", map[string]any{}); err != nil {
+		s.mu.Lock()
+		closed := s.conn != conn || s.closed || s.shutdown
+		s.mu.Unlock()
+		if closed {
+			return nil, domain.E(domain.CodeToolError, "mcp initialized notification failed: "+err.Error())
+		}
+	}
+	s.mu.Lock()
+	if s.conn != conn || s.closed || s.shutdown {
+		s.mu.Unlock()
+		return nil, domain.E(domain.CodeToolError, "mcp server process terminated")
+	}
+	s.initialized = true
+	s.mu.Unlock()
+	return conn, nil
+}
+
+// ensureProcessLocked starts a new process generation when the current one is
+// missing or has exited. The caller must hold lifeMu.
+func (s *StdioMCP) ensureProcessLocked() (*mcpConn, error) {
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return nil, domain.E(domain.CodeToolError, "mcp adapter is closed")
+	}
+	if s.conn != nil && !s.closed {
+		conn := s.conn
+		s.mu.Unlock()
+		return conn, nil
+	}
+	dead := s.conn
+	s.conn = nil
+	s.closed = false
+	s.closedErr = nil
+	s.initialized = false
+	s.pending = make(map[int64]chan rpcResponse)
+	s.mu.Unlock()
+
+	if dead != nil {
+		dead.reap()
+	}
+
 	cmd := exec.CommandContext(s.ctx, s.command, s.args...)
 	cmd.Env = buildSafeEnv()
 	applySysProc(cmd)
@@ -179,63 +270,74 @@ func (s *StdioMCP) ensureStarted() error {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return domain.E(domain.CodeToolError, "failed to create stdin pipe: "+err.Error())
+		return nil, domain.E(domain.CodeToolError, "failed to create stdin pipe: "+err.Error())
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return domain.E(domain.CodeToolError, "failed to create stdout pipe: "+err.Error())
+		return nil, domain.E(domain.CodeToolError, "failed to create stdout pipe: "+err.Error())
 	}
-
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		return domain.E(domain.CodeToolError, "failed to start mcp server process: "+err.Error())
+		return nil, domain.E(domain.CodeToolError, "failed to start mcp server process: "+err.Error())
 	}
 
-	s.cmd = cmd
-	s.stdin = stdin
-	s.stdout = stdout
+	conn := &mcpConn{cmd: cmd, stdin: stdin, stdout: stdout}
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		conn.reap()
+		return nil, domain.E(domain.CodeToolError, "mcp adapter is closed")
+	}
+	s.conn = conn
+	s.mu.Unlock()
 
-	go s.readLoop(stdout)
-	return nil
+	go s.readLoop(conn)
+	return conn, nil
 }
 
-func (s *StdioMCP) readLoop(r io.Reader) {
-	br := bufio.NewReader(r)
+func (s *StdioMCP) readLoop(conn *mcpConn) {
+	br := bufio.NewReader(conn.stdout)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			trimmed := bytes.TrimSpace(line)
 			if len(trimmed) > 0 {
-				s.dispatchResponse(trimmed)
+				s.dispatchResponse(conn, trimmed)
 			}
 		}
 		if err != nil {
-			s.handleDisconnect(err)
-			// Reap the exited server now instead of leaving a zombie until shutdown.
-			_ = s.Close()
+			s.handleDisconnect(conn, err)
 			return
 		}
 	}
 }
 
-func (s *StdioMCP) handleDisconnect(err error) {
+func (s *StdioMCP) handleDisconnect(conn *mcpConn, err error) {
 	s.mu.Lock()
-	if !s.closed {
-		s.closedErr = err
+	current := s.conn == conn
+	if current {
+		if !s.closed {
+			s.closedErr = err
+		}
+		s.closed = true
+		s.conn = nil
 	}
-	s.closed = true
-	pending := s.pending
-	s.pending = make(map[int64]chan rpcResponse)
+	var pending map[int64]chan rpcResponse
+	if current {
+		pending = s.pending
+		s.pending = make(map[int64]chan rpcResponse)
+	}
 	s.mu.Unlock()
 
 	for _, ch := range pending {
-		ch <- rpcResponse{err: domain.E(domain.CodeToolError, "mcp server process terminated: "+err.Error())}
+		ch <- rpcResponse{err: domain.E(domain.CodeToolError, "mcp server process terminated: "+err.Error()), transport: true}
 	}
+	conn.reap()
 }
 
-func (s *StdioMCP) dispatchResponse(data []byte) {
+func (s *StdioMCP) dispatchResponse(conn *mcpConn, data []byte) {
 	var raw struct {
 		ID     *int64          `json:"id"`
 		Result json.RawMessage `json:"result"`
@@ -248,6 +350,10 @@ func (s *StdioMCP) dispatchResponse(data []byte) {
 		return
 	}
 	s.mu.Lock()
+	if s.closed || s.conn != conn {
+		s.mu.Unlock()
+		return
+	}
 	ch, ok := s.pending[*raw.ID]
 	if ok {
 		delete(s.pending, *raw.ID)
@@ -265,20 +371,24 @@ func (s *StdioMCP) dispatchResponse(data []byte) {
 	}
 }
 
-func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+type callMeta struct {
+	sent      bool
+	transport bool
+}
+
+func (s *StdioMCP) callDetailed(ctx context.Context, conn *mcpConn, method string, params any) (json.RawMessage, callMeta, error) {
 	s.mu.Lock()
-	if s.closed {
+	if conn == nil || s.shutdown || s.closed || s.conn != conn {
 		err := s.closedErr
 		s.mu.Unlock()
 		if err == nil {
 			err = io.EOF
 		}
-		return nil, domain.E(domain.CodeToolError, "mcp server process terminated: "+err.Error())
+		return nil, callMeta{}, domain.E(domain.CodeToolError, "mcp server process terminated: "+err.Error())
 	}
 	id := s.seq.Add(1)
 	ch := make(chan rpcResponse, 1)
 	s.pending[id] = ch
-	stdin := s.stdin
 	s.mu.Unlock()
 
 	reqBody := map[string]any{
@@ -292,37 +402,39 @@ func (s *StdioMCP) call(ctx context.Context, method string, params any) (json.Ra
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-		return nil, domain.E(domain.CodeInvalidArgument, "failed to marshal json-rpc request: "+err.Error())
+		return nil, callMeta{}, domain.E(domain.CodeInvalidArgument, "failed to marshal json-rpc request: "+err.Error())
 	}
 
-	if err := s.writeFrame(ctx, stdin, raw); err != nil {
+	sent, writeErr := s.writeFrame(ctx, conn, raw)
+	if writeErr != nil {
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-		return nil, domain.E(domain.CodeToolError, "failed to write to mcp server stdin: "+err.Error())
+		return nil, callMeta{sent: sent, transport: true}, domain.E(domain.CodeToolError, "failed to write to mcp server stdin: "+writeErr.Error())
 	}
 
 	select {
 	case resp, ok := <-ch:
 		if !ok {
-			return nil, domain.E(domain.CodeToolError, "mcp server closed connection")
+			return nil, callMeta{sent: true, transport: true}, domain.E(domain.CodeToolError, "mcp server closed connection")
 		}
-		return resp.result, resp.err
+		return resp.result, callMeta{sent: true, transport: resp.transport}, resp.err
 	case <-ctx.Done():
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, domain.E(domain.CodeToolError, "mcp "+method+" request timed out")
+			return nil, callMeta{sent: true, transport: true}, domain.E(domain.CodeToolError, "mcp "+method+" request timed out")
 		}
-		return nil, domain.E(domain.CodeToolError, "mcp "+method+" request cancelled")
+		return nil, callMeta{sent: true, transport: true}, domain.E(domain.CodeToolError, "mcp "+method+" request cancelled")
 	}
 }
 
 // writeFrame sends one newline-terminated frame and gives up when ctx ends. A
 // write that started but cannot finish means the server stopped reading stdin;
 // the frame may be half written, so the server is stopped instead of reused.
-func (s *StdioMCP) writeFrame(ctx context.Context, stdin io.Writer, raw []byte) error {
+// The boolean reports whether the complete frame was written.
+func (s *StdioMCP) writeFrame(ctx context.Context, conn *mcpConn, raw []byte) (bool, error) {
 	const (
 		frameQueued int32 = iota
 		frameWriting
@@ -337,42 +449,41 @@ func (s *StdioMCP) writeFrame(ctx context.Context, stdin io.Writer, raw []byte) 
 			return
 		}
 		s.mu.Lock()
-		closed := s.closed
+		closed := s.closed || s.shutdown || s.conn != conn
 		s.mu.Unlock()
 		if closed {
 			done <- errors.New("mcp server process terminated")
 			return
 		}
-		_, err := stdin.Write(append(raw, '\n'))
+		_, err := conn.stdin.Write(append(raw, '\n'))
 		done <- err
 	}()
 	select {
 	case err := <-done:
-		return err
+		return err == nil, err
 	case <-ctx.Done():
 	}
 	if state.CompareAndSwap(frameQueued, frameAbandoned) {
 		// Still waiting behind another frame: nothing was sent.
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	select {
 	case err := <-done:
-		return err
+		return err == nil, err
 	default:
 	}
-	s.handleDisconnect(errors.New("server stopped reading stdin"))
-	_ = s.Close()
-	return ctx.Err()
+	s.handleDisconnect(conn, errors.New("server stopped reading stdin"))
+	err := <-done
+	return err == nil, ctx.Err()
 }
 
-func (s *StdioMCP) notify(ctx context.Context, method string, params any) error {
+func (s *StdioMCP) notify(ctx context.Context, conn *mcpConn, method string, params any) error {
 	s.mu.Lock()
-	stdin := s.stdin
-	closed := s.closed
-	s.mu.Unlock()
-	if closed || stdin == nil {
+	if conn == nil || s.shutdown || s.closed || s.conn != conn {
+		s.mu.Unlock()
 		return domain.E(domain.CodeToolError, "mcp server process terminated")
 	}
+	s.mu.Unlock()
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -382,28 +493,18 @@ func (s *StdioMCP) notify(ctx context.Context, method string, params any) error 
 	if err != nil {
 		return err
 	}
-	return s.writeFrame(ctx, stdin, raw)
+	_, err = s.writeFrame(ctx, conn, raw)
+	return err
 }
 
 // Discover performs initialize handshake and tools/list discovery. It returns Spec items
 // mapped with the naming format mcp.<server>.<tool>. Discover only returns Specs and does
 // not execute tools.
 func (s *StdioMCP) Discover(ctx context.Context) ([]Spec, error) {
-	if err := s.ensureStarted(); err != nil {
+	conn, err := s.ensureReady(ctx)
+	if err != nil {
 		return nil, err
 	}
-	initParams := map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo": map[string]string{
-			"name":    "cloud-harness",
-			"version": "1.0.0",
-		},
-	}
-	if _, err := s.call(ctx, "initialize", initParams); err != nil {
-		return nil, domain.E(domain.CodeToolError, "mcp initialize failed: "+err.Error())
-	}
-	_ = s.notify(ctx, "notifications/initialized", map[string]any{})
 
 	type listedTool struct {
 		Name        string          `json:"name"`
@@ -421,7 +522,7 @@ func (s *StdioMCP) Discover(ctx context.Context) ([]Spec, error) {
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		listResp, err := s.call(ctx, "tools/list", params)
+		listResp, _, err := s.callDetailed(ctx, conn, "tools/list", params)
 		if err != nil {
 			return nil, domain.E(domain.CodeToolError, "mcp tools/list failed: "+err.Error())
 		}
@@ -508,21 +609,27 @@ func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.R
 		arguments = json.RawMessage(trimmed)
 	}
 
+	conn, err := s.ensureReady(cctx)
+	if err != nil {
+		return nil, asDomain(err)
+	}
+
 	callParams := map[string]any{
 		"name":      origName,
 		"arguments": arguments,
 	}
 
-	respRaw, err := s.call(cctx, "tools/call", callParams)
+	respRaw, meta, err := s.callDetailed(cctx, conn, "tools/call", callParams)
 	if err != nil {
-		if errors.Is(cctx.Err(), context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
-			msg := fmt.Sprintf("mcp tool call timed out after %s", timeout)
-			if !s.readonly {
-				// The request may already have been carried out; say so
-				// rather than reporting a plain failure.
-				msg += "; the outcome is unknown: the server may still have performed it, so check before retrying"
+		if meta.sent && meta.transport && !s.readonly {
+			msg := "mcp tool call did not return a confirmed result; the outcome is unknown: the server may still have performed it, so check before retrying"
+			if errors.Is(cctx.Err(), context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
+				msg = fmt.Sprintf("mcp tool call timed out after %s; the outcome is unknown: the server may still have performed it, so check before retrying", timeout)
 			}
-			return nil, domain.E(domain.CodeToolError, msg)
+			return nil, &uncertainOutcomeError{msg: msg}
+		}
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
+			return nil, domain.E(domain.CodeToolError, fmt.Sprintf("mcp tool call timed out after %s", timeout))
 		}
 		return nil, asDomain(err)
 	}

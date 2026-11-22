@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -228,8 +229,11 @@ func TestStdioMCPTimeoutOfWriteToolSaysOutcomeIsUnknown(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "timed out after 200ms") {
 			t.Fatalf("readonly=%v: err = %v", readonly, err)
 		}
-		if got := strings.Contains(err.Error(), "outcome is unknown"); got == readonly {
+		if got := strings.Contains(err.Error(), "outcome is unknown"); got != !readonly {
 			t.Fatalf("readonly=%v: unknown-outcome note present=%v in %q", readonly, got, err.Error())
+		}
+		if uncertain := errors.Is(err, domain.ErrUncertainOutcome); uncertain == readonly {
+			t.Fatalf("readonly=%v: uncertain outcome=%v in %q", readonly, uncertain, err.Error())
 		}
 	}
 }
@@ -680,19 +684,22 @@ func TestStdioMCPCrashHandling(t *testing.T) {
 	if pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	time.Sleep(50 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for adapter.Alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if adapter.Alive() {
+		t.Fatal("server still marked alive after SIGKILL")
+	}
 
-	done := make(chan error, 1)
-	go func() {
-		_, callErr := specs[0].Execute(ctx, json.RawMessage(`{"msg":"ping"}`))
-		done <- callErr
-	}()
-	select {
-	case callErr := <-done:
-		if callErr == nil {
-			t.Fatal("expected error after process killed")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("call hung after process crashed")
+	out, callErr := specs[0].Execute(ctx, json.RawMessage(`{"msg":"ping"}`))
+	if callErr != nil {
+		t.Fatalf("call after crash: %v", callErr)
+	}
+	if !strings.Contains(string(out), "ping") {
+		t.Fatalf("unexpected result after restart: %s", out)
+	}
+	if !adapter.Alive() || adapter.ProcessPID() == 0 {
+		t.Fatal("server was not restarted after crash")
 	}
 }
