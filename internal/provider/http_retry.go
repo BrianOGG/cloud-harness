@@ -131,15 +131,18 @@ func postOnce(ctx context.Context, cfg postJSONConfig, consume func(res *http.Re
 		return domain.E(domain.CodeProviderHTTP, scrubProviderKey(err.Error(), cfg.APIKey))
 	}
 	defer func() { _ = res.Body.Close() }()
+	// A streamed attempt has no total timeout, so every read of its body,
+	// the body of a rejected request included, is bounded by the idle timeout.
+	var body io.Reader = res.Body
+	if cfg.stream {
+		body = &idleTimeoutReader{r: res.Body, timeout: streamTimeout(cfg.IdleTimeout, DefaultIdleTimeout), cancel: cancel}
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-		message := truncateProviderMessage(scrubProviderKey(string(body), cfg.APIKey), 400)
+		raw, _ := io.ReadAll(io.LimitReader(body, 4<<20))
+		message := truncateProviderMessage(scrubProviderKey(string(raw), cfg.APIKey), 400)
 		return NewHTTPStatusError(res.StatusCode, "HTTP "+strconv.Itoa(res.StatusCode)+": "+message)
 	}
-	if !cfg.stream {
-		return consume(res, res.Body)
-	}
-	return consume(res, &idleTimeoutReader{r: res.Body, timeout: streamTimeout(cfg.IdleTimeout, DefaultIdleTimeout), cancel: cancel})
+	return consume(res, body)
 }
 
 func streamTimeout(configured, fallback time.Duration) time.Duration {

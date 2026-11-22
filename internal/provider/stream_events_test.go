@@ -442,6 +442,42 @@ func TestProviderStreamHeaderTimeout(t *testing.T) {
 	}
 }
 
+// A rejected stream request whose error body stalls is cut by the idle
+// timeout and retried like any other rejected request.
+func TestProviderStreamRejectedBodyStall(t *testing.T) {
+	for _, tc := range streamProviderCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, ok, _ := streamRetryFixtures(tc.name)
+			var calls atomic.Int32
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) > 1 {
+					writeStreamFixture(t, w, ok, nil)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, `{"error":{"message":"slow`)
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			start := time.Now()
+			resp, err := tc.new(srv.URL, srv.Client()).Complete(context.Background(), streamTestRequest(func(string) {}))
+			if err != nil || resp.Text() != "pong" || calls.Load() != 2 {
+				t.Fatalf("calls=%d resp=%+v err=%v", calls.Load(), resp, err)
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("stalled error body took %s", time.Since(start))
+			}
+		})
+	}
+}
+
 func TestProviderStreamErrorScrubsAPIKey(t *testing.T) {
 	bodies := map[string]string{
 		"anthropic": `event: error` + "\n" + `data: {"type":"error","error":{"type":"invalid_request_error","message":"bad key ` + streamTestKey + `"}}` + "\n\n",
