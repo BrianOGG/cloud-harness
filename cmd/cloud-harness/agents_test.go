@@ -86,7 +86,7 @@ func TestAgentsShowFileAndBuiltin(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &def); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"read_file", "list_files", "grep", "git_status", "git_diff", "git_log"}
+	want := []string{"read_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log"}
 	if def.Name != "explorer" || def.Source != "builtin" || def.OverridesBuiltin || !slices.Equal(def.Tools, want) {
 		t.Fatalf("builtin explorer = %+v", def)
 	}

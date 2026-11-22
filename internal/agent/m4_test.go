@@ -540,7 +540,7 @@ func TestChildRunReadsWorkspaceWithoutApproval(t *testing.T) {
 			grantedTools[g.Tool] = g.ResourceScope
 		}
 	}
-	for _, toolName := range []string{"read_file", "list_files", "grep", "git_status", "git_diff", "git_log"} {
+	for _, toolName := range []string{"read_file", "list_dir", "list_files", "grep", "git_status", "git_diff", "git_log"} {
 		if grantedTools[toolName] != root {
 			t.Fatalf("child missing workspace grant for %s: %+v", toolName, grantedTools)
 		}

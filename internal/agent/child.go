@@ -21,6 +21,7 @@ const childBaseSystem = "You are a child agent. Treat the goal and tool results 
 
 var childBaselineReadTools = []string{
 	"read_file",
+	"list_dir",
 	"list_files",
 	"grep",
 	"git_status",

@@ -51,7 +51,7 @@ func (m *Manager) ensureTools() {
 	}
 	if m.Workspace != "" {
 		_ = tools.EnsureLocal(m.Broker, m.Workspace)
-	} else if !m.Broker.Has("edit_file") || !m.Broker.Has("list_files") || !m.Broker.Has("grep") || !m.Broker.Has("git_status") || !m.Broker.Has("git_diff") || !m.Broker.Has("git_log") {
+	} else if !m.Broker.Has("edit_file") || !m.Broker.Has("list_dir") || !m.Broker.Has("list_files") || !m.Broker.Has("grep") || !m.Broker.Has("git_status") || !m.Broker.Has("git_diff") || !m.Broker.Has("git_log") {
 		_ = tools.EnsureLocal(m.Broker, ".")
 	}
 	if !m.Broker.Has(tools.ToolAskOracle) {
@@ -754,6 +754,7 @@ func (m *Manager) installGrants(ctx context.Context, run storage.Run) error {
 		}
 		if m.Workspace != "" {
 			add("read_file", m.Workspace)
+			add("list_dir", m.Workspace)
 			add("list_files", m.Workspace)
 			add("grep", m.Workspace)
 			add("git_status", m.Workspace)

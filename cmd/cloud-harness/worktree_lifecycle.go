@@ -346,7 +346,7 @@ func worktreeResolverForProvider(prov provider.Provider, db *sqlite.DB) func(con
 		budget.MaxChildRuns = 0
 		budget.MaxScriptCalls = 0
 		mgr := &agent.Manager{Store: db, Provider: prov, Broker: broker, Workspace: info.Path, DisableSnapshots: true, SkipPlanner: true, Depth: 1,
-			UseBudget: true, InitialBudget: budget, AllowedTools: []string{"read_file", "write_file", "edit_file", "list_files", "grep", "git_status", "git_diff"},
+			UseBudget: true, InitialBudget: budget, AllowedTools: []string{"read_file", "write_file", "edit_file", "list_dir", "list_files", "grep", "git_status", "git_diff"},
 			Grants: []domain.Grant{{Tool: "write_file", ResourceScope: info.Path}, {Tool: "edit_file", ResourceScope: info.Path}},
 			System: "Resolve merge conflicts in this workspace preserving both sides' intended behavior. Edit files only. Do not invoke Git, pick ours/theirs wholesale, rebase, or change test expectations to hide failures. The coordinator will stage, commit and run the test gate. Finish when files are resolved."}
 		session, err := mgr.CreateSession(ctx)
