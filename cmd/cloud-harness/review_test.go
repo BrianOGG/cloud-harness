@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,33 +176,55 @@ func TestReviewCleanAndErrors(t *testing.T) {
 
 func TestReviewSkipsGitHelpers(t *testing.T) {
 	root := newReviewRepo(t)
+	// Other programs on the machine (editor integrations, repository watchers)
+	// can run Git in the fixture and start its helpers too. A helper records a
+	// run only in a directory named by a variable that review's Git inherits.
+	markers := t.TempDir()
+	mark := func(name string) string {
+		return `echo ran > "${REVIEW_TEST_MARKERS:?}/` + name + `"`
+	}
 	writeReviewFile(t, root, ".gitattributes", "*.txt filter=review diff=review\n")
 	writeReviewFile(t, root, "tracked.txt", "initial\n")
 	reviewTestGit(t, root, "add", "--", ".")
 	reviewTestGit(t, root, "commit", "-qm", "baseline")
-	reviewTestGit(t, root, "config", "filter.review.clean", "tee ran-clean")
-	reviewTestGit(t, root, "config", "filter.review.process", "echo ran > ran-process")
+	reviewTestGit(t, root, "config", "filter.review.clean", `tee "${REVIEW_TEST_MARKERS:?}/ran-clean"`)
+	reviewTestGit(t, root, "config", "filter.review.process", mark("ran-process"))
 	reviewTestGit(t, root, "config", "filter.review.required", "true")
-	reviewTestGit(t, root, "config", "diff.review.textconv", "echo ran > ran-textconv")
-	reviewTestGit(t, root, "config", "diff.external", "echo ran > ran-ext-diff")
+	reviewTestGit(t, root, "config", "diff.review.textconv", mark("ran-textconv"))
+	reviewTestGit(t, root, "config", "diff.external", mark("ran-ext-diff"))
 	reviewTestGit(t, root, "config", "core.autocrlf", "true")
-	writeReviewFile(t, root, "fsmonitor.sh", "#!/bin/sh\necho ran > ran-fsmonitor\n")
+	writeReviewFile(t, root, "fsmonitor.sh", "#!/bin/sh\n"+mark("ran-fsmonitor")+"\n")
 	if err := os.Chmod(filepath.Join(root, "fsmonitor.sh"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	reviewTestGit(t, root, "config", "core.fsmonitor", "./fsmonitor.sh")
 	writeReviewFile(t, root, "tracked.txt", "worktree edit\n")
 	writeReviewFile(t, root, "untracked.txt", "untracked edit\n")
-	t.Setenv("GIT_TRACE", filepath.Join(root, "git-trace"))
+	t.Setenv("REVIEW_TEST_MARKERS", markers)
+	t.Setenv("GIT_TRACE", filepath.Join(markers, "git-trace"))
 
 	code, out, stderr := invokeReview(root, "--diff")
 	if code != 0 || stderr != "" {
 		t.Fatalf("review exit=%d stderr=%q", code, stderr)
 	}
 	assertReviewContains(t, out, "+worktree edit", "+untracked edit")
-	for _, path := range []string{"ran-clean", "ran-process", "ran-textconv", "ran-ext-diff", "ran-fsmonitor", "git-trace"} {
-		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("review caused %q to be written: %v", path, err)
+	if entries, err := os.ReadDir(markers); err != nil || len(entries) != 0 {
+		t.Errorf("review ran Git helpers: %v (err=%v)", entries, err)
+	}
+
+	// Without review's overrides the same Git does start them, so the empty
+	// directory above is review's doing.
+	git, err := openReviewGit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git.options = nil
+	for _, args := range [][]string{{"status"}, {"diff"}} {
+		_ = git.command(args...).Run() // diff fails on the broken required filter
+	}
+	for _, name := range []string{"ran-fsmonitor", "ran-process"} {
+		if _, err := os.Stat(filepath.Join(markers, name)); err != nil {
+			t.Errorf("Git without review's overrides did not write %q: %v", name, err)
 		}
 	}
 }
