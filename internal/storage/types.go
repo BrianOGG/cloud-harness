@@ -36,6 +36,38 @@ type Turn struct {
 	CreatedAt time.Time
 }
 
+// Message is one user-visible conversation record reconstructed from the
+// durable session, run, model-response, batch, approval, and event rows.
+// ID is stable across process restarts; CreatedAt and the store's cursor
+// define the deterministic order returned by ListMessages.
+type Message struct {
+	ID        string
+	SessionID string
+	RunID     string
+	TurnID    string
+	Role      string
+	Source    string
+	Kind      string
+	Status    string
+	Content   string
+	Event     string
+	CreatedAt time.Time
+}
+
+// MessageCursor is the exclusive keyset boundary for one session. A message
+// is after the cursor when (created_at, id) compares greater than this pair.
+// The transport owns its opaque wire encoding; storage only sees this type.
+type MessageCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// MessagePage is one keyset-paginated slice of a session transcript.
+type MessagePage struct {
+	Messages   []Message
+	NextCursor *MessageCursor
+}
+
 // Run is the persisted execution record.
 type Run struct {
 	ID              string
@@ -194,6 +226,7 @@ type Store interface {
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListSessions(ctx context.Context) ([]SessionSummary, error)
 	CreateTurn(ctx context.Context, t Turn) error
+	ListMessages(ctx context.Context, sessionID string, after *MessageCursor, limit int) (MessagePage, error)
 	CreateRun(ctx context.Context, r Run) error
 	GetRun(ctx context.Context, id string) (Run, error)
 	ListRuns(ctx context.Context, sessionID string) ([]Run, error)

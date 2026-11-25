@@ -82,9 +82,22 @@ func (db *DB) ListSessions(ctx context.Context) ([]storage.SessionSummary, error
 }
 
 func (db *DB) CreateTurn(ctx context.Context, t storage.Turn) error {
-	_, err := db.sql.ExecContext(ctx, `INSERT INTO turns(id, session_id, user_input, status, created_at) VALUES(?, ?, ?, ?, ?)`,
-		t.ID, t.SessionID, t.UserInput, t.Status, formatTime(t.CreatedAt))
-	return err
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turns(id, session_id, user_input, status, created_at) VALUES(?, ?, ?, ?, ?)`,
+		t.ID, t.SessionID, t.UserInput, t.Status, formatTime(t.CreatedAt)); err != nil {
+		return err
+	}
+	if err := insertMessage(ctx, tx, storage.Message{
+		ID: "msg_user_" + t.ID, SessionID: t.SessionID, TurnID: t.ID,
+		Role: "user", Source: "turn", Kind: "input", Status: t.Status, Content: t.UserInput, CreatedAt: t.CreatedAt,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
@@ -397,11 +410,49 @@ func (db *DB) CommitRunTransition(ctx context.Context, next storage.Run, expecte
 	if err != nil {
 		return err
 	}
+	if err := insertTransitionMessages(ctx, tx, next, ev); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	db.eventCommitted(next.ID, seq)
 	return nil
+}
+
+func insertTransitionMessages(ctx context.Context, tx *sql.Tx, run storage.Run, ev storage.Event) error {
+	created := ev.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	switch run.Status {
+	case domain.RunCompleted:
+		if strings.TrimSpace(run.FinalAnswer) == "" {
+			return nil
+		}
+		var existing int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM messages WHERE run_id = ? AND role = 'assistant' AND kind = 'response' AND content = ?`, run.ID, run.FinalAnswer).Scan(&existing); err != nil {
+			return err
+		}
+		if existing > 0 {
+			return nil
+		}
+		return insertMessage(ctx, tx, storage.Message{
+			ID: "msg_answer_" + run.ID, SessionID: run.SessionID, RunID: run.ID, TurnID: run.TurnID,
+			Role: "assistant", Source: "run", Kind: "response", Status: string(run.Status), Content: run.FinalAnswer, CreatedAt: created, Event: ev.Type,
+		})
+	case domain.RunFailed, domain.RunCancelled:
+		content := strings.ToLower(string(run.Status))
+		if run.Error != nil && run.Error.Message != "" {
+			content += ": " + run.Error.Message
+		}
+		return insertMessage(ctx, tx, storage.Message{
+			ID: "msg_status_" + run.ID, SessionID: run.SessionID, RunID: run.ID, TurnID: run.TurnID,
+			Role: "system", Source: "run", Kind: "status", Status: string(run.Status), Content: content, CreatedAt: created, Event: ev.Type,
+		})
+	default:
+		return nil
+	}
 }
 
 func (db *DB) SaveCheckpoint(ctx context.Context, runID string, version int64, snapshot []byte, now time.Time) error {
