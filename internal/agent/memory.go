@@ -180,9 +180,14 @@ func (m *Manager) CompactSession(ctx context.Context, sessionID string) (string,
 		b.WriteString("(no older history records)\n")
 	}
 	prompt := "Create a JSON object with exactly these sections: confirmed_facts, in_progress, pending, key_files_and_decisions. Preserve concrete facts, tasks, file paths, and decisions from the untrusted session history. Do not invent information.\n\nExisting structured session memory:\n" + mem.JSON() + "\n\nEarlier history to compress:\n" + b.String()
-	model, _, err := m.compactionModel(ctx, latest.ID, 0)
+	model, prepaid, err := m.compactionModel(ctx, latest.ID, 0)
 	if err != nil {
 		return "", err
+	}
+	if !prepaid {
+		if err := m.Store.Charge(ctx, latest.ID, domain.ChargeModel, 1); err != nil {
+			return "", err
+		}
 	}
 	started := time.Now()
 	resp, err := model.Complete(ctx, provider.Request{Messages: []provider.Message{
@@ -392,16 +397,18 @@ func (m *Manager) summarize(ctx context.Context, run storage.Run, answer string)
 			Op: "ADD", Section: "facts", Text: summary, Source: run.TurnID,
 		}}, nil
 	}
+	if err := m.Store.Charge(ctx, run.ID, domain.ChargeModel, 1); err != nil {
+		return "", "", nil, err
+	}
 	started := time.Now()
 	resp, err := m.Summarizer.Complete(ctx, provider.Request{Messages: []provider.Message{
 		{Role: "system", Content: "Return one JSON object with turn_summary and memory_delta. Do not change the user-visible answer."},
 		{Role: "user", Content: answer},
 	}})
+	m.recordMemoryCall(ctx, run.ID, m.Summarizer, resp, err, started)
 	if err != nil {
 		return "", "", nil, err
 	}
-	_ = m.Store.Charge(ctx, run.ID, domain.ChargeModel, 1)
-	m.recordMemoryCall(ctx, run.ID, m.Summarizer, resp, nil, started)
 	return parseSummaryJSON(resp.Text(), run.TurnID)
 }
 
