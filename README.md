@@ -207,7 +207,6 @@ internal/history           Chinese bigrams, paths, identifiers
 internal/tools             broker, poll, stdio MCP servers
 internal/security          scoped grants
 internal/program           Starlark worker and isolation gate
-internal/subagent          delegate contract; the live runner is the agent
 internal/storage           store interface
 internal/storage/sqlite    migrations, WAL, FTS5
 internal/trace             persistent events, SSE, trace view
