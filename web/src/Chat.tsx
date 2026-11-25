@@ -133,7 +133,7 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
         <div className="wait-head"><Icon name="alert" /><strong>有一次工具调用的结果未知</strong></div>
         <p className="wait-text">serve 不会自动重放这次调用。请确认它实际的结果。</p>
         <div className="wait-actions">
-          <button type="button" className="button" disabled={acting} onClick={() => actions.respond(run.id, { decision: 'reconcile_failure' })}>标记失败</button>
+          <button type="button" className="button" disabled={acting} onClick={() => actions.respond(run.id, { decision: 'reconcile_fail' })}>标记失败</button>
           <button type="button" className="button primary" disabled={acting} onClick={() => actions.respond(run.id, { decision: 'reconcile_success' })}>标记成功</button>
         </div>
       </div>
