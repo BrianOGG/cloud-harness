@@ -136,7 +136,7 @@ func TestMessagesPersistAndPaginateAcrossReopen(t *testing.T) {
 	if page, err := db.ListMessages(ctx, "ses_other", nil, 50); err != nil || len(page.Messages) != 0 {
 		t.Fatalf("session isolation page=%+v err=%v", page, err)
 	}
-	if _, err := db.ListMessages(ctx, "ses_history", &storage.MessageCursor{ID: "not-a-cursor"}, 2); err == nil || !domain.IsCode(err, domain.CodeInvalidArgument) {
+	if _, err := db.ListMessages(ctx, "ses_history", &storage.MessageCursor{CreatedAt: now}, 2); err == nil || !domain.IsCode(err, domain.CodeInvalidArgument) {
 		t.Fatalf("invalid cursor err=%v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -230,7 +230,7 @@ func TestMessageProjectionUsesOrdinalAndSourceIdentity(t *testing.T) {
 			}
 		}
 	}
-	if responseCount != 2 || fallbackCount != 1 || statusCount != 1 {
+	if responseCount != 1 || fallbackCount != 0 || statusCount != 1 {
 		t.Fatalf("source projection counts responses=%d fallback=%d status=%d messages=%+v", responseCount, fallbackCount, statusCount, page.Messages)
 	}
 
@@ -363,7 +363,7 @@ func TestMessagePaginationHasStableLongBoundaries(t *testing.T) {
 	}
 }
 
-func TestMigration009BackfillsTranscriptStatusesAndOrder(t *testing.T) {
+func TestMigrations009And010BackfillTranscriptStatusesAndOrder(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 25, 8, 0, 0, 0, time.UTC)
 	db := openTest(t)
@@ -441,7 +441,10 @@ func TestMigration009BackfillsTranscriptStatusesAndOrder(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, "DROP TABLE messages"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.sql.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 9"); err != nil {
+	if _, err := db.sql.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version >= 9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx, "ALTER TABLE runs DROP COLUMN final_answer_response_id"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Migrate(ctx); err != nil {
@@ -455,10 +458,10 @@ func TestMigration009BackfillsTranscriptStatusesAndOrder(t *testing.T) {
 	for _, message := range page.Messages {
 		byID[message.ID] = message
 	}
-	if len(byID) != 10 {
+	if len(byID) != 9 {
 		t.Fatalf("backfilled messages=%+v", page.Messages)
 	}
-	if message, ok := byID["msg_answer_"+fallbackRun.ID]; !ok || message.Content != "same final text" || message.Status != "recorded" {
+	if message, ok := byID["msg_answer_"+fallbackRun.ID]; ok {
 		t.Fatalf("linked fallback message=%+v exists=%v", message, ok)
 	}
 	checks := []struct {

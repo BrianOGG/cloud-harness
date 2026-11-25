@@ -161,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/runs", s.listSessionRuns)
+	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.listSessionMessages)
 	mux.HandleFunc("POST /v1/sessions/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /v1/approvals", s.approvals)
 	if s.Stats != nil {

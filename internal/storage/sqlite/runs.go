@@ -440,21 +440,14 @@ func insertTransitionMessages(ctx context.Context, tx *sql.Tx, run storage.Run, 
 	switch run.Status {
 	case domain.RunCompleted:
 		if strings.TrimSpace(run.FinalAnswer) != "" {
-			var linked int
-			var latestResponseID string
-			err := tx.QueryRowContext(ctx, "SELECT response.id FROM model_responses response JOIN steps step ON step.id = response.step_id WHERE response.run_id = ? AND response.complete = 1 ORDER BY step.step_index DESC LIMIT 1", run.ID).Scan(&latestResponseID)
-			if err != nil && err != sql.ErrNoRows {
+			var answerResponseID string
+			if err := tx.QueryRowContext(ctx, `SELECT final_answer_response_id FROM runs WHERE id = ?`, run.ID).Scan(&answerResponseID); err != nil {
 				return err
 			}
-			if latestResponseID != "" {
-				if err := tx.QueryRowContext(ctx, "SELECT COUNT(1) FROM messages WHERE id = ? AND source = 'model_response'", "msg_response_"+latestResponseID).Scan(&linked); err != nil {
-					return err
-				}
-			}
-			if linked == 0 {
+			if answerResponseID == "" {
 				if err := insertMessage(ctx, tx, storage.Message{
 					ID: "msg_answer_" + run.ID, SessionID: run.SessionID, RunID: run.ID, TurnID: run.TurnID,
-					Role: "assistant", Source: "run", Kind: "response", Status: "recorded", Content: run.FinalAnswer, CreatedAt: created, Event: ev.Type,
+					Role: "assistant", Source: "run", Kind: "response", Status: "recorded", Content: run.FinalAnswer, CreatedAt: created,
 				}); err != nil {
 					return err
 				}
