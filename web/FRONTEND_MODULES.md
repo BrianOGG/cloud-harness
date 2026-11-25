@@ -103,7 +103,7 @@
 ### 13. 对账模块
 - 触发：`WAITING` + `RECONCILIATION`（某次工具调用结果未知，后端不会自动重放）。
 - 职责：展示结果未知的调用 + 「标记成功 / 标记失败」按钮。
-- 数据：`POST /v1/runs/{id}/responses {decision: "reconcile_success"|"reconcile_failure"}`。
+- 数据：`POST /v1/runs/{id}/responses {decision: "reconcile_success"|"reconcile_fail"}`。
 
 ### 14. 取消与恢复感知
 - 职责：取消按钮（模块 5）；页面刷新后能恢复现场——靠自记的 session/run id 回查 run 视图与事件，等待中的 run 要重新弹出对应的协同操作条（模块 10–13）。
