@@ -48,7 +48,7 @@ func (d serveDiagnostics) stats(w http.ResponseWriter, r *http.Request) {
 		writeHTTPJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取模型用量失败：" + scrubDoctor(err.Error())})
 		return
 	}
-	usageReport := aggregateStats(usage, "day", 30, since, d.cfg)
+	usageReport := aggregateStats(usage, "day", 30, since)
 	summary.Usage = usageReport.Totals
 	// The CLI uses a display placeholder; the HTTP contract uses a number or null.
 	if cost, ok := summary.Usage.Cost.(float64); !ok || math.IsNaN(cost) || math.IsInf(cost, 0) {
