@@ -69,7 +69,7 @@ func TestStatsAndDoctorReportOracleCosts(t *testing.T) {
 	out.Reset()
 	stderr.Reset()
 	code = Main([]string{"stats", "--db", dbPath, "--by", "run"}, &out, &stderr)
-	if code != 0 || !strings.Contains(out.String(), "ORACLE CONSULTATIONS\t2") || !strings.Contains(out.String(), "ORACLE ESTIMATED COST (USD)\t0.0001") {
+	if code != 0 || !strings.Contains(out.String(), "ORACLE CONSULTATIONS\t2") || !strings.Contains(out.String(), "ORACLE ESTIMATED COST (USD)\t—") {
 		t.Fatalf("text stats code=%d out=%q stderr=%q", code, out.String(), stderr.String())
 	}
 
@@ -93,7 +93,7 @@ func TestStatsAndDoctorReportOracleCosts(t *testing.T) {
 	out.Reset()
 	stderr.Reset()
 	code = Main([]string{"doctor", "--db", dbPath, "--workspace", t.TempDir(), "--provider", "mock"}, &out, &stderr)
-	if code != 0 || !strings.Contains(out.String(), "oracle: ok - consultations=2 estimated_cost_usd=0.0001 budget_failures=1") {
+	if code != 0 || !strings.Contains(out.String(), "oracle: ok - consultations=2 estimated_cost_usd=— budget_failures=1") {
 		t.Fatalf("text doctor code=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
 	}
 }
@@ -174,9 +174,9 @@ func TestStatsIncludesAllRunModelUsageByModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	responses := []storage.StoredResponse{
-		{ID: "recent-priced", RunID: "run_all_usage", Provider: "openai", Complete: true, Usage: domain.Usage{InputTokens: 100, OutputTokens: 10, CachedInputTokens: 20}, CreatedAt: now},
-		{ID: "old-priced", RunID: "run_all_usage", Provider: "openai", Complete: true, Usage: domain.Usage{InputTokens: 200, OutputTokens: 10, CachedInputTokens: 50}, CreatedAt: now.AddDate(0, 0, -90)},
-		{ID: "recent-unpriced", RunID: "run_all_usage", Provider: "mock", Complete: true, Usage: domain.Usage{InputTokens: 50, OutputTokens: 10}, CreatedAt: now},
+		{ID: "recent-priced", RunID: "run_all_usage", Provider: "openai", Complete: true, Usage: domain.Usage{InputTokens: 100, OutputTokens: 10, CachedInputTokens: 20, Model: "gpt-main", CostUSD: 0.00011, CostKnown: true}, CreatedAt: now},
+		{ID: "old-priced", RunID: "run_all_usage", Provider: "openai", Complete: true, Usage: domain.Usage{InputTokens: 200, OutputTokens: 10, CachedInputTokens: 50, Model: "gpt-main", CostUSD: 0.000195, CostKnown: true}, CreatedAt: now.AddDate(0, 0, -90)},
+		{ID: "recent-unpriced", RunID: "run_all_usage", Provider: "mock", Complete: true, Usage: domain.Usage{InputTokens: 50, OutputTokens: 10, Model: "mock"}, CreatedAt: now},
 	}
 	for _, response := range responses {
 		if err := db.SaveModelResponse(ctx, response); err != nil {
@@ -214,7 +214,7 @@ func TestStatsIncludesAllRunModelUsageByModel(t *testing.T) {
 	out.Reset()
 	stderr.Reset()
 	if code := Main([]string{"stats", "--db", dbPath, "--days", "1", "--by", "run"}, &out, &stderr); code != 0 ||
-		!strings.Contains(out.String(), "MODEL USAGE BY MODEL (ALL RUNS)") || !strings.Contains(out.String(), "gpt-main\t2\t0.0003") || !strings.Contains(out.String(), "mock\t1\t0.0000") {
+		!strings.Contains(out.String(), "MODEL USAGE BY MODEL (ALL RUNS)") || !strings.Contains(out.String(), "gpt-main\t2\t0.0003") || !strings.Contains(out.String(), "mock\t1\t—") {
 		t.Fatalf("text stats code=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
 	}
 }

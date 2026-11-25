@@ -21,8 +21,8 @@ type ReadOnlyInfo struct {
 }
 
 // UsageRecord is one already-persisted model response and its provider usage.
-// The schema intentionally has no model column, so Provider is the only model
-// attribution available to read-only consumers.
+// The schema keeps call metadata in the compatible usage_json payload; rows
+// written before that metadata was introduced decode with an unknown model.
 type UsageRecord struct {
 	ID        string
 	RunID     string
