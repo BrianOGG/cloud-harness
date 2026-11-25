@@ -82,9 +82,22 @@ func (db *DB) ListSessions(ctx context.Context) ([]storage.SessionSummary, error
 }
 
 func (db *DB) CreateTurn(ctx context.Context, t storage.Turn) error {
-	_, err := db.sql.ExecContext(ctx, `INSERT INTO turns(id, session_id, user_input, status, created_at) VALUES(?, ?, ?, ?, ?)`,
-		t.ID, t.SessionID, t.UserInput, t.Status, formatTime(t.CreatedAt))
-	return err
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turns(id, session_id, user_input, status, created_at) VALUES(?, ?, ?, ?, ?)`,
+		t.ID, t.SessionID, t.UserInput, t.Status, formatTime(t.CreatedAt)); err != nil {
+		return err
+	}
+	if err := insertMessage(ctx, tx, storage.Message{
+		ID: "msg_user_" + t.ID, SessionID: t.SessionID, TurnID: t.ID,
+		Role: "user", Source: "turn", Kind: "input", Status: "recorded", Content: t.UserInput, CreatedAt: t.CreatedAt,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
@@ -96,11 +109,23 @@ func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.sql.ExecContext(ctx, `
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO runs(id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.WorkspaceID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), r.WorktreeBaseSHA, r.WorktreeBranch, r.WorktreePath, r.WorktreeState)
-	return err
+		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.WorkspaceID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), r.WorktreeBaseSHA, r.WorktreeBranch, r.WorktreePath, r.WorktreeState); err != nil {
+		return err
+	}
+	if r.ParentRunID == "" && r.TurnID != "" {
+		if _, err := tx.ExecContext(ctx, "UPDATE messages SET run_id = COALESCE((SELECT root.id FROM runs root WHERE root.turn_id = ? AND root.session_id = ? AND root.parent_run_id = '' ORDER BY root.created_at, root.id LIMIT 1), '') WHERE id = ? AND session_id = ? AND turn_id = ?", r.TurnID, r.SessionID, "msg_user_"+r.TurnID, r.SessionID, r.TurnID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) GetRun(ctx context.Context, id string) (storage.Run, error) {
@@ -397,11 +422,67 @@ func (db *DB) CommitRunTransition(ctx context.Context, next storage.Run, expecte
 	if err != nil {
 		return err
 	}
+	if err := insertTransitionMessages(ctx, tx, next, ev); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	db.eventCommitted(next.ID, seq)
 	return nil
+}
+
+func insertTransitionMessages(ctx context.Context, tx *sql.Tx, run storage.Run, ev storage.Event) error {
+	created := ev.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	switch run.Status {
+	case domain.RunCompleted:
+		if strings.TrimSpace(run.FinalAnswer) != "" {
+			var linked int
+			var latestResponseID string
+			err := tx.QueryRowContext(ctx, "SELECT response.id FROM model_responses response JOIN steps step ON step.id = response.step_id WHERE response.run_id = ? AND response.complete = 1 ORDER BY step.step_index DESC LIMIT 1", run.ID).Scan(&latestResponseID)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			if latestResponseID != "" {
+				if err := tx.QueryRowContext(ctx, "SELECT COUNT(1) FROM messages WHERE id = ? AND source = 'model_response'", "msg_response_"+latestResponseID).Scan(&linked); err != nil {
+					return err
+				}
+			}
+			if linked == 0 {
+				if err := insertMessage(ctx, tx, storage.Message{
+					ID: "msg_answer_" + run.ID, SessionID: run.SessionID, RunID: run.ID, TurnID: run.TurnID,
+					Role: "assistant", Source: "run", Kind: "response", Status: "recorded", Content: run.FinalAnswer, CreatedAt: created, Event: ev.Type,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		return insertTerminalStatusMessage(ctx, tx, run, ev, created)
+	case domain.RunFailed, domain.RunCancelled:
+		return insertTerminalStatusMessage(ctx, tx, run, ev, created)
+	default:
+		return nil
+	}
+}
+
+func insertTerminalStatusMessage(ctx context.Context, tx *sql.Tx, run storage.Run, ev storage.Event, created time.Time) error {
+	status := "recorded"
+	content := string(run.Status)
+	if run.Status == domain.RunFailed {
+		status = "failed"
+	} else if run.Status == domain.RunCancelled {
+		status = "cancelled"
+	}
+	if run.Error != nil && run.Error.Message != "" {
+		content = run.Error.Message
+	}
+	return insertMessage(ctx, tx, storage.Message{
+		ID: "msg_status_" + run.ID, SessionID: run.SessionID, RunID: run.ID, TurnID: run.TurnID,
+		Role: "system", Source: "run", Kind: "run_status", Status: status, Content: content, CreatedAt: created, Event: ev.Type,
+	})
 }
 
 func (db *DB) SaveCheckpoint(ctx context.Context, runID string, version int64, snapshot []byte, now time.Time) error {
@@ -897,6 +978,15 @@ func (db *DB) PruneRuns(ctx context.Context, before time.Time) (storage.PruneRun
 		}
 		tables[table] = int(cnt)
 		return nil
+	}
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE messages SET run_id = ''
+		WHERE kind = 'input' AND run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
+	}
+	if err = del("messages", `
+		DELETE FROM messages WHERE run_id IN (SELECT id FROM _prune_run_ids)`); err != nil {
+		return result, err
 	}
 
 	// 1. Delete child rows of model_responses (provider_continuations, model_response_items)

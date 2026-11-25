@@ -32,7 +32,7 @@ func TestMigrationWALAndForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	ver, err := db.SchemaVersion(ctx)
-	if err != nil || ver != 8 {
+	if err != nil || ver != 9 {
 		t.Fatalf("version %d %v", ver, err)
 	}
 	mode, err := db.JournalMode(ctx)
@@ -59,7 +59,7 @@ func TestMigrationWALAndForeignKeys(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	ver, err = db.SchemaVersion(ctx)
-	if err != nil || ver != 8 {
+	if err != nil || ver != 9 {
 		t.Fatalf("reopen version %d %v", ver, err)
 	}
 	got, err := db.GetSession(ctx, "ses_1")
@@ -532,6 +532,7 @@ func TestPruneRunsTerminalAndChildren(t *testing.T) {
 	}
 	for tbl, want := range map[string]int{
 		"checkpoints":            3,
+		"messages":               9,
 		"events":                 3,
 		"provider_continuations": 3,
 		"model_response_items":   3,
