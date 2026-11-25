@@ -42,6 +42,7 @@ type doctorItem struct {
 type doctorOracleSummary struct {
 	Consultations    int     `json:"consultations"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+	CostKnown        bool    `json:"cost_known"`
 	BudgetFailures   int     `json:"budget_failures"`
 }
 
@@ -284,7 +285,7 @@ func checkDatabase(ctx context.Context, path string) []doctorItem {
 }
 
 func checkOracleCosts(path string, prices map[string]config.ModelPrice) doctorItem {
-	item := doctorItem{Name: "oracle", Status: "ok", Oracle: &doctorOracleSummary{}}
+	item := doctorItem{Name: "oracle", Status: "ok", Oracle: &doctorOracleSummary{CostKnown: true}}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		item.Detail = formatDoctorOracleSummary(item.Oracle)
 		return item
@@ -311,6 +312,7 @@ func checkOracleCosts(path string, prices map[string]config.ModelPrice) doctorIt
 	item.Oracle = &doctorOracleSummary{
 		Consultations:    summary.Consultations,
 		EstimatedCostUSD: summary.CostUSD,
+		CostKnown:        summary.CostKnown,
 		BudgetFailures:   summary.BudgetFailures,
 	}
 	item.Detail = formatDoctorOracleSummary(item.Oracle)
@@ -318,8 +320,12 @@ func checkOracleCosts(path string, prices map[string]config.ModelPrice) doctorIt
 }
 
 func formatDoctorOracleSummary(summary *doctorOracleSummary) string {
-	return fmt.Sprintf("consultations=%d estimated_cost_usd=%.4f budget_failures=%d",
-		summary.Consultations, summary.EstimatedCostUSD, summary.BudgetFailures)
+	cost := "—"
+	if summary.CostKnown {
+		cost = strconv.FormatFloat(summary.EstimatedCostUSD, 'f', 4, 64)
+	}
+	return fmt.Sprintf("consultations=%d estimated_cost_usd=%s budget_failures=%d",
+		summary.Consultations, cost, summary.BudgetFailures)
 }
 
 func readOracleEvents(ctx context.Context, path string) ([]storage.Event, error) {
@@ -449,6 +455,7 @@ type statsReport struct {
 	ModelUsageByModel      []modelUsageStats  `json:"model_usage_by_model"`
 	OracleConsultations    int                `json:"oracle_consultations"`
 	OracleEstimatedCostUSD float64            `json:"oracle_estimated_cost_usd"`
+	OracleCostKnown        bool               `json:"oracle_cost_known"`
 	OracleByModel          []oracleModelStats `json:"oracle_by_model"`
 }
 
@@ -456,12 +463,14 @@ type modelUsageStats struct {
 	Model            string  `json:"model"`
 	ModelCalls       int     `json:"model_calls"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+	CostKnown        bool    `json:"cost_known"`
 }
 
 type oracleModelStats struct {
 	Model            string  `json:"model"`
 	ModelCalls       int     `json:"model_calls"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+	CostKnown        bool    `json:"cost_known"`
 }
 
 type statsAccumulator struct {
@@ -520,8 +529,8 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	report := aggregateStats(records, *by, *days, since, cfg)
-	report.ModelUsageByModel = aggregateModelUsage(allRecords, cfg)
+	report := aggregateStats(records, *by, *days, since)
+	report.ModelUsageByModel = aggregateModelUsage(allRecords)
 	oracleEvents, err := readOracleEvents(ctx, cfg.DBPath)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "read oracle events:", err)
@@ -543,14 +552,14 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
 	_, _ = fmt.Fprintf(stdout, "ORACLE CONSULTATIONS\t%d\n", report.OracleConsultations)
-	_, _ = fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%.4f\n", report.OracleEstimatedCostUSD)
+	_, _ = fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%s\n", formatKnownCost(report.OracleEstimatedCostUSD, report.OracleCostKnown))
 	_, _ = fmt.Fprintln(stdout, "MODEL USAGE BY MODEL (ALL RUNS)")
 	_, _ = fmt.Fprintln(stdout, "MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
 	if len(report.ModelUsageByModel) == 0 {
 		_, _ = fmt.Fprintln(stdout, "(none)\t0\t0.0000")
 	} else {
 		for _, row := range report.ModelUsageByModel {
-			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%s\n", row.Model, row.ModelCalls, formatModelUsageCost(row))
 		}
 	}
 	_, _ = fmt.Fprintln(stdout, "ORACLE MODEL\tMODEL CALLS\tESTIMATED COST (USD)")
@@ -558,7 +567,7 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, "(none)\t0\t0.0000")
 	} else {
 		for _, row := range report.OracleByModel {
-			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%.4f\n", row.Model, row.ModelCalls, row.EstimatedCostUSD)
+			_, _ = fmt.Fprintf(stdout, "%s\t%d\t%s\n", row.Model, row.ModelCalls, formatKnownCost(row.EstimatedCostUSD, row.CostKnown))
 		}
 	}
 	for _, warning := range report.Warnings {
@@ -567,11 +576,11 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func aggregateStats(records []sqlite.UsageRecord, by string, days int, since time.Time, cfg config.Config) statsReport {
+func aggregateStats(records []sqlite.UsageRecord, by string, days int, since time.Time) statsReport {
 	buckets := map[string]*statsAccumulator{}
 	totals := &statsAccumulator{row: statsRow{Group: "total"}, costCovered: len(records) > 0}
 	for _, record := range records {
-		model := attributedModel(record.Provider, cfg)
+		model := persistedModel(record)
 		group := model
 		switch by {
 		case "day":
@@ -584,8 +593,8 @@ func aggregateStats(records []sqlite.UsageRecord, by string, days int, since tim
 			bucket = &statsAccumulator{row: statsRow{Group: group}, costCovered: true}
 			buckets[group] = bucket
 		}
-		addUsage(bucket, record, model, cfg.ModelPrices)
-		addUsage(totals, record, model, cfg.ModelPrices)
+		addUsage(bucket, record)
+		addUsage(totals, record)
 	}
 	groups := make([]string, 0, len(buckets))
 	for group := range buckets {
@@ -607,6 +616,7 @@ func aggregateStats(records []sqlite.UsageRecord, by string, days int, since tim
 func setOracleStats(report *statsReport, summary agent.OracleCostSummary) {
 	report.OracleConsultations = summary.Consultations
 	report.OracleEstimatedCostUSD = summary.CostUSD
+	report.OracleCostKnown = summary.CostKnown
 	report.OracleByModel = make([]oracleModelStats, 0, len(summary.ByModel))
 	models := make([]string, 0, len(summary.ByModel))
 	for model := range summary.ByModel {
@@ -616,21 +626,28 @@ func setOracleStats(report *statsReport, summary agent.OracleCostSummary) {
 	for _, model := range models {
 		row := summary.ByModel[model]
 		report.OracleByModel = append(report.OracleByModel, oracleModelStats{
-			Model: row.Model, ModelCalls: row.ModelCalls, EstimatedCostUSD: row.CostUSD,
+			Model: row.Model, ModelCalls: row.ModelCalls, EstimatedCostUSD: row.CostUSD, CostKnown: row.CostKnown,
 		})
 	}
 }
 
-func aggregateModelUsage(records []sqlite.UsageRecord, cfg config.Config) []modelUsageStats {
+func formatKnownCost(cost float64, known bool) string {
+	if !known {
+		return "—"
+	}
+	return strconv.FormatFloat(cost, 'f', 4, 64)
+}
+
+func aggregateModelUsage(records []sqlite.UsageRecord) []modelUsageStats {
 	buckets := make(map[string]*statsAccumulator)
 	for _, record := range records {
-		model := attributedModel(record.Provider, cfg)
+		model := persistedModel(record)
 		bucket := buckets[model]
 		if bucket == nil {
 			bucket = &statsAccumulator{row: statsRow{Group: model}, costCovered: true}
 			buckets[model] = bucket
 		}
-		addUsage(bucket, record, model, cfg.ModelPrices)
+		addUsage(bucket, record)
 	}
 	models := make([]string, 0, len(buckets))
 	for model := range buckets {
@@ -640,27 +657,22 @@ func aggregateModelUsage(records []sqlite.UsageRecord, cfg config.Config) []mode
 	rows := make([]modelUsageStats, 0, len(models))
 	for _, model := range models {
 		row := finishStatsRow(buckets[model])
-		cost, _ := row.Cost.(float64)
-		rows = append(rows, modelUsageStats{Model: model, ModelCalls: row.ModelCalls, EstimatedCostUSD: cost})
+		cost, known := row.Cost.(float64)
+		rows = append(rows, modelUsageStats{Model: model, ModelCalls: row.ModelCalls, EstimatedCostUSD: cost, CostKnown: known})
 	}
 	return rows
 }
 
-func addUsage(bucket *statsAccumulator, record sqlite.UsageRecord, model string, prices map[string]config.ModelPrice) {
+func addUsage(bucket *statsAccumulator, record sqlite.UsageRecord) {
 	bucket.row.ModelCalls++
 	bucket.row.InputTokens += int64(record.Usage.InputTokens)
 	bucket.row.OutputTokens += int64(record.Usage.OutputTokens)
 	bucket.row.CachedTokens += int64(record.Usage.CachedInputTokens)
-	price, ok := prices[model]
-	if !ok {
+	if !record.Usage.CostKnown {
 		bucket.costCovered = false
 		return
 	}
-	uncached := record.Usage.InputTokens - record.Usage.CachedInputTokens
-	if uncached < 0 {
-		uncached = 0
-	}
-	bucket.cost += (float64(uncached)*price.Input + float64(record.Usage.OutputTokens)*price.Output + float64(record.Usage.CachedInputTokens)*price.Cached) / 1_000_000
+	bucket.cost += record.Usage.CostUSD
 }
 
 func finishStatsRow(bucket *statsAccumulator) statsRow {
@@ -676,21 +688,21 @@ func finishStatsRow(bucket *statsAccumulator) statsRow {
 	return row
 }
 
-func attributedModel(providerName string, cfg config.Config) string {
-	switch providerName {
-	case "openai", "openai-responses":
-		if cfg.OpenAIModel != "" {
-			return cfg.OpenAIModel
-		}
-	case "anthropic":
-		if cfg.AnthropicModel != "" {
-			return cfg.AnthropicModel
-		}
+// persistedModel is deliberately strict: usage rows written before call
+// metadata existed cannot be safely attributed from a provider and today's
+// configuration, so they remain in an explicit unknown bucket.
+func persistedModel(record sqlite.UsageRecord) string {
+	if model := strings.TrimSpace(record.Usage.Model); model != "" {
+		return model
 	}
-	if strings.TrimSpace(providerName) == "" {
-		return "unknown"
+	return "unknown"
+}
+
+func formatModelUsageCost(row modelUsageStats) string {
+	if !row.CostKnown {
+		return "—"
 	}
-	return providerName
+	return strconv.FormatFloat(row.EstimatedCostUSD, 'f', 4, 64)
 }
 
 func formatCost(cost any) string {

@@ -88,7 +88,7 @@ func TestAskOracleReturnsOnlySanitizedConsultationAdvice(t *testing.T) {
 		t.Fatalf("stored model usage: %d rows, error = %v", len(rows), err)
 	}
 	asked := oracleEventPayloads(t, db, run.ID, "oracle.asked")
-	if len(asked) != 1 || len(asked[0]) != 7 || asked[0]["model"] != "planner-primary" ||
+	if len(asked) != 1 || len(asked[0]) != 9 || asked[0]["model"] != "planner-primary" ||
 		asked[0]["question_length"] != float64(utf8.RuneCountInString(question)) || asked[0]["code_bytes"] != float64(len(snippet)) ||
 		asked[0]["input_tokens"] != float64(123) || asked[0]["output_tokens"] != float64(27) || asked[0]["cached_input_tokens"] != float64(11) || asked[0]["latency_ms"] == nil {
 		t.Fatalf("oracle.asked = %+v", asked)
