@@ -1,5 +1,10 @@
 // Same-origin API client. Requests carry the optional bearer token used by serve.
 
+import { EventStreamDecoder, parseEventStream } from './sse';
+import type { HarnessEvent } from './sse';
+export { parseEventStream } from './sse';
+export type { HarnessEvent } from './sse';
+
 export interface Budget {
   max_model_calls: number;
   used_model_calls: number;
@@ -75,12 +80,6 @@ export interface ApprovalView {
   approval_url?: string;
 }
 
-export interface HarnessEvent {
-  seq: number;
-  type: string;
-  data: string;
-}
-
 export interface TraceCall {
   id: string;
   name: string;
@@ -134,27 +133,6 @@ export interface DoctorCheck {
   status: 'ok' | 'warn' | 'fail' | string;
   detail: string;
   run_id?: string;
-}
-
-export function parseEventStream(text: string): HarnessEvent[] {
-  const events: HarnessEvent[] = [];
-  for (const block of text.replace(/\r\n/g, '\n').split(/\n\n+/)) {
-    let seq = 0;
-    let type = '';
-    const data: string[] = [];
-    for (const line of block.split('\n')) {
-      if (line.startsWith('id:')) {
-        const value = line.slice(3).trim();
-        if (/^\d+$/.test(value)) seq = Number(value);
-      } else if (line.startsWith('event:')) {
-        type = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        data.push(line.slice(5).replace(/^ /, ''));
-      }
-    }
-    if (type) events.push({ seq, type, data: data.join('\n') });
-  }
-  return events;
 }
 
 const TOKEN_HINT = '需要有效的 HTTP token。请在浏览器 localStorage 设置 cloud-harness.http-token。';
@@ -225,36 +203,31 @@ export const api = {
   fetchEvents: async (runId: string, after: number): Promise<HarnessEvent[]> => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 750);
-    const response = await eventsRequest(runId, after, controller.signal);
-    if (!response.ok) {
-      window.clearTimeout(timeout);
-      throw eventsError(response);
-    }
-    if (!response.body) {
-      window.clearTimeout(timeout);
-      return parseEventStream(await response.text());
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const events: HarnessEvent[] = [];
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
+      const response = await eventsRequest(runId, after, controller.signal);
+      if (!response.ok) throw eventsError(response);
+      if (!response.body) return parseEventStream(await response.text());
+      reader = response.body.getReader();
+      const decoder = new EventStreamDecoder();
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-        const blocks = buffer.split(/\n\n+/);
-        if (blocks.length > 1 && blocks.slice(0, -1).some((block) => block.includes('event:'))) break;
+        if (done) {
+          events.push(...decoder.finish());
+          break;
+        }
+        events.push(...decoder.push(value));
+        if (events.length > 0) break;
       }
-      buffer += decoder.decode();
-      return parseEventStream(buffer);
     } catch (reason) {
-      if (reason instanceof DOMException && reason.name === 'AbortError') return parseEventStream(buffer);
-      throw reason;
+      if (!controller.signal.aborted) throw reason;
     } finally {
       window.clearTimeout(timeout);
       controller.abort();
-      await reader.cancel().catch(() => undefined);
+      await reader?.cancel().catch(() => undefined);
     }
+    return events;
   },
   // Follows the event stream until serve closes it or `signal` aborts, calling
   // `onEvent` for each block as it arrives. Stream deltas come through with seq 0.
@@ -266,19 +239,18 @@ export const api = {
       return;
     }
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const decoder = new EventStreamDecoder();
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-        const cut = buffer.lastIndexOf('\n\n');
-        if (cut < 0) continue;
-        parseEventStream(buffer.slice(0, cut)).forEach(onEvent);
-        buffer = buffer.slice(cut + 2);
+        if (done) {
+          decoder.finish().forEach(onEvent);
+          break;
+        }
+        decoder.push(value).forEach(onEvent);
       }
-      parseEventStream(buffer + decoder.decode()).forEach(onEvent);
+    } catch (reason) {
+      if (!signal.aborted) throw reason;
     } finally {
       await reader.cancel().catch(() => undefined);
     }

@@ -457,6 +457,299 @@ An existing session with no runs returns HTTP 200 with `[]`. An unknown session
 returns HTTP 404 with the standard `not_found` error envelope. Both endpoints
 use the `/v1/` bearer authentication described above.
 
+## GET /v1/sessions/{id}/messages
+
+**CP-1 frozen contract; implementation target, not a rollout claim.** This is
+new functionality relative to baseline
+`b81b569c5780766257ee26e9406c615317f551db`. That baseline has no session
+message endpoint or storage pagination interface. This specification does not
+assert that the handler, route registration, migrations, or persistence paths
+are integrated or accepted on `dev`. Those require separate implementation
+and backend verification. Existing authentication, request checks, run APIs,
+and SSE behavior remain unchanged.
+
+The endpoint reads the retained, durable, user-visible transcript across all
+runs and turns of the session. It uses the same `/v1/` bearer authentication
+and outer Host/Origin checks; it is not a public exception. A child run is
+included only when its own `session_id` equals the requested session, not
+merely because its parent belongs to that session. This is a read-only query:
+it must not execute, resume, retry, or materialize missing messages on a GET.
+
+### Page and message fields
+
+HTTP 200 returns one JSON object, not a bare array or a run view:
+
+| Page field | Type | Meaning |
+| --- | --- | --- |
+| `messages` | array of message objects | At most `limit` records in ascending transcript order. Always an array, including `[]`, never `null`. |
+| `next_cursor` | string | Exclusive continuation after the last returned record if another record exists in the same read. Otherwise `""`; never omitted or `null`. |
+
+There is no `total`, `has_more`, or embedded run snapshot. Every message has
+all of these fields, including explicit null associations and an empty event:
+
+| Message field | Type | Meaning |
+| --- | --- | --- |
+| `id` | nonempty ASCII string | Stable, source-derived message identity, independent of page size, position, current run status, or process lifetime. |
+| `session_id` | nonempty string | Exactly the session ID in the request path. |
+| `run_id` | string or `null` | Run that produced the fact; `null` only when no durable run association exists. Never `""` or omitted. |
+| `turn_id` | string or `null` | Owning turn from the durable source/run link; `null` only when no such link exists. Never `""` or omitted. |
+| `role` | string | One of `user`, `assistant`, `system`, as defined below; never an inferred model-provider role. |
+| `kind` | string | One of the seven transcript kinds in the source table below. |
+| `status` | string | `recorded`, `failed`, or `cancelled`; the status of this durable fact, not the run's current status. |
+| `content` | string | User-visible text, with original text and line breaks preserved. Approval decisions use the exact string `approve` or `deny`. No HTML rendering is implied. |
+| `event` | string | Exact persisted event type when an event is the source, otherwise `""`. Not an SSE ID or sequence number, and not a newly invented event name. |
+| `created_at` | string | Immutable stored fact time, normalized to UTC as described below. Never computed from the GET time. |
+
+`run_id` and `turn_id` refer to the source's own run/turn, not the latest run
+or the parent of a child run. A non-null run must belong to `session_id`; a
+non-null turn must belong to that session and agree with the run's turn link
+when that link exists. A turn's initial input belongs to its originating root
+run, not every later attempt; a legacy input with no unambiguous originating
+run keeps `run_id: null`. A standalone retained turn can therefore have a
+non-null `turn_id` and null `run_id`. A run with no turn has a null `turn_id`.
+Absent associations are not fabricated, and internal empty strings are
+converted to JSON null. Internal projection sequence counters are not fields
+of this API and do not determine order.
+
+### Durable sources, identity, and status
+
+The following is the complete CP-1 kind/role mapping. Source IDs are the
+already persisted IDs, not newly generated IDs on each projection or read.
+Run and invocation IDs retain their distinct source namespaces in
+`msg_answer_...` identities.
+
+| Durable source | Stable message ID | `role` / `kind` | `status` and content |
+| --- | --- | --- | --- |
+| Turn's original user input | `msg_user_<turn-id>` | `user` / `input` | `recorded`; the stored original input, not an expanded prompt or a summary. |
+| Committed, complete, user-visible model response | `msg_response_<response-id>` | `assistant` / `response` | `recorded`; concatenate its visible text items in stored ordinal order, without adding separators. No text record is made for a response without visible text. |
+| Run's persisted final answer not represented by a linked visible response | `msg_answer_<run-id>` | `assistant` / `response` | `recorded`; the final-answer text once, as a fallback, not a second copy of a linked response. |
+| Persisted `ask_user` invocation | `msg_question_<invocation-id>` | `assistant` / `question` | `recorded`; the original stored question. |
+| Accepted, persisted answer to that invocation | `msg_answer_<invocation-id>` | `user` / `answer` | `recorded`; the accepted answer, not an HTTP attempt or a rejected answer. |
+| Persisted approval request | `msg_approval_<approval-id>_requested` | `system` / `approval_requested` | `recorded`; the user-visible approval summary, not raw tool arguments. |
+| Persisted terminal human approval decision | `msg_approval_<approval-id>_decision` | `system` / `approval_decision` | `recorded` for both approval and denial; content is `approve` or `deny`. A pending request has no decision record. |
+| Persisted terminal run state | `msg_status_<run-id>` | `system` / `run_status` | `recorded` for `COMPLETED`, `failed` for `FAILED`, `cancelled` for `CANCELLED`. Content is the stored user-visible failure reason when available, otherwise the exact terminal run status. |
+
+Only the `run_status` kind may have `failed` or `cancelled` status. All other
+kinds have `recorded` status, including an approval denial or an unanswered
+question. A recorded assistant response does not become failed when its run
+later fails, and input does not become cancelled when the run is cancelled.
+`RUNNING` and `WAITING` are run states, never message statuses: read the run
+API for the current wait, pending approval, or progress. A question record
+does not itself assert that the question is still pending. Completion emits
+one terminal-state fact in addition to any response, but never copies the
+final answer into that fact. Preserve the actual stored event spelling in
+`event` (including legacy case); determine terminal status from the durable
+run state, not by guessing from the spelling.
+
+Within a source, the ID and ordering timestamp are immutable once persisted.
+The projection must enforce one record per listed source identity. Replaying
+an event, retrying a persistence transaction, re-running an idempotent answer
+or decision, rebuilding a projection, or restarting the server must not mint
+a new message ID or duplicate that fact. A source fact and its projection
+must become visible atomically; an API read must not acknowledge a source
+commit while silently omitting its required transcript record. Historical
+backfill runs before the endpoint is made available, not as a read-time union
+of all runs and events.
+
+Deduplicate by source identity/linkage, never by content equality: identical
+text in two turns, two responses, or distinct accepted attempts remains two
+records. The run final-answer field, its terminal event, and the response that
+produced that answer must not each become another assistant response. A
+retained linked response is authoritative over the final-answer fallback.
+Choose and persist that provenance at source commit or initial backfill;
+later pruning a linked response must not manufacture a fallback with a new
+ID. An `ask_user`
+question/answer and an approval request/decision are each represented once
+from their source, not again from a replayed event or raw tool payload.
+
+Resuming a `WAITING` run retains its run ID and earlier messages. A genuinely
+new retry run/response/invocation has its own source IDs and therefore new
+records, even when it repeats earlier text. A retry sharing an existing turn
+does not duplicate that turn's original input. Failed and cancelled runs
+retain their committed input, responses, questions, accepted answers, and
+approval facts plus their terminal-state record. A failed provider attempt
+without a complete committed response has no assistant response to invent.
+Uncommitted or partial generated text is not a durable response.
+
+### Time, order, and completeness boundary
+
+`created_at` is stored when the fact is committed and retains the source's
+original fact time: turn creation for input, response creation for text,
+invocation/question creation for a question, and acceptance/decision/terminal
+transition time for the corresponding later facts. It is not the latest
+mutable `run.updated_at`. When an older retained source has no per-fact time,
+backfill captures its available persisted timestamp once: approval creation
+for a request, response creation for a question, and the owning run's stored
+`updated_at` for an answer, approval decision, final-answer fallback, or
+terminal state. That legacy fallback is deterministic but is not evidence of
+the exact original decision time. Missing legacy content or links must not
+be invented to improve the apparent transcript.
+
+History timestamps, including the timestamp inside a cursor, use the fixed
+UTC RFC 3339 form `YYYY-MM-DDTHH:mm:ss.nnnnnnnnnZ`, for example
+`2026-11-25T09:00:01.000000000Z`. Normalize source offsets to UTC and preserve
+nanoseconds; do not round to a client clock, omit the fractional part, or use
+an offset such as `+08:00` on this endpoint. This matches the store's fixed
+nine-digit timestamp encoding, so textual key order is time order.
+
+Sort the entire session by `(created_at ASC, id ASC)`, with bytewise ASCII ID
+comparison for equal timestamps. Do not group by run or turn, reverse a page,
+use an unstable offset, or use run update time. Equal timestamps can order
+facts differently from causal order; IDs break ties, not prove causality.
+Across pages the cursor excludes its boundary tuple strictly.
+
+Completeness means all eligible facts whose durable sources are still
+retained, not an unlimited historical archive. Compaction summaries, session
+memory, search/history indexes, internal `COMPACT`/`PLAN`/`ORACLE` responses,
+provider opaque data, hidden prompts, raw tool traces, temporary SSE
+`stream.delta`/`stream.reset` text, and fixture/demo data are not transcript
+messages. A summary cannot stand in for missing original text. Retention,
+rewind, or source deletion must remove the corresponding projection records
+consistently; the endpoint must not expose ghost messages from removed
+sources. Migration cannot restore text that was never committed or was
+already pruned. Clients must not describe a retained or legacy-backfilled
+transcript as a lossless record of everything ever generated.
+
+### Query parameters and cursor v1
+
+| Parameter | Omitted | Accepted value | Rejected value |
+| --- | --- | --- | --- |
+| `limit` | `50` | One ASCII decimal integer from `1` through `200`, written without a sign, leading zeros, or whitespace. | Empty, `0`, negative, greater than `200`, non-integer, overflow, or repeated, even when repeated values are equal. |
+| `cursor` | Start at the oldest retained message. | One empty string (also the first page), or one cursor v1 value below. | Repeated, whitespace-only, malformed, unsupported-version, or wrong-session cursor. |
+
+Decode query escaping once using normal URL query rules. Other query keys
+are ignored; they do not filter runs/turns or change the ordering. In
+particular `limit=0` is not the omitted default. A new page may change the
+limit while continuing the same cursor.
+
+A nonempty cursor is unpadded RFC 4648 base64url of one UTF-8 JSON object.
+The wire alphabet is `[A-Za-z0-9_-]`; reject padding, whitespace, ordinary
+base64 `+`/`/`, invalid trailing bits, and invalid UTF-8. The JSON has exactly
+four members, each once: integer `v` equal to `1`, nonempty string
+`session_id`, canonical history timestamp string `created_at`, and nonempty
+ASCII message ID string `id`. Reject extra or missing members, duplicate JSON
+keys, nulls, wrong types, invalid dates, or trailing JSON. Object member order
+and insignificant JSON whitespace need not be canonical on input. Encoders
+emit the members in the following order with compact JSON:
+
+```json
+{"v":1,"session_id":"ses_demo","created_at":"2026-11-25T09:00:01.000000000Z","id":"msg_response_rsp_demo"}
+```
+
+This synthetic cursor encodes exactly as:
+
+```text
+eyJ2IjoxLCJzZXNzaW9uX2lkIjoic2VzX2RlbW8iLCJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yNVQwOTowMDowMS4wMDAwMDAwMDBaIiwiaWQiOiJtc2dfcmVzcG9uc2VfcnNwX2RlbW8ifQ
+```
+
+Require the decoded `session_id` to equal the path ID, including case. A
+cursor from another session is HTTP 400 `invalid_argument`, not an empty
+page. The cursor is a continuation boundary, not an authorization credential
+or a signed snapshot; the same bearer and session lookup checks still apply. It has no
+time-based expiry, and restarts do not invalidate it. An otherwise valid
+cursor whose boundary ID is absent, unknown, or deleted is still accepted as
+a logical boundary; do not require an anchor-row lookup or return 404 for it.
+
+Return up to `limit` records with keys strictly greater than the cursor key.
+Determine the records and whether another record exists from one consistent
+committed read. A nonempty `next_cursor` encodes the last returned record,
+never the extra look-ahead record. Fewer than `limit` records, exactly `limit`
+with no further record, or no record all produce `next_cursor: ""`.
+
+Each page is consistent, but the cursor does not freeze a snapshot across
+requests. Concurrent inserts with keys greater than the consumed boundary
+may appear on later pages; inserts or backfill at or before it require a new
+traversal. Deletion may shorten a later page, including deletion of the cursor
+anchor, without invalidating the cursor. There is no guarantee of a fixed
+total or of catching late/backdated facts in one traversal. Follow run/SSE
+state separately, and refresh from the first page and merge by message ID
+when a complete current view is needed. An empty `next_cursor` means no more
+records in that read, not that future messages cannot arrive.
+
+### Errors and validation priority
+
+The existing outer Host check, then Origin check, then bearer authentication
+run before endpoint-specific query validation or session lookup. Their
+existing HTTP 403/401 `auth_denied` behavior and Bearer challenge are unchanged.
+After those checks, use the following order, independent of query key order:
+
+| Priority | Check | Failure |
+| --- | --- | --- |
+| 1 | Parse URL query escaping. | HTTP 400 `invalid_argument`, message `invalid message query`. |
+| 2 | Validate `limit` multiplicity, syntax, and range. | HTTP 400 `invalid_argument`, message `invalid message limit`. |
+| 3 | Validate `cursor` multiplicity, encoding, schema/version, and session binding. | HTTP 400 `invalid_argument`, message `invalid message cursor`. |
+| 4 | Look up the requested session. | Unknown session: HTTP 404 `not_found`, message `record not found`, `ref` equal to the path session ID. |
+| 5 | Read its message page. | Unexpected storage/encoding failure: HTTP 500 `internal`, message `request failed`; no partial page or internal diagnostics. |
+
+Use the existing `{"error":{"code":"...","message":"..."}}` envelope
+(plus `ref` for not-found), not a successful empty page on an error. Thus bad
+credentials beat a bad limit; a bad limit beats a bad cursor; a bad cursor,
+including a session mismatch, beats an unknown session. An existing session
+with no messages, including one with no runs, returns HTTP 200 with
+`{"messages":[],"next_cursor":""}`. A valid beyond-end cursor returns that
+same empty page for an existing session, but never hides an unknown session.
+
+### Synthetic page example
+
+All IDs, text, times, and continuation data below are synthetic examples, not
+production messages, test results, or evidence that this endpoint is deployed.
+Assume this example session has additional retained messages after these two.
+
+```bash
+curl -H "Authorization: Bearer $CLOUD_HARNESS_HTTP_TOKEN" \
+  'http://127.0.0.1:19421/v1/sessions/ses_demo/messages?limit=2'
+```
+
+```json
+{
+  "messages": [
+    {
+      "id": "msg_user_trn_demo",
+      "session_id": "ses_demo",
+      "run_id": "run_demo",
+      "turn_id": "trn_demo",
+      "role": "user",
+      "kind": "input",
+      "status": "recorded",
+      "content": "Summarize the sample document.",
+      "event": "",
+      "created_at": "2026-11-25T09:00:00.000000000Z"
+    },
+    {
+      "id": "msg_response_rsp_demo",
+      "session_id": "ses_demo",
+      "run_id": "run_demo",
+      "turn_id": "trn_demo",
+      "role": "assistant",
+      "kind": "response",
+      "status": "recorded",
+      "content": "The sample describes a controlled runtime.",
+      "event": "",
+      "created_at": "2026-11-25T09:00:01.000000000Z"
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJzZXNzaW9uX2lkIjoic2VzX2RlbW8iLCJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yNVQwOTowMDowMS4wMDAwMDAwMDBaIiwiaWQiOiJtc2dfcmVzcG9uc2VfcnNwX2RlbW8ifQ"
+}
+```
+
+An individual failed-run fact can look like this (also synthetic). This run
+has no durable turn association; its retained event uses the legacy spelling:
+
+```json
+{
+  "id": "msg_status_run_demo_failed",
+  "session_id": "ses_demo",
+  "run_id": "run_demo_failed",
+  "turn_id": null,
+  "role": "system",
+  "kind": "run_status",
+  "status": "failed",
+  "content": "The sample provider request failed.",
+  "event": "run.FAILED",
+  "created_at": "2026-11-25T09:00:02.000000000Z"
+}
+```
+
 ## GET /v1/approvals
 
 Returns the human approval queue across all sessions: runs whose status is
