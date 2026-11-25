@@ -532,6 +532,7 @@ func TestPruneRunsTerminalAndChildren(t *testing.T) {
 	}
 	for tbl, want := range map[string]int{
 		"checkpoints":            3,
+		"messages":               9,
 		"events":                 3,
 		"provider_continuations": 3,
 		"model_response_items":   3,

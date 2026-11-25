@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +16,9 @@ func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse)
 	usage, err := json.Marshal(rec.Usage)
 	if err != nil {
 		return err
+	}
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = db.now()
 	}
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -53,13 +58,15 @@ func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse)
 			return err
 		}
 	}
-	if rec.Action != domain.ActionCompact && rec.Action != domain.ActionPlan && rec.Action != "ORACLE" {
+	if rec.Complete && rec.Action != domain.ActionCompact && rec.Action != domain.ActionPlan && rec.Action != "ORACLE" {
 		var sessionID, turnID string
 		if err := tx.QueryRowContext(ctx, `SELECT session_id, turn_id FROM runs WHERE id = ?`, rec.RunID).Scan(&sessionID, &turnID); err != nil {
 			return err
 		}
 		var text strings.Builder
-		for _, item := range rec.Items {
+		items := append([]domain.VisibleItem(nil), rec.Items...)
+		sort.Slice(items, func(i, j int) bool { return items[i].Ordinal < items[j].Ordinal })
+		for _, item := range items {
 			if item.Kind == domain.ItemText {
 				text.WriteString(item.Text)
 			}
@@ -67,7 +74,7 @@ func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse)
 		if text.Len() > 0 {
 			if err := insertMessage(ctx, tx, storage.Message{
 				ID: "msg_response_" + rec.ID, SessionID: sessionID, RunID: rec.RunID, TurnID: turnID,
-				Role: "assistant", Source: "model_response", Kind: "response", Status: "completed", Content: text.String(), CreatedAt: rec.CreatedAt,
+				Role: "assistant", Source: "model_response", Kind: "response", Status: "recorded", Content: text.String(), CreatedAt: rec.CreatedAt,
 			}); err != nil {
 				return err
 			}
@@ -211,7 +218,7 @@ func (db *DB) SaveBatch(ctx context.Context, batch storage.StoredBatch) error {
 				}
 				if err := insertMessage(ctx, tx, storage.Message{
 					ID: "msg_question_" + inv.ID, SessionID: sessionID, RunID: batch.RunID, TurnID: turnID,
-					Role: "assistant", Source: "ask_user", Kind: "question", Status: "waiting", Content: argsBody.Question, CreatedAt: questionTime,
+					Role: "assistant", Source: "ask_user", Kind: "question", Status: "recorded", Content: argsBody.Question, CreatedAt: questionTime,
 				}); err != nil {
 					return err
 				}
@@ -255,7 +262,7 @@ func (db *DB) UpdateBatch(ctx context.Context, batch storage.StoredBatch) error 
 			inv.Status, result, dispatched, inv.ID, batch.ID); err != nil {
 			return err
 		}
-		if inv.Name == domain.ToolAskUser && inv.Result != nil && len(inv.Result.Data) > 0 {
+		if inv.Name == domain.ToolAskUser && inv.Status == domain.InvSucceeded && inv.Result != nil && inv.Result.OK && len(inv.Result.Data) > 0 {
 			var answerBody struct {
 				Answer string `json:"answer"`
 			}
@@ -266,21 +273,14 @@ func (db *DB) UpdateBatch(ctx context.Context, batch storage.StoredBatch) error 
 				}
 				if err := insertMessage(ctx, tx, storage.Message{
 					ID: "msg_answer_" + inv.ID, SessionID: sessionID, RunID: batch.RunID, TurnID: turnID,
-					Role: "user", Source: "ask_user_answer", Kind: "answer", Status: "completed", Content: answerBody.Answer, CreatedAt: db.now(),
+					Role: "user", Source: "ask_user_answer", Kind: "answer", Status: "recorded", Content: answerBody.Answer, CreatedAt: db.now(),
 				}); err != nil {
 					return err
 				}
 			}
 		}
 		if inv.Status == domain.InvDenied {
-			var sessionID, turnID string
-			if err := tx.QueryRowContext(ctx, `SELECT session_id, turn_id FROM runs WHERE id = ?`, batch.RunID).Scan(&sessionID, &turnID); err != nil {
-				return err
-			}
-			if err := insertMessage(ctx, tx, storage.Message{
-				ID: "msg_approval_" + inv.ID + "_denied", SessionID: sessionID, RunID: batch.RunID, TurnID: turnID,
-				Role: "system", Source: "approval", Kind: "approval_decision", Status: "denied", Content: "Approval denied for " + inv.Name, CreatedAt: db.now(),
-			}); err != nil {
+			if err := recordApprovalDecisionForInvocation(ctx, tx, batch.RunID, inv.ID, "denied", db.now()); err != nil {
 				return err
 			}
 		}
@@ -415,33 +415,32 @@ func (db *DB) SaveApproval(ctx context.Context, a domain.Approval) error {
 	if created.IsZero() {
 		created = db.now()
 	}
-	_, err := db.sql.ExecContext(ctx, `
-		INSERT INTO approvals(id, run_id, invocation_id, tool, resource_scope, state, valid_until, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET state = excluded.state, resource_scope = excluded.resource_scope, valid_until = excluded.valid_until`,
-		a.ID, a.RunID, a.InvocationID, a.Tool, a.ResourceScope, a.State, until, formatTime(created))
-	if err != nil {
-		return err
-	}
-	var sessionID, turnID string
-	if err := db.sql.QueryRowContext(ctx, `SELECT session_id, turn_id FROM runs WHERE id = ?`, a.RunID).Scan(&sessionID, &turnID); err != nil {
-		return err
-	}
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO approvals(id, run_id, invocation_id, tool, resource_scope, state, valid_until, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET state = excluded.state, resource_scope = excluded.resource_scope, valid_until = excluded.valid_until`,
+		a.ID, a.RunID, a.InvocationID, a.Tool, a.ResourceScope, a.State, until, formatTime(created)); err != nil {
+		return err
+	}
+	var sessionID, turnID string
+	if err := tx.QueryRowContext(ctx, `SELECT session_id, turn_id FROM runs WHERE id = ?`, a.RunID).Scan(&sessionID, &turnID); err != nil {
+		return err
+	}
 	if err := insertMessage(ctx, tx, storage.Message{
 		ID: "msg_approval_" + a.ID + "_requested", SessionID: sessionID, RunID: a.RunID, TurnID: turnID,
-		Role: "system", Source: "approval", Kind: "approval_requested", Status: "pending", Content: "Approval requested for " + a.Tool, CreatedAt: created,
+		Role: "system", Source: "approval", Kind: "approval_requested", Status: "recorded", Content: "Approval requested for " + a.Tool, CreatedAt: created,
 	}); err != nil {
 		return err
 	}
 	if a.State != "pending" {
 		if err := insertMessage(ctx, tx, storage.Message{
 			ID: "msg_approval_" + a.ID + "_decision", SessionID: sessionID, RunID: a.RunID, TurnID: turnID,
-			Role: "system", Source: "approval", Kind: "approval_decision", Status: a.State, Content: "Approval " + a.State + " for " + a.Tool, CreatedAt: created,
+			Role: "system", Source: "approval", Kind: "approval_decision", Status: "recorded", Content: approvalDecisionContent(a.State), CreatedAt: created,
 		}); err != nil {
 			return err
 		}
@@ -450,32 +449,48 @@ func (db *DB) SaveApproval(ctx context.Context, a domain.Approval) error {
 }
 
 func (db *DB) UpdateApprovalState(ctx context.Context, runID, invocationID, state string) error {
-	_, err := db.sql.ExecContext(ctx, `
-		UPDATE approvals SET state = ? WHERE run_id = ? AND invocation_id = ?`,
-		state, runID, invocationID)
-	if err != nil {
-		return err
-	}
-	var approvalID, tool, sessionID, turnID string
-	if err := db.sql.QueryRowContext(ctx, `
-		SELECT a.id, a.tool, r.session_id, r.turn_id
-		FROM approvals a JOIN runs r ON r.id = a.run_id
-		WHERE a.run_id = ? AND a.invocation_id = ? ORDER BY a.created_at DESC LIMIT 1`, runID, invocationID).
-		Scan(&approvalID, &tool, &sessionID, &turnID); err != nil {
-		return err
-	}
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := insertMessage(ctx, tx, storage.Message{
-		ID: "msg_approval_" + approvalID + "_decision", SessionID: sessionID, RunID: runID, TurnID: turnID,
-		Role: "system", Source: "approval", Kind: "approval_decision", Status: state, Content: "Approval " + state + " for " + tool, CreatedAt: db.now(),
-	}); err != nil {
+	if err := recordApprovalDecisionForInvocation(ctx, tx, runID, invocationID, state, db.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func approvalDecisionContent(state string) string {
+	switch state {
+	case "approved":
+		return "approve"
+	case "denied":
+		return "deny"
+	default:
+		return state
+	}
+}
+
+func recordApprovalDecisionForInvocation(ctx context.Context, tx *sql.Tx, runID, invocationID, state string, created time.Time) error {
+	var approvalID, tool, sessionID, turnID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT a.id, a.tool, r.session_id, r.turn_id
+		FROM approvals a JOIN runs r ON r.id = a.run_id
+		WHERE a.run_id = ? AND a.invocation_id = ? ORDER BY a.created_at DESC LIMIT 1`, runID, invocationID).
+		Scan(&approvalID, &tool, &sessionID, &turnID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = ? WHERE id = ?`, state, approvalID); err != nil {
+		return err
+	}
+	return insertMessage(ctx, tx, storage.Message{
+		ID: "msg_approval_" + approvalID + "_decision", SessionID: sessionID, RunID: runID, TurnID: turnID,
+		Role: "system", Source: "approval", Kind: "approval_decision", Status: "recorded", Content: approvalDecisionContent(state), CreatedAt: created,
+	})
 }
 
 func (db *DB) ListApprovals(ctx context.Context, runID string) ([]domain.Approval, error) {
