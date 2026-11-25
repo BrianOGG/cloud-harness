@@ -16,13 +16,19 @@ const (
 	ItemUsage      ItemKind = "usage"
 )
 
-// Usage is the provider-reported token accounting. Fields the provider does
-// not report stay zero.
+// Usage is the provider-reported token accounting plus the call metadata the
+// runtime captures when it persists a response. Fields the provider does not
+// report stay zero. Model and cost metadata are optional so older usage_json
+// rows remain readable; a false CostKnown means the cost is unknown, while a
+// true CostKnown with CostUSD == 0 is a known zero-cost call.
 type Usage struct {
-	InputTokens       int   `json:"input_tokens,omitempty"`
-	OutputTokens      int   `json:"output_tokens,omitempty"`
-	CachedInputTokens int   `json:"cached_input_tokens,omitempty"`
-	LatencyMS         int64 `json:"latency_ms,omitempty"`
+	InputTokens       int     `json:"input_tokens,omitempty"`
+	OutputTokens      int     `json:"output_tokens,omitempty"`
+	CachedInputTokens int     `json:"cached_input_tokens,omitempty"`
+	LatencyMS         int64   `json:"latency_ms,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	CostKnown         bool    `json:"cost_known,omitempty"`
 }
 
 // ToolCall is one provider tool call. Arguments is a raw JSON object.

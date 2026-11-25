@@ -327,13 +327,14 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			OnDelta:              m.deltaSink(run.ID),
 		})
 		m.endDeltas(run.ID, err == nil)
-		usage := usageOf(resp)
+		usage := m.annotateUsage(model, m.Model, resp)
 		// Tokens a failed call reported are spent too.
-		costUSD := m.chargeUsage(ctx, run.ID, m.pricedModel(model, m.Model), usage)
+		m.chargeUsage(ctx, run.ID, usage)
 		if usage.LatencyMS == 0 {
 			usage.LatencyMS = time.Since(started).Milliseconds()
 		}
 		if err != nil {
+			m.recordFailedUsage(ctx, run.ID, resp, usage)
 			if profiled != nil {
 				if ctx.Err() != nil {
 					return m.Cancel(context.WithoutCancel(ctx), run.ID)
@@ -364,11 +365,11 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			m.indexDoc(ctx, responseID, run.SessionID, text, "model")
 		}
 		if err := m.event(ctx, run.ID, "model.completed", map[string]any{
-			"response_id": responseID, "provider": resp.Provider, "action": batch.Action,
+			"response_id": responseID, "provider": resp.Provider, "model": usage.Model, "action": batch.Action,
 			"prefix_hash":  contextpkg.PrefixHash(toContext(prefix)),
 			"input_tokens": usage.InputTokens, "cached_input_tokens": usage.CachedInputTokens,
 			"output_tokens": usage.OutputTokens, "latency_ms": usage.LatencyMS,
-			"cost_usd": costUSD,
+			"cost_usd": usage.CostUSD, "cost_known": usage.CostKnown,
 		}); err != nil {
 			return storage.Run{}, err
 		}

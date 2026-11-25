@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/snapshot"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
@@ -229,7 +228,7 @@ func TestDoctorOpenAIMissingKeyWarns(t *testing.T) {
 	}
 }
 
-func TestStatsAggregatesUsageAndPrices(t *testing.T) {
+func TestStatsLegacyUsageRemainsUnknownWithCurrentPrices(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "stats.db")
@@ -314,11 +313,10 @@ func TestStatsAggregatesUsageAndPrices(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	cost, ok := report.Totals.Cost.(float64)
-	if !ok || cost != 0.000165 {
-		t.Fatalf("priced cost=%#v", report.Totals.Cost)
+	if report.Totals.Cost != "—" {
+		t.Fatalf("legacy cost changed with current prices: %#v", report.Totals.Cost)
 	}
-	if len(report.Results) != 1 || report.Results[0].Group != "gpt-test" {
+	if len(report.Results) != 1 || report.Results[0].Group != "unknown" {
 		t.Fatalf("model results: %+v", report.Results)
 	}
 	after, err := os.ReadFile(dbPath)
@@ -334,31 +332,32 @@ func TestStatsCacheWarningThreshold(t *testing.T) {
 	now := time.Now().UTC()
 	base := sqlite.UsageRecord{Provider: "openai", RunID: "run", CreatedAt: now}
 	base.Usage = domain.Usage{InputTokens: cacheWarningInputTokenThreshold, CachedInputTokens: 0}
-	report := aggregateStats([]sqlite.UsageRecord{base}, "day", 30, now.Add(-30*24*time.Hour), config.Config{OpenAIModel: "gpt-test"})
+	report := aggregateStats([]sqlite.UsageRecord{base}, "day", 30, now.Add(-30*24*time.Hour))
 	if len(report.Warnings) != 0 {
 		t.Fatalf("warning at threshold: %v", report.Warnings)
 	}
 	base.Usage.InputTokens++
-	report = aggregateStats([]sqlite.UsageRecord{base}, "day", 30, now.Add(-30*24*time.Hour), config.Config{OpenAIModel: "gpt-test"})
+	report = aggregateStats([]sqlite.UsageRecord{base}, "day", 30, now.Add(-30*24*time.Hour))
 	if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "unstable") {
 		t.Fatalf("warning above threshold: %v", report.Warnings)
 	}
 }
 
-func TestAttributedModelUsesConfiguredProviderModels(t *testing.T) {
-	cfg := config.Config{OpenAIModel: "gpt-test", AnthropicModel: "claude-test"}
+func TestPersistedModelDoesNotInferFromProvider(t *testing.T) {
 	for _, tc := range []struct {
 		provider string
+		model    string
 		want     string
 	}{
-		{"openai", "gpt-test"},
-		{"openai-responses", "gpt-test"},
-		{"anthropic", "claude-test"},
-		{"mock", "mock"},
-		{"", "unknown"},
+		{"openai", "gpt-call", "gpt-call"},
+		{"openai-responses", "", "unknown"},
+		{"anthropic", "claude-call", "claude-call"},
+		{"mock", "", "unknown"},
+		{"", "", "unknown"},
 	} {
-		if got := attributedModel(tc.provider, cfg); got != tc.want {
-			t.Fatalf("attributedModel(%q) = %q; want %q", tc.provider, got, tc.want)
+		record := sqlite.UsageRecord{Provider: tc.provider, Usage: domain.Usage{Model: tc.model}}
+		if got := persistedModel(record); got != tc.want {
+			t.Fatalf("persistedModel(%+v) = %q; want %q", record, got, tc.want)
 		}
 	}
 }

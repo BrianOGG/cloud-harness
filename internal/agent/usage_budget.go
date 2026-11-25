@@ -38,31 +38,61 @@ func (m *Manager) pricedModel(p provider.Provider, requested string) string {
 	return provider.ModelName(p, requested)
 }
 
-// usageCost is the estimated cost of one call. A model without a configured
-// price costs zero, as it does in stats.
-func usageCost(prices map[string]config.ModelPrice, model string, usage domain.Usage) float64 {
+// usageCostKnown estimates one call using the price snapshot available to the
+// manager. A missing price is distinct from a known zero-cost call.
+func usageCostKnown(prices map[string]config.ModelPrice, model string, usage domain.Usage) (float64, bool) {
 	price, ok := prices[model]
 	if !ok {
-		return 0
+		return 0, false
 	}
 	uncached := max(usage.InputTokens-usage.CachedInputTokens, 0)
-	return (float64(uncached)*price.Input + float64(usage.OutputTokens)*price.Output + float64(usage.CachedInputTokens)*price.Cached) / 1_000_000
+	return (float64(uncached)*price.Input + float64(usage.OutputTokens)*price.Output + float64(usage.CachedInputTokens)*price.Cached) / 1_000_000, true
+}
+
+// annotateUsage attaches the model active for this completed call and freezes
+// the price result in usage_json. ProfileProvider is inspected after Complete,
+// so a fallback response is attributed to its backup model.
+func (m *Manager) annotateUsage(model provider.Provider, requested string, resp domain.ModelResponse) domain.Usage {
+	return m.usageForModel(m.pricedModel(model, requested), resp)
+}
+
+func (m *Manager) usageForModel(model string, resp domain.ModelResponse) domain.Usage {
+	usage := usageOf(resp)
+	usage.Model = model
+	// A missing usage item is not evidence that a priced call was free.
+	for _, item := range resp.Items {
+		if item.Kind == domain.ItemUsage && item.Usage != nil {
+			usage.CostUSD, usage.CostKnown = usageCostKnown(m.prices(), model, usage)
+			break
+		}
+	}
+	return usage
 }
 
 // chargeUsage adds a finished model call's tokens and cost to the run budget
-// and returns the cost. The call is already paid for, so a failed write does
-// not fail the run: the caller's next model charge still sees every committed
-// call.
-func (m *Manager) chargeUsage(ctx context.Context, runID, model string, usage domain.Usage) float64 {
-	cost := usageCost(m.prices(), model, usage)
+// using the same captured estimate that is persisted for stats. The call is
+// already paid for, so a failed write does not fail the run: the caller's next
+// model charge still sees every committed call.
+func (m *Manager) chargeUsage(ctx context.Context, runID string, usage domain.Usage) {
 	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 {
-		return cost
+		return
 	}
 	_ = m.Store.ChargeUsage(context.WithoutCancel(ctx), runID, domain.UsageCharge{
 		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
-		CachedInputTokens: usage.CachedInputTokens, CostUSD: cost,
+		CachedInputTokens: usage.CachedInputTokens, CostUSD: usage.CostUSD,
 	})
-	return cost
+}
+
+// recordFailedUsage persists token and price metadata reported before an
+// unsuccessful completion, without storing partial text or tool calls.
+func (m *Manager) recordFailedUsage(ctx context.Context, runID string, resp domain.ModelResponse, usage domain.Usage) {
+	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 {
+		return
+	}
+	_ = m.Store.SaveModelResponse(context.WithoutCancel(ctx), storage.StoredResponse{
+		ID: domain.NewID("rsp_"), RunID: runID, Provider: resp.Provider,
+		Complete: false, Usage: usage, Action: domain.ActionProtocol, CreatedAt: m.now(),
+	})
 }
 
 // recordMemoryCall accounts for a finished summary or memory call: its usage
@@ -71,9 +101,13 @@ func (m *Manager) chargeUsage(ctx context.Context, runID, model string, usage do
 // row keeps no items: the summary lives in the context or memory it was
 // written for, not in the run's transcript.
 func (m *Manager) recordMemoryCall(ctx context.Context, runID string, model provider.Provider, resp domain.ModelResponse, callErr error, started time.Time) {
-	usage := usageOf(resp)
-	m.chargeUsage(ctx, runID, m.pricedModel(model, ""), usage)
-	if callErr != nil || m.Store == nil {
+	usage := m.annotateUsage(model, "", resp)
+	m.chargeUsage(ctx, runID, usage)
+	if m.Store == nil {
+		return
+	}
+	if callErr != nil {
+		m.recordFailedUsage(ctx, runID, resp, usage)
 		return
 	}
 	if usage.LatencyMS == 0 {

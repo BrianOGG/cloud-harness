@@ -480,11 +480,14 @@ func (m *Manager) injectPlan(ctx context.Context, run storage.Run, messages []pr
 		{Role: "user", Content: contextpkg.FormatPlannerPrompt(userText, catalog)},
 	}})
 	if err != nil {
+		usage := m.annotateUsage(m.Provider, "", resp)
+		m.chargeUsage(ctx, run.ID, usage)
+		m.recordFailedUsage(ctx, run.ID, resp, usage)
 		_ = m.event(ctx, run.ID, "planner.failed", map[string]string{"error": err.Error()})
 		return messages
 	}
-	usage := usageOf(resp)
-	m.chargeUsage(ctx, run.ID, m.pricedModel(m.Provider, ""), usage)
+	usage := m.annotateUsage(m.Provider, "", resp)
+	m.chargeUsage(ctx, run.ID, usage)
 	if usage.LatencyMS == 0 {
 		usage.LatencyMS = time.Since(started).Milliseconds()
 	}

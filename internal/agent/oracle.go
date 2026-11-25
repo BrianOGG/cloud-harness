@@ -67,7 +67,7 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 			return err
 		}
 		if !additional {
-			if err := m.admitOracle(ctx, runID, cfg.OracleMaxCostUSD, cfg.ModelPrices); err != nil {
+			if err := m.admitOracle(ctx, runID, cfg.OracleMaxCostUSD, m.prices()); err != nil {
 				return err
 			}
 		} else if before == nil {
@@ -75,7 +75,7 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 				return err
 			}
 		}
-		lastModel = provider.ModelName(m.Provider, model.Model)
+		lastModel = m.pricedModel(model, "")
 		return nil
 	}
 	callCtx, cancel := context.WithTimeout(routed, oracleTimeout)
@@ -91,17 +91,19 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 	}
 	persist := context.WithoutCancel(ctx)
 	if lastModel != "" {
-		usage := usageOf(resp)
-		m.chargeUsage(persist, runID, lastModel, usage)
+		usage := m.usageForModel(lastModel, resp)
+		hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CachedInputTokens > 0
+		m.chargeUsage(persist, runID, usage)
 		elapsed := time.Since(started).Milliseconds()
 		if eventErr := m.event(persist, runID, "oracle.asked", map[string]any{
-			"question_length": input.QuestionLength, "code_bytes": input.CodeBytes, "model": lastModel,
+			"question_length": input.QuestionLength, "code_bytes": input.CodeBytes, "model": usage.Model,
 			"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 			"cached_input_tokens": usage.CachedInputTokens, "latency_ms": elapsed,
+			"cost_usd": usage.CostUSD, "cost_known": usage.CostKnown,
 		}); eventErr != nil {
 			return "", eventErr
 		}
-		if err == nil || usage != (domain.Usage{}) {
+		if err == nil || hasUsage {
 			if usage.LatencyMS == 0 {
 				usage.LatencyMS = elapsed
 			}
@@ -186,11 +188,12 @@ func (m *Manager) oracleCost(ctx context.Context, runID string, prices map[strin
 }
 
 // OracleModelCost is the usage and estimated cost for one model used by
-// ask_oracle. CostUSD is zero when the model has no configured price.
+// ask_oracle. CostKnown distinguishes a known zero from an unknown estimate.
 type OracleModelCost struct {
 	Model      string
 	ModelCalls int
 	CostUSD    float64
+	CostKnown  bool
 }
 
 // OracleCostSummary is calculated entirely from the existing event stream.
@@ -198,15 +201,18 @@ type OracleModelCost struct {
 type OracleCostSummary struct {
 	Consultations  int
 	CostUSD        float64
+	CostKnown      bool
 	ByModel        map[string]OracleModelCost
 	BudgetFailures int
 }
 
 // SummarizeOracleEvents applies the same input/output token pricing used by
-// the oracle cost circuit breaker. Unpriced models still count as
-// consultations and model calls, but contribute zero estimated cost.
+// the oracle cost circuit breaker. New events use their captured cost, even
+// when it was unknown. Legacy events already record a model and retain their
+// existing price-based estimate. Unpriced calls still count but mark the cost
+// incomplete instead of presenting the known subtotal as a fully known zero.
 func SummarizeOracleEvents(events []storage.Event, prices map[string]config.ModelPrice) (OracleCostSummary, error) {
-	summary := OracleCostSummary{ByModel: make(map[string]OracleModelCost)}
+	summary := OracleCostSummary{ByModel: make(map[string]OracleModelCost), CostKnown: true}
 	for _, event := range events {
 		switch event.Type {
 		case "oracle.asked":
@@ -216,13 +222,23 @@ func SummarizeOracleEvents(events []storage.Event, prices map[string]config.Mode
 			}
 			summary.Consultations++
 			modelCost := summary.ByModel[asked.Model]
+			if modelCost.ModelCalls == 0 {
+				modelCost.CostKnown = true
+			}
 			modelCost.Model = asked.Model
 			modelCost.ModelCalls++
-			if price, ok := prices[asked.Model]; ok {
-				cost := (float64(asked.InputTokens)*price.Input + float64(asked.OutputTokens)*price.Output) / 1_000_000
-				modelCost.CostUSD += cost
-				summary.CostUSD += cost
+			cost, known := asked.CostUSD, asked.CostKnown
+			if !asked.HasCostSnapshot {
+				if price, ok := prices[asked.Model]; ok {
+					uncached := max(asked.InputTokens-asked.CachedInputTokens, 0)
+					cost = (float64(uncached)*price.Input + float64(asked.CachedInputTokens)*price.Cached + float64(asked.OutputTokens)*price.Output) / 1_000_000
+					known = true
+				}
 			}
+			modelCost.CostKnown = modelCost.CostKnown && known
+			summary.CostKnown = summary.CostKnown && known
+			modelCost.CostUSD += cost
+			summary.CostUSD += cost
 			summary.ByModel[asked.Model] = modelCost
 		case "oracle.failed":
 			var failed struct {
@@ -237,16 +253,23 @@ func SummarizeOracleEvents(events []storage.Event, prices map[string]config.Mode
 }
 
 type oracleAskedEvent struct {
-	Model        string `json:"model"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
+	Model             string  `json:"model"`
+	InputTokens       int     `json:"input_tokens"`
+	CachedInputTokens int     `json:"cached_input_tokens,omitempty"`
+	OutputTokens      int     `json:"output_tokens"`
+	CostUSD           float64 `json:"cost_usd"`
+	CostKnown         bool    `json:"cost_known"`
+	HasCostSnapshot   bool    `json:"-"`
 }
 
 func parseOracleAskedEvent(payload json.RawMessage) (oracleAskedEvent, error) {
 	var asked struct {
-		Model        *string `json:"model"`
-		InputTokens  *int    `json:"input_tokens"`
-		OutputTokens *int    `json:"output_tokens"`
+		Model             *string  `json:"model"`
+		InputTokens       *int     `json:"input_tokens"`
+		CachedInputTokens *int     `json:"cached_input_tokens"`
+		OutputTokens      *int     `json:"output_tokens"`
+		CostUSD           *float64 `json:"cost_usd"`
+		CostKnown         *bool    `json:"cost_known"`
 	}
 	if err := json.Unmarshal(payload, &asked); err != nil || asked.Model == nil || asked.InputTokens == nil || asked.OutputTokens == nil || strings.TrimSpace(*asked.Model) == "" {
 		return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from an invalid oracle.asked event")
@@ -254,7 +277,20 @@ func parseOracleAskedEvent(payload json.RawMessage) (oracleAskedEvent, error) {
 	if *asked.InputTokens < 0 || *asked.OutputTokens < 0 {
 		return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from negative token usage")
 	}
-	return oracleAskedEvent{Model: *asked.Model, InputTokens: *asked.InputTokens, OutputTokens: *asked.OutputTokens}, nil
+	out := oracleAskedEvent{Model: *asked.Model, InputTokens: *asked.InputTokens, OutputTokens: *asked.OutputTokens}
+	if asked.CachedInputTokens != nil {
+		if *asked.CachedInputTokens < 0 {
+			return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from negative cached token usage")
+		}
+		out.CachedInputTokens = *asked.CachedInputTokens
+	}
+	if asked.CostKnown != nil || asked.CostUSD != nil {
+		if asked.CostKnown == nil || asked.CostUSD == nil || *asked.CostUSD < 0 || math.IsNaN(*asked.CostUSD) || math.IsInf(*asked.CostUSD, 0) || !*asked.CostKnown && *asked.CostUSD != 0 {
+			return oracleAskedEvent{}, domain.E(domain.CodeCorrupt, "cannot calculate ask_oracle cost from an invalid cost snapshot")
+		}
+		out.CostUSD, out.CostKnown, out.HasCostSnapshot = *asked.CostUSD, *asked.CostKnown, true
+	}
+	return out, nil
 }
 
 func formatOracleUSD(amount float64) string {
