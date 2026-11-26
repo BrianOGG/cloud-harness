@@ -141,9 +141,27 @@ code, pre, .mono { font-family: var(--mono); }
 .turn { padding: 14px 0; }
 .user-row { display: flex; justify-content: flex-end; }
 .user-bubble { max-width: min(85%, 600px); padding: 9px 16px; border-radius: 20px; background: var(--surface-muted); white-space: pre-wrap; }
-.user-bubble.missing { color: var(--text-tertiary); font-size: 13px; }
 .assistant { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
-.exchange { display: flex; flex-direction: column; gap: 12px; margin: 4px 0; }
+.history-toolbar, .history-meta, .history-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.history-toolbar { justify-content: space-between; color: var(--text-secondary); font-size: 13px; }
+.history-list { display: grid; gap: 24px; margin: 14px 0 0; padding: 0; list-style: none; }
+.history-message { min-width: 0; overflow-wrap: anywhere; }
+.history-meta { margin-bottom: 7px; color: var(--text-secondary); font-size: 12px; }
+.history-meta time { color: var(--text-tertiary); font-size: 11px; }
+.history-user .history-meta, .history-user .history-actions { justify-content: flex-end; }
+.history-actions { margin-top: 5px; }
+.history-fact { padding: 10px 14px; border-left: 3px solid var(--line-strong); border-radius: 0 8px 8px 0; background: var(--surface-muted); font-size: 13px; }
+.history-fact strong { font-weight: 550; }
+.history-fact p { margin: 4px 0 0; white-space: pre-wrap; }
+.history-failed { border-color: var(--red); }
+.history-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 12px 0; padding: 12px; border-radius: 10px; background: var(--red-bg); color: var(--red); overflow-wrap: anywhere; font-size: 13px; }
+.history-empty { margin: 32px 0; color: var(--text-secondary); text-align: center; font-size: 13px; }
+.session-runs { margin-top: 28px; border-top: 1px solid var(--line); }
+.session-runs h2 { margin: 16px 0 0; color: var(--text-secondary); font-size: 13px; font-weight: 550; }
+.run-turn .assistant { margin-top: 0; }
+.run-label { color: var(--text-tertiary); font-family: var(--mono); font-size: 11px; }
+.past-runs { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+.past-runs > summary { width: fit-content; padding: 6px 0; color: var(--text-secondary); cursor: pointer; font-size: 12px; }
 
 .work-toggle { display: inline-flex; align-items: center; gap: 8px; margin-left: -8px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13.5px; }
 .work-toggle:not(.static):hover { background: var(--surface-muted); color: var(--text); }

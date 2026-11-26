@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
-import type { ApprovalView, BudgetExtension, HarnessEvent, RunView, SessionView, TraceView } from './api';
+import type { ApprovalView, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn, Turn } from './Chat';
-import type { Exchange, TurnActions } from './Chat';
+import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, elapsedLabel, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
+import { loadSessionMessages, mergeSessionMessages } from './history';
+import { SessionHistory } from './SessionHistory';
 import { liveText, mergeEvents } from './timeline';
 import './App.css';
 
@@ -14,8 +16,6 @@ type View = 'chat' | 'approvals' | 'observability';
 type Theme = 'light' | 'dark';
 
 const THEME_KEY = 'cloud-harness.web-theme';
-const MESSAGES_KEY = 'cloud-harness.web-messages';
-const ANSWERS_KEY = 'cloud-harness.web-answers';
 const TITLES_KEY = 'cloud-harness.web-titles';
 const SESSION_KEY = 'cloud-harness.web-session';
 const SIDEBAR_KEY = 'cloud-harness.web-sidebar';
@@ -48,6 +48,63 @@ function useStored<T>(key: string, fallback: T) {
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+// A full cursor walk is atomic from the reader's perspective. Further updates
+// queue one more walk instead of repeatedly aborting a large session's history.
+function useSessionMessages(sessionId: string | null, revision: string) {
+  const [state, setState] = useState<{ sessionId: string | null; messages: SessionMessage[]; loading: boolean; error: string }>({ sessionId: null, messages: [], loading: false, error: '' });
+  const current = useRef<{ sync: () => Promise<void> } | null>(null);
+  const refresh = useCallback(() => { void current.current?.sync(); }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const controller = new AbortController();
+    const request = {
+      syncing: false,
+      again: false,
+      sync: async () => {
+        if (controller.signal.aborted || current.current !== request) return;
+        if (request.syncing) {
+          request.again = true;
+          return;
+        }
+        request.syncing = true;
+        do {
+          request.again = false;
+          setState((previous) => ({ sessionId, messages: previous.sessionId === sessionId ? previous.messages : [], loading: true, error: '' }));
+          try {
+            const messages = await loadSessionMessages(sessionId, { signal: controller.signal });
+            if (controller.signal.aborted || current.current !== request) return;
+            // Replace with the complete server snapshot, including retention
+            // changes. The shared merge preserves ID identity and exact order.
+            setState({ sessionId, messages: mergeSessionMessages([], messages), loading: request.again, error: '' });
+          } catch (reason) {
+            if (controller.signal.aborted || current.current !== request) return;
+            setState((previous) => ({ ...previous, loading: request.again, error: errorText(reason) }));
+          }
+        } while (request.again && !controller.signal.aborted);
+        request.syncing = false;
+      },
+    };
+    current.current = request;
+    const onFocus = () => { void request.sync(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      controller.abort();
+      if (current.current === request) current.current = null;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [sessionId]);
+
+  useEffect(refresh, [sessionId, revision, refresh]);
+
+  // Mask the previous session during the render before effect cleanup, too.
+  const matches = state.sessionId === sessionId;
+  return { messages: matches ? state.messages : [], loading: Boolean(sessionId) && (!matches || state.loading), error: matches ? state.error : '', refresh };
+}
+
 export default function App() {
   const [view, setView] = useState<View>('chat');
   const [theme, setTheme] = useState<Theme>(() => {
@@ -58,8 +115,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem(SIDEBAR_KEY) !== 'closed' && !window.matchMedia(NARROW).matches);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [runs, setRuns] = useState<Record<string, RunView[]>>({});
-  const [messages, setMessages] = useStored<Record<string, string>>(MESSAGES_KEY, {});
-  const [answers, setAnswers] = useStored<Record<string, Exchange[]>>(ANSWERS_KEY, {});
   const [titles, setTitles] = useStored<Record<string, string>>(TITLES_KEY, {});
   const [activeSession, setActiveSession] = useState<string | null>(() => localStorage.getItem(SESSION_KEY));
   const [pending, setPending] = useState<{ sessionId: string; text: string; runId?: string } | null>(null);
@@ -74,6 +129,7 @@ export default function App() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
+  const [answerRun, setAnswerRun] = useState<string | null>(null);
 
   const lastSeq = useRef<Record<string, number>>({});
   const streamedAt = useRef<Record<string, number>>({});
@@ -84,17 +140,28 @@ export default function App() {
   const stickToBottom = useRef(true);
   const focusRun = useRef<string | null>(null);
   const runsRef = useRef(runs);
+  const runRequests = useRef<Record<string, number>>({});
 
-  // Child runs share the session but are not turns of the conversation.
-  const activeRuns = useMemo(() => (activeSession ? (runs[activeSession] || []).filter((run) => !run.parent_id) : []), [activeSession, runs]);
-  const latestRun = activeRuns[activeRuns.length - 1] || null;
+  // History is never filtered by a root run; children retain their own facts
+  // and current waits. Prefer the newest root for the main stop/status control.
+  const activeRuns = useMemo(() => activeSession ? (runs[activeSession] || []) : [], [activeSession, runs]);
+  const sessionSummary = sessions.find((session) => session.id === activeSession);
+  const sessionRevision = sessionSummary ? `${sessionSummary.updated_at}:${sessionSummary.run_count}:${sessionSummary.latest_run_at}:${sessionSummary.latest_run_status}` : '';
+  const latestRun = [...activeRuns].reverse().find((run) => !run.parent_id) || activeRuns[activeRuns.length - 1] || null;
   const followKey = useMemo(() => activeRuns.filter(isActive).map((run) => run.id).join(','), [activeRuns]);
+  const historyRevision = `${sessionRevision}|${activeRuns.map((run) => `${run.id}:${run.version}:${run.status}:${events[run.id]?.at(-1)?.seq || 0}`).join('|')}`;
+  const history = useSessionMessages(activeSession, historyRevision);
   const sending = pending !== null;
-  const optimistic = pending && pending.sessionId === activeSession && !activeRuns.some((run) => run.id === pending.runId) ? pending : null;
-  const busy = sending || (latestRun?.status === 'RUNNING') || (latestRun?.status === 'WAITING' && latestRun.wait_reason !== 'USER');
+  const optimistic = pending && pending.sessionId === activeSession && !history.messages.some((message) => message.kind === 'input' && message.run_id === pending.runId) ? pending : null;
   // A question can also wait on a run that is no longer the newest of the session.
-  const asking = useMemo(() => [...activeRuns].reverse().find((run) => run.status === 'WAITING' && run.wait_reason === 'USER') || null, [activeRuns]);
+  const asking = useMemo(() => {
+    const waiting = activeRuns.filter((run) => run.status === 'WAITING' && run.wait_reason === 'USER');
+    return waiting.find((run) => run.id === answerRun) || waiting[waiting.length - 1] || null;
+  }, [activeRuns, answerRun]);
   const answering = sending ? null : asking;
+  const busy = sending || (answering ? Boolean(acting[answering.id]) : activeRuns.some(isActive));
+  const currentRuns = activeRuns.filter(isActive);
+  const finishedRuns = activeRuns.filter((run) => !isActive(run));
 
   const upsertRun = useCallback((run: RunView) => {
     setRuns((previous) => {
@@ -113,8 +180,21 @@ export default function App() {
   }, []);
 
   const refreshRuns = useCallback(async (sessionId: string) => {
+    const identity = (runRequests.current[sessionId] || 0) + 1;
+    runRequests.current[sessionId] = identity;
+    const known = new Set((runsRef.current[sessionId] || []).map((run) => run.id));
     const rows = await api.listRuns(sessionId);
-    setRuns((previous) => ({ ...previous, [sessionId]: rows }));
+    if (runRequests.current[sessionId] !== identity) return rows;
+    setRuns((previous) => {
+      const existing = previous[sessionId] || [];
+      const merged = rows.map((run) => {
+        const cached = existing.find((item) => item.id === run.id);
+        return cached && cached.version > run.version ? cached : run;
+      });
+      // Do not drop a run discovered while this list request was in flight.
+      merged.push(...existing.filter((run) => !known.has(run.id) && !rows.some((row) => row.id === run.id)));
+      return { ...previous, [sessionId]: merged };
+    });
     return rows;
   }, []);
 
@@ -151,7 +231,9 @@ export default function App() {
 
   const onEvent = useCallback((runId: string, event: HarnessEvent) => {
     streamedAt.current[runId] = Date.now();
-    setLiveText(runId, liveText(liveNow.current[runId] || '', event));
+    // Committed response text belongs to messages, even if the run continues
+    // with another model call. Stream text is only a temporary in-flight view.
+    setLiveText(runId, event.type === 'model.completed' || /^run\.(completed|failed|cancelled)$/i.test(event.type) ? '' : liveText(liveNow.current[runId] || '', event));
     // Stream deltas and resets are not stored and carry no id.
     if (event.seq <= 0) return;
     lastSeq.current[runId] = Math.max(lastSeq.current[runId] || 0, event.seq);
@@ -235,13 +317,15 @@ export default function App() {
   useEffect(() => {
     if (!activeSession) return;
     const sessionId = activeSession;
-    stickToBottom.current = true;
-    api.listRuns(sessionId).then((rows) => setRuns((previous) => ({ ...previous, [sessionId]: rows }))).catch((reason: unknown) => {
+    let stopped = false;
+    refreshRuns(sessionId).catch((reason: unknown) => {
+      if (stopped) return;
       // A session id saved by an earlier serve database no longer exists.
-      setActiveSession((current) => (current === sessionId ? null : current));
-      if (!/not.?found|404/i.test(errorText(reason))) setError(`对话加载失败：${errorText(reason)}`);
+      if (/not.?found|404/i.test(errorText(reason))) setActiveSession((current) => (current === sessionId ? null : current));
+      else setError(`运行状态加载失败：${errorText(reason)}`);
     });
-  }, [activeSession]);
+    return () => { stopped = true; };
+  }, [activeSession, sessionRevision, refreshRuns]);
 
   // Follow every run of the open session that has not finished: one event
   // stream each, plus a poll of the run view once a second.
@@ -285,13 +369,12 @@ export default function App() {
     };
   }, [followKey, onEvent, pullEvents, refreshApprovals, refreshRun, refreshSessions, setLiveText]);
 
-  // Name a session after its first message when this browser has it.
+  // Titles are a UI preference; transcript text always comes from messages.
   useEffect(() => {
     if (!activeSession || titles[activeSession]) return;
-    const first = activeRuns[0];
-    const text = first && (first.message || messages[first.id]);
+    const text = history.messages.find((message) => message.kind === 'input')?.content;
     if (text) setTitles((previous) => ({ ...previous, [activeSession]: text.slice(0, 80) }));
-  }, [activeRuns, activeSession, messages, setTitles, titles]);
+  }, [activeSession, history.messages, setTitles, titles]);
 
   const inspectedRun = useMemo(() => {
     if (!inspected) return null;
@@ -322,7 +405,7 @@ export default function App() {
   useEffect(() => {
     const node = threadRef.current;
     if (!node) return;
-    const target = focusRun.current ? node.querySelector(`.turn[data-run-id="${focusRun.current}"]`) : null;
+    const target = focusRun.current ? node.querySelector(`.history-message[data-run-id="${focusRun.current}"]`) || node.querySelector(`.turn[data-run-id="${focusRun.current}"][data-status="WAITING"], .turn[data-run-id="${focusRun.current}"][data-status="RUNNING"]`) : null;
     if (target) {
       // A run opened by id is shown at its own turn, not at the newest one.
       stickToBottom.current = false;
@@ -330,12 +413,14 @@ export default function App() {
     } else if (stickToBottom.current) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [activeRuns, events, live, optimistic]);
+  }, [activeRuns, events, history.messages, live, optimistic, view]);
 
   const openSession = (sessionId: string | null) => {
+    stickToBottom.current = true;
     setError('');
     setView('chat');
     setInspected(null);
+    setAnswerRun(null);
     setActiveSession(sessionId);
     if (window.matchMedia(NARROW).matches) setSidebarOpen(false);
   };
@@ -368,9 +453,8 @@ export default function App() {
     let adopted = false;
     const adopt = (run: RunView) => {
       adopted = true;
-      setMessages((previous) => ({ ...previous, [run.id]: text }));
       upsertRun(run);
-      setPending((current) => (current ? { ...current, runId: run.id } : current));
+      setPending((current) => (current?.sessionId === target ? { ...current, runId: run.id } : current));
     };
     setTitles((previous) => (previous[target] ? previous : { ...previous, [target]: text.slice(0, 80) }));
     setPending({ sessionId: target, text });
@@ -398,6 +482,7 @@ export default function App() {
     } finally {
       window.clearInterval(finder);
       setPending(null);
+      history.refresh();
       refreshSessions().catch(() => undefined);
     }
   };
@@ -413,6 +498,7 @@ export default function App() {
       return false;
     } finally {
       setActing((previous) => ({ ...previous, [runId]: false }));
+      history.refresh();
       refreshApprovals().catch(() => undefined);
       refreshRun(runId).catch(() => undefined);
     }
@@ -426,17 +512,14 @@ export default function App() {
       setError(`补充预算失败：${errorText(reason)}`);
     } finally {
       setActing((previous) => ({ ...previous, [runId]: false }));
+      history.refresh();
     }
   };
 
   const answer = async (run: RunView, text: string) => {
-    const exchange = { q: run.question || '', a: text };
     setDraft('');
     stickToBottom.current = true;
-    setAnswers((previous) => ({ ...previous, [run.id]: [...(previous[run.id] || []), exchange] }));
     if (await respond(run.id, { answer: text })) return;
-    // serve refused the answer: it is not part of the conversation.
-    setAnswers((previous) => ({ ...previous, [run.id]: (previous[run.id] || []).filter((item) => item !== exchange) }));
     setDraft((current) => current || text);
   };
 
@@ -448,6 +531,7 @@ export default function App() {
       setError(`取消失败：${errorText(reason)}`);
     } finally {
       setActing((previous) => ({ ...previous, [runId]: false }));
+      history.refresh();
     }
   };
 
@@ -475,16 +559,23 @@ export default function App() {
     addBudget: (runId, extension) => void addBudget(runId, extension),
     cancel: (runId) => void cancel(runId),
     inspect: (runId) => {
-      setInspected(runId);
       const run = activeRuns.find((item) => item.id === runId);
-      if (run) loadEvents(run);
+      if (run) {
+        setInspected(runId);
+        loadEvents(run);
+      } else {
+        void openRun(runId);
+      }
+    },
+    focusAnswer: (runId) => {
+      setAnswerRun(runId);
+      threadRef.current?.parentElement?.querySelector('textarea')?.focus();
     },
     loadEvents,
   };
 
   const groups = useMemo(() => {
-    const shown = sessions.filter((session) => session.run_count > 0 || session.id === activeSession);
-    const sorted = [...shown].sort((a, b) => (b.latest_run_at || b.updated_at).localeCompare(a.latest_run_at || a.updated_at));
+    const sorted = [...sessions].sort((a, b) => (b.latest_run_at || b.updated_at).localeCompare(a.latest_run_at || a.updated_at));
     const out: { label: string; items: SessionView[] }[] = [];
     for (const session of sorted) {
       const label = dayGroup(session.latest_run_at || session.updated_at);
@@ -493,10 +584,14 @@ export default function App() {
       else out.push({ label, items: [session] });
     }
     return out;
-  }, [activeSession, sessions]);
+  }, [sessions]);
 
   const titleOf = (sessionId: string) => titles[sessionId] || `对话 ${shortId(sessionId)}`;
-  const empty = view === 'chat' && activeRuns.length === 0 && !optimistic;
+  const refreshHistory = () => {
+    history.refresh();
+    if (activeSession) void refreshRuns(activeSession).catch(() => undefined);
+  };
+  const empty = view === 'chat' && !activeSession && !optimistic;
   const composer = (
     <Composer
       value={draft}
@@ -511,7 +606,7 @@ export default function App() {
       busy={Boolean(busy)}
       stopping={latestRun ? acting[latestRun.id] : false}
       placeholder={answering ? '回答 agent 的问题…' : '给 Cloud Harness 发消息…'}
-      hint={online === false ? '未连接到 serve' : provider ? `模型：${provider}` : ''}
+      hint={online === false ? '未连接到 serve' : answering ? `回答运行 ${shortId(answering.id)} 的问题` : provider ? `模型：${provider}` : ''}
       autoFocus={view === 'chat'}
     />
   );
@@ -588,10 +683,15 @@ export default function App() {
             stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
           }}>
             <div className="thread-inner">
-              {activeRuns.map((run) => (
-                <Turn key={run.id} run={run} message={messages[run.id]} exchanges={answers[run.id] || []} events={events[run.id] || []} live={live[run.id] || ''} acting={Boolean(acting[run.id])} actions={actions} />
-              ))}
+              <SessionHistory messages={history.messages} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
               {optimistic && <PendingTurn text={optimistic.text} />}
+              {currentRuns.length > 0 && <section className="session-runs" aria-label="运行过程与当前操作">
+                <h2>运行过程与当前操作</h2>
+                {currentRuns.map((run) => <Turn key={run.id} run={run} events={events[run.id] || []} live={live[run.id] || ''} acting={Boolean(acting[run.id])} actions={actions} />)}
+              </section>}
+              {finishedRuns.length > 0 && <details className="past-runs"><summary>已结束的运行过程 · {finishedRuns.length}</summary>
+                {finishedRuns.map((run) => <Turn key={run.id} run={run} events={events[run.id] || []} live="" acting={Boolean(acting[run.id])} actions={actions} />)}
+              </details>}
             </div>
           </div>
           <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">agent 的工具调用受策略和审批约束；回答可能有误，请核对关键结果。</p></div></div>
