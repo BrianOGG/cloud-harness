@@ -112,6 +112,17 @@ starts a real `serve` with a scripted provider, drives headless Firefox through
 the pages, and writes screenshots under `screenshots/chat/`. It installs Firefox and
 geckodriver on first use and is not part of CI.
 
+The browser pass reads the complete `/v1/sessions/{id}/messages` cursor chain
+and compares rendered message IDs, run IDs, kinds, and statuses with the server.
+It checks persisted inputs, replies, questions, answers, approval decisions,
+child-run history, refresh recovery, and session switching. It does not seed
+message text in localStorage. The capture script gets the temporary HTTP token
+from `CLOUD_HARNESS_HTTP_TOKEN`, never from command arguments.
+
+For cloud-harness acceptance, CH-PM runs the browser pass and final visual and
+second-device checks directly on Osaka, after verifying `hostname` is `osaka`.
+The scripted provider pass is separate from real Agnes model acceptance.
+
 ## `dist/` is checked in
 
 `go build` embeds `web/dist/` (`embed.go`, `//go:embed all:dist`), so a Go
