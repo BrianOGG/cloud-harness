@@ -27,7 +27,7 @@ func (m *Manager) compactionModel(ctx context.Context, runID string, leaseVersio
 	if profiled != nil {
 		if profiled.Provider == nil {
 			copy := *profiled
-			copy.Provider = m.Provider
+			copy.Provider = providerFromContext(ctx, m.Provider)
 			profiled = &copy
 		}
 		return profiled, true, nil
@@ -35,10 +35,14 @@ func (m *Manager) compactionModel(ctx context.Context, runID string, leaseVersio
 	if m.Summarizer != nil {
 		return m.Summarizer, false, nil
 	}
-	if m.Provider == nil {
+	if selected, _ := ctx.Value(runModelKey{}).(string); selected != "" {
+		executor, err := m.profiledModel(ctx, runID, leaseVersion, config.RoleExecutor)
+		return executor, false, err
+	}
+	if providerFromContext(ctx, m.Provider) == nil {
 		return nil, false, domain.E(domain.CodeProviderConfig, "no model is configured for compaction")
 	}
-	return m.Provider, false, nil
+	return providerFromContext(ctx, m.Provider), false, nil
 }
 
 // compactContext brings a context over the token limit back under it before

@@ -59,7 +59,8 @@ func (m *Manager) decidePolicy(ctx context.Context, run storage.Run, st *loopSta
 	if st.policy == nil {
 		return security.PolicyDecision{Effect: security.EffectAsk}, nil
 	}
-	d := st.policy.Evaluate(m.policyRequest(inv))
+	req := m.policyRequest(inv)
+	d := security.ApplyApprovalMode(st.approvalMode, st.policy, req, st.policy.Evaluate(req))
 	if st.policyRecorded == nil {
 		st.policyRecorded = make(map[string]bool)
 	}

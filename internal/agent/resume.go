@@ -205,20 +205,33 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	if run.Status != domain.RunWaiting {
 		return run, domain.E(domain.CodeNotWaiting, "run is not waiting").WithRef(runID)
 	}
+	checkpoint, err := m.loadCheckpoint(ctx, run.ID)
+	if err != nil {
+		return run, err
+	}
+	ctx = context.WithValue(ctx, runModelKey{}, checkpoint.Model)
+	ctx = context.WithValue(ctx, runFallbackModelKey{}, checkpoint.FallbackModel)
+	if checkpoint.ProviderID != "" {
+		if m.ProviderResolver == nil {
+			return run, domain.E(domain.CodeProviderConfig, "selected custom provider is unavailable")
+		}
+		selected, resolveErr := m.ProviderResolver(checkpoint.ProviderID)
+		if resolveErr != nil {
+			return run, resolveErr
+		}
+		ctx = context.WithValue(ctx, runProviderKey{}, selected)
+	}
 	if len(in.Images) > 0 {
 		if run.WaitReason != domain.WaitUser {
 			return run, domain.E(domain.CodeInvalidArgument, "images may only accompany an ask_user answer")
 		}
-		if !provider.SupportsImages(m.Provider) {
+		if !provider.SupportsImages(providerFromContext(ctx, m.Provider)) {
 			return run, domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input")
 		}
 		if err := provider.ValidateImages(in.Images); err != nil {
 			return run, err
 		}
-		snap, err := m.loadCheckpoint(ctx, runID)
-		if err != nil {
-			return run, err
-		}
+		snap := checkpoint
 		var total int
 		for _, message := range snap.Messages {
 			for _, image := range message.Images {
@@ -284,10 +297,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 	default:
 		return run, domain.E(domain.CodeConflict, "unsupported wait reason "+string(run.WaitReason)).WithRef(run.ID)
 	}
-	hookSnapshot, err := m.loadCheckpoint(ctx, run.ID)
-	if err != nil {
-		return run, err
-	}
+	hookSnapshot := checkpoint
 	if legacyHooks(hookSnapshot.Hooks) {
 		hookSnapshot.Hooks, err = hooks.Load(m.Workspace)
 		if err != nil {
@@ -316,6 +326,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		}
 	}
 	st := &loopState{
+		modelID: snap.ModelID, model: snap.Model, fallbackModel: snap.FallbackModel, providerID: snap.ProviderID, approvalMode: snap.ApprovalMode,
 		sensitive: snap.SensitiveRead,
 		reminded:  snap.Reminded,
 		obs:       snap.Observations,

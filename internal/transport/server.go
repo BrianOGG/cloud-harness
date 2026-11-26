@@ -5,24 +5,22 @@ package transport
 import (
 	"context"
 	"crypto/subtle"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/agent"
+	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 	"github.com/BrianOGG/cloud-harness/internal/trace"
 )
-
-//go:embed approval.html
-var approvalHTML []byte
 
 const (
 	// DefaultMaxBodyBytes caps POST and PUT request bodies at 1 MiB.
@@ -47,6 +45,8 @@ const (
 // Server serves the HTTP API. The default bind is loopback.
 type Server struct {
 	Manager           *agent.Manager
+	Models            []ModelOption
+	ProviderSettings  config.CustomProviderStore
 	Now               func() time.Time
 	Token             string
 	HTTPToken         string
@@ -157,10 +157,15 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /v1/models", s.models)
+	mux.HandleFunc("GET /v1/providers", s.customProviders)
+	mux.HandleFunc("PUT /v1/providers", s.customProviders)
 	mux.HandleFunc("GET /approval", serveApprovalPage)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/runs", s.listSessionRuns)
+	mux.HandleFunc("GET /v1/sessions/{id}/preferences", s.sessionSettings)
+	mux.HandleFunc("PUT /v1/sessions/{id}/preferences", s.sessionSettings)
 	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.listSessionMessages)
 	mux.HandleFunc("POST /v1/sessions/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /v1/approvals", s.approvals)
@@ -213,11 +218,14 @@ func checkBearerToken(header, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
-func serveApprovalPage(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// Preserve old notification links as redirects into the conversation UI.
+func serveApprovalPage(w http.ResponseWriter, r *http.Request) {
+	target := "/ui"
+	if runID := r.URL.Query().Get("run"); runID != "" {
+		target += "?run=" + url.QueryEscape(runID)
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
-	_, _ = w.Write(approvalHTML)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +295,9 @@ func (s *Server) listSessionRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Message string `json:"message"`
+		Message      string `json:"message"`
+		ModelID      string `json:"model_id"`
+		ApprovalMode string `json:"approval_mode"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, err)
@@ -298,8 +308,40 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.PathValue("id")
+	settings := s.Manager.Store
+	prefs, err := settings.GetSessionPreferences(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if body.ModelID == "" {
+		if prefs.ModelID == "" {
+			body.ModelID = "default"
+		} else {
+			body.ModelID = prefs.ModelID
+		}
+	}
+	if body.ApprovalMode == "" {
+		body.ApprovalMode = prefs.ApprovalMode
+		if body.ApprovalMode == "" {
+			body.ApprovalMode = "ask"
+		}
+	}
+	if body.ApprovalMode != "ask" && body.ApprovalMode != "safe" && body.ApprovalMode != "workspace-write" {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid approval mode"))
+		return
+	}
+	selected, ok := s.modelOption(body.ModelID)
+	if !ok {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "selected model is not configured"))
+		return
+	}
+	if err := settings.SaveSessionPreferences(r.Context(), storage.SessionPreferences{SessionID: sessionID, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID}); err != nil {
+		writeErr(w, err)
+		return
+	}
 	s.execute(w, r, http.StatusCreated, func(ctx context.Context) (*agent.Execution, error) {
-		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{})
+		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode})
 	})
 }
 

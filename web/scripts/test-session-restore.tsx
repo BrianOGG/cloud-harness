@@ -35,7 +35,9 @@ globalThis.fetch = async (input) => {
   let status = 200;
   let body: unknown;
   if (path === '/healthz') body = { status: 'ok', provider: 'fixture' };
-  else if (path === '/v1/approvals') body = [];
+  else if (path === '/v1/approvals' || path === '/v1/providers') body = [];
+  else if (path === '/v1/models') body = [{ id: 'default', name: '默认模型', model: 'fixture', provider: 'fixture' }];
+  else if (path.endsWith('/preferences')) body = { model_id: 'default', approval_mode: 'ask' };
   else if (path === '/v1/sessions') { await holdSessions; body = [session]; }
   else if (path.endsWith('/runs')) { status = runsStatus; body = status === 200 ? [] : { error: { message: runError } }; }
   else if (path.includes('/messages')) { status = messagesStatus; body = status === 200 ? { messages: [message], next_cursor: '' } : { error: { message: 'record not found' } }; }

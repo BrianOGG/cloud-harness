@@ -65,6 +65,40 @@ type PolicyDecision struct {
 	CommandSHA256 string `json:"command_sha256,omitempty"`
 }
 
+// ApplyApprovalMode adds narrow per-session conveniences after policy evaluation.
+// Explicit deny decisions are final; the session mode can never grant commands.
+func ApplyApprovalMode(mode string, policy *Policy, req PolicyRequest, decision PolicyDecision) PolicyDecision {
+	if decision.Effect == EffectDeny || mode != "safe" && mode != "workspace-write" {
+		return decision
+	}
+	if decision.Effect == EffectAllow {
+		return decision
+	}
+	readonly := map[string]bool{"read_file": true, "list_dir": true, "list_files": true, "grep": true, "git_status": true, "git_diff": true, "git_log": true}
+	if readonly[req.Tool] {
+		decision.Effect, decision.Source, decision.Rule = EffectAllow, "session_mode", "per-session safe operation"
+		return decision
+	}
+	if mode == "workspace-write" && (req.Tool == "write_file" || req.Tool == "edit_file") && policy != nil && policy.AllowsWorkspaceWrite(req) {
+		decision.Effect, decision.Source, decision.Rule = EffectAllow, "session_mode", "workspace-scoped file write"
+	}
+	return decision
+}
+
+// AllowsWorkspaceWrite checks lexical and resolved targets against the run workspace.
+func (p *Policy) AllowsWorkspaceWrite(req PolicyRequest) bool {
+	if p == nil || (req.Tool != "write_file" && req.Tool != "edit_file") || len(req.Paths) == 0 {
+		return false
+	}
+	for _, target := range req.Paths {
+		lexical, resolved := p.targetPaths(target)
+		if !inside(p.Workspace, lexical) || !inside(resolvePolicyPath(p.Workspace), resolved) || ControlPath(p.Workspace, lexical) || ControlPath(p.Workspace, resolved) {
+			return false
+		}
+	}
+	return true
+}
+
 func (d PolicyDecision) Reason() string {
 	return fmt.Sprintf("policy %s (%s): %s", d.Effect, d.Source, d.Rule)
 }

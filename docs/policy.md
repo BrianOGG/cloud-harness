@@ -243,3 +243,25 @@ JSON 额外保留 invocation ID 和可选规则序号，便于关联同一次调
 因配置变更而不同。doctor 不输出规则正文或命令前缀，不读取工具参数、结果、
 checkpoint 或模型内容来推断决策；汇总的事件读取只访问决策事件正文和关联 ID。
 整个检查保持只读。策略文件加载失败或事件不可读时，`policy` 检查报告失败。
+
+## 会话审批模式
+
+输入框可选择 `ask`、`safe` 或 `workspace-write`。偏好保存在当前 serve 数据库的
+`session_preferences` 表中；每次运行还把所选模式写入 checkpoint，暂停恢复不受
+之后的会话选择影响。模式不改写 `policy.json`。
+
+| 模式 | 新增自动放行范围 |
+| --- | --- |
+| `ask` | 不额外授权，沿用现有 policy 和工具权限 |
+| `safe` | `read_file`、`list_dir`、`list_files`、`grep`、`git_status`、`git_diff`、`git_log`；已有 policy allow 仍生效 |
+| `workspace-write` | 在 safe 基础上，允许工作区内的 `write_file`、`edit_file` |
+
+所有模式都先检查 policy；内置或用户规则返回的 deny 不可覆盖。工作区写入必须
+同时满足词法路径和符号链接解析后路径均在工作区内，且不属于 `.cloud-harness/**`。
+模式不会自动批准 `run_command` 或工作区外写入：没有其他有效许可时仍按原权限
+询问；内置边界或用户规则已经 deny 的请求继续拒绝。敏感数据外发防护、子任务
+权限、工具参数校验与预算仍参与执行检查。有效模式授权记录在 `policy.decided`
+事件中，来源为 `session_mode`。
+
+审批通知打开 `/ui?run=<id>` 对应会话，批准/拒绝在 WaitCard 中完成；旧 `/approval`
+只做兼容重定向，不再提供独立审批页。观测页保持可用。

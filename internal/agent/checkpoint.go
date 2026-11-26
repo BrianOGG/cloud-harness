@@ -13,6 +13,11 @@ import (
 )
 
 type snapshot struct {
+	ModelID            string                 `json:"model_id,omitempty"`
+	Model              string                 `json:"model,omitempty"`
+	FallbackModel      string                 `json:"fallback_model,omitempty"`
+	ProviderID         string                 `json:"provider_id,omitempty"`
+	ApprovalMode       string                 `json:"approval_mode,omitempty"`
 	Messages           []provider.Message     `json:"messages"`
 	Continuation       []domain.ResponseItem  `json:"continuation,omitempty"`
 	ContProvider       string                 `json:"cont_provider,omitempty"`
@@ -35,6 +40,11 @@ func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages 
 func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState, initial bool) error {
 	snap := snapshot{Messages: messages, Continuation: continuation, ContProvider: contProvider}
 	if st != nil {
+		snap.ModelID = st.modelID
+		snap.Model = st.model
+		snap.FallbackModel = st.fallbackModel
+		snap.ProviderID = st.providerID
+		snap.ApprovalMode = st.approvalMode
 		snap.Observations = st.obs
 		if len(st.toolRefs) > 0 {
 			snap.ToolRefs = make(map[string]string, len(st.toolRefs))

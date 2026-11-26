@@ -161,7 +161,7 @@ func TestApprovalsQueueContextAndOrder(t *testing.T) {
 		if got.SessionID != want.run.SessionID || got.Status != "WAITING" || got.WaitReason != want.reason || got.Summary != want.summary || !got.WaitingSince.Equal(want.since) || got.WaitingSeconds != want.seconds {
 			t.Fatalf("queue item %d: %+v, expected %+v", i, got, want)
 		}
-		if got.ApprovalURL != "https://harness.example/root/approval?run="+want.run.ID {
+		if got.ApprovalURL != "https://harness.example/root/ui?run="+want.run.ID {
 			t.Fatalf("approval URL: %q", got.ApprovalURL)
 		}
 		info, err := m.WaitInfo(ctx, want.run)

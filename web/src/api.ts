@@ -69,6 +69,10 @@ export interface SessionView {
   latest_run_at?: string;
 }
 
+export interface SessionPreferences { approval_mode: string; model_id: string; }
+export interface ModelOption { id: string; name: string; model: string; fallback_model?: string; provider: string; provider_id?: string; }
+export interface CustomProvider { id: string; name: string; base_url: string; model: string; has_api_key: boolean; }
+
 export interface SessionMessage {
   id: string;
   session_id: string;
@@ -210,6 +214,11 @@ export const api = {
   health: () => req<{ status: string; provider: string }>('/healthz'),
   listSessions: () => req<SessionView[]>('/v1/sessions'),
   createSession: () => req<{ id: string }>('/v1/sessions', { method: 'POST' }),
+  getPreferences: (sessionId: string) => req<SessionPreferences>('/v1/sessions/' + encodeURIComponent(sessionId) + '/preferences'),
+  savePreferences: (sessionId: string, value: SessionPreferences) => req<SessionPreferences>('/v1/sessions/' + encodeURIComponent(sessionId) + '/preferences', { method: 'PUT', body: JSON.stringify(value) }),
+  listModels: () => req<ModelOption[]>('/v1/models'),
+  listProviders: () => req<CustomProvider[]>('/v1/providers'),
+  saveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string }) => req<CustomProvider>('/v1/providers', { method: 'PUT', body: JSON.stringify(value) }),
   listMessages: (sessionId: string, options?: { limit?: number; cursor?: string; signal?: AbortSignal }): Promise<SessionMessagesPage> => {
     const params = new URLSearchParams();
     if (options?.limit !== undefined) params.set('limit', String(options.limit));
@@ -218,10 +227,10 @@ export const api = {
     return req<SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { signal: options?.signal });
   },
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
-  createRun: (sessionId: string, message: string) =>
+  createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string }) =>
     req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, ...options }),
     }),
   listApprovals: () => req<ApprovalView[]>('/v1/approvals'),
   getStats: (signal?: AbortSignal) => req<StatsView>('/v1/stats', { signal }),

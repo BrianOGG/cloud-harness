@@ -20,7 +20,7 @@ func TestChannelProtocols(t *testing.T) {
 		{"bark", "bark", "/base", "/base/device-key", "device-key", ""},
 		{"ntfy", "ntfy", "", "/topic", "ntfy-secret", "Bearer ntfy-secret"},
 	}
-	event := Event{RunID: "run_123", EventType: EventWaitingApproval, Status: "WAITING", Summary: "command=go test", ApprovalURL: "https://approval.example/approval?run=run_123", OccurredAt: time.Unix(123, 0).UTC()}
+	event := Event{RunID: "run_123", EventType: EventWaitingApproval, Status: "WAITING", Summary: "command=go test", ApprovalURL: "https://approval.example/ui?run=run_123", OccurredAt: time.Unix(123, 0).UTC()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requests := make(chan map[string]any, 1)

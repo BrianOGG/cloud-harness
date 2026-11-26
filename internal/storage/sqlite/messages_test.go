@@ -441,7 +441,7 @@ func TestMigrations009And010BackfillTranscriptStatusesAndOrder(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, "DROP TABLE messages"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.sql.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version >= 9"); err != nil {
+	if _, err := db.sql.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version IN (9, 10)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.sql.ExecContext(ctx, "ALTER TABLE runs DROP COLUMN final_answer_response_id"); err != nil {

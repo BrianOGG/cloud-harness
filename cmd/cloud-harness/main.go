@@ -273,7 +273,19 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 	if prices == nil {
 		prices = map[string]config.ModelPrice{}
 	}
-	return &agent.Manager{Store: db, Provider: prov, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots,
+	providerStore, err := config.NewCustomProviderStore()
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	providerResolver := func(id string) (provider.Provider, error) {
+		custom, err := providerStore.Get(id)
+		if err != nil {
+			return nil, domain.E(domain.CodeProviderConfig, "selected custom provider is unavailable")
+		}
+		return &provider.OpenAICompatible{BaseURL: custom.BaseURL, APIKey: custom.APIKey, Model: custom.Model}, nil
+	}
+	return &agent.Manager{Store: db, Provider: prov, ProviderResolver: providerResolver, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots,
 		MaxRunTokens: cfg.MaxRunTokens, MaxRunCostUSD: cfg.MaxRunCostUSD, ModelPrices: prices}, db, nil
 }
 
@@ -434,8 +446,13 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		cfg.DBPath = worktreeDBPath(cfg, mgr.Workspace)
 	}
 	diagnostics := serveDiagnostics{cfg: cfg, workspace: mgr.Workspace, mcp: mcpSet}
+	providerStore, err := config.NewCustomProviderStore()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
 	srv := (&transport.Server{
-		Manager: mgr, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
+		Manager: mgr, Models: configuredModelOptions(cfg), ProviderSettings: providerStore, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
 		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
 	}).NewHTTPServer(cfg.ListenAddr)
 	errCh := make(chan error, 1)
@@ -475,6 +492,34 @@ func shutdownServe(srv *http.Server) {
 		// deferred store cleanup, also canceling any remaining request contexts.
 		_ = srv.Close()
 	}
+}
+
+func configuredModelOptions(cfg config.Config) []transport.ModelOption {
+	model, engine := cfg.OpenAIModel, cfg.Provider
+	if engine == "anthropic" {
+		model, engine = cfg.AnthropicModel, "anthropic"
+	}
+	if model == "" {
+		model = config.DefaultModel
+	}
+	if engine == "" {
+		engine = "openai"
+	}
+	fallback := ""
+	if profile, ok := cfg.ModelProfiles[cfg.ModelRoles.Executor]; ok {
+		model, fallback = profile.Model, profile.FallbackModel
+	}
+	out := []transport.ModelOption{{ID: "default", Name: "默认 · " + model, Model: model, FallbackModel: fallback, Provider: engine}}
+	names := make([]string, 0, len(cfg.ModelProfiles))
+	for name := range cfg.ModelProfiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		profile := cfg.ModelProfiles[name]
+		out = append(out, transport.ModelOption{ID: "profile:" + name, Name: name + " · " + profile.Model, Model: profile.Model, FallbackModel: profile.FallbackModel, Provider: engine})
+	}
+	return out
 }
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {

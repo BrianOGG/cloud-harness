@@ -61,7 +61,7 @@ func TestRunLifecycleNotificationsIncludeApprovalLink(t *testing.T) {
 		if waiting.RunID != run.ID || waiting.EventType != notify.EventWaitingApproval || waiting.Status != string(domain.RunWaiting) {
 			t.Fatalf("waiting notification=%+v", waiting)
 		}
-		if waiting.ApprovalURL != "https://approval.example/root/approval?run="+run.ID {
+		if waiting.ApprovalURL != "https://approval.example/root/ui?run="+run.ID {
 			t.Fatalf("approval URL=%q", waiting.ApprovalURL)
 		}
 		if waiting.Summary != "Waiting for approval: write_file" || strings.Contains(waiting.Summary, "private file data") {

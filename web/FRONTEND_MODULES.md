@@ -11,7 +11,7 @@
 | `GET /v1/sessions` | 列出会话、run 数和最近状态/时间 |
 | `POST /v1/sessions` | 新建会话，返回 `{id}` |
 | `GET /v1/sessions/{id}/runs` | 列出该会话全部 runs |
-| `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message}`，返回 run 视图。默认立即返回 `RUNNING` 的 run；`?wait=1` 等 run 停下才返回（M13-2 之前的行为）。恢复 run 的三个接口相同 |
+| `POST /v1/sessions/{id}/runs` | 发消息开 run，body `{message, model_id?, approval_mode?}`，返回 run 视图。默认立即返回 `RUNNING` 的 run；`?wait=1` 等 run 停下才返回（M13-2 之前的行为）。恢复 run 的三个接口相同 |
 | `GET /v1/runs/{id}` | 查 run 视图：`{id, session_id, parent_id, status, wait_reason, budget{...}, final_answer, error, version}`；子 run 才有 `parent_id` |
 | `GET /v1/runs/{id}/events` | SSE：先重放该 run 的持久事件（带 `Last-Event-ID` 请求头则从其后开始），随后保持连接推送新事件，run 终态后断开。模型生成中的文本以无 `id`、不落库的 `stream.delta` 推送；`stream.reset` 表示丢弃当前响应已显示的文本 |
 | `GET /v1/runs/{id}/trace` | 执行轨迹：`{session_id, run:{status, wait_reason, steps[], children[]}}`；step = 一次模型响应 `{id, action, batches[]}`；batch = 一批工具调用 `{id, status, action, calls[]}`；call = `{id, name, status, ordinal, provider_call_id}` |
@@ -50,7 +50,7 @@
 - 数据：`GET /v1/sessions`、`POST /v1/sessions`、`GET /v1/sessions/{id}/runs`；run 状态按需轮询。
 
 ### 3. 布局壳
-- 职责：左侧栏（新对话、审批、观测、对话列表）/ 中间对话 / 右侧可开关的运行详情（预算、执行步骤、事件）。窄屏下侧栏和详情变成浮层。纯前端，无数据。
+- 职责：左侧栏（新对话、观测、对话列表）/ 中间对话 / 右侧可开关的运行详情（预算、执行步骤、事件）。窄屏下侧栏和详情变成浮层。纯前端，无数据。
 
 ## B. 对话层
 
@@ -156,3 +156,19 @@
 - 没有模型 key 时用 `scripts/demo-provider.py` 演示工具调用、审批、提问、子任务和失败。
 - 验收：从仓库根目录运行 `bash web/scripts/acceptance.sh`，它用脚本化 provider 对真实 serve 走完审批、拒绝、提问、子任务、失败和新对话，截图写入 `web/screenshots/chat/`。
 - 工具参数只有待审批的那次调用能看到（run 视图的 `pending_invocation`）；其余调用的参数和结果仍受模块 7 的字段限制。
+
+## 会话偏好与内嵌审批（2026-11-27）
+
+- Composer 从 `GET /v1/models` 与 `GET /v1/providers` 加载模型与兼容 provider 元数据。
+  切换会话读取 `GET /v1/sessions/{id}/preferences`，切换模型/审批模式通过同一路径
+  PUT 保存。加载或保存偏好时禁用相关选择与发送，避免用旧值发起运行。
+- 新对话偏好暂存于 `cloud-harness.web-draft-preferences`；创建会话后先 PUT，再在
+  `createRun` 中显式携带 `model_id`、`approval_mode`。
+- 自定义 API 走 `PUT /v1/providers`，密码输入框留空保留原 key；保存成功清空输入。
+  provider 编辑器按所选 ID 初始化，API 与浏览器存储都不保存服务器回显的完整 key。
+- 没有侧栏审批按钮和独立审批视图。`/ui?run=<id>` 定位会话及 WaitCard；
+  `/ui?session=<id>` 打开指定会话。批准、拒绝、用户回答留在会话内，观测页保留。
+- WorkBlock 运行中与结束后均默认折叠为一行摘要，可手动展开；实时草稿独立折叠。
+  已保存回答正文与当前 WaitCard 始终处于折叠区外。
+- `npm test` 包含实际 App/Composer/Turn 的 JSDOM 行为回归：偏好持久化与隔离、
+  新会话发送参数、通知深链、折叠与可见正文、兼容 provider 密钥输入与空值编辑。

@@ -1,6 +1,6 @@
 # Configuration
 
-Settings load from an optional JSON file and then from the environment. The environment wins. The API key is never read from the file: the JSON decoder rejects unknown fields, so `api_key` in the file is an error.
+Settings load from an optional JSON file and then from the environment. The environment wins. The primary provider API key is never read from the main configuration file: the JSON decoder rejects unknown fields, so `api_key` in the file is an error.
 
 Tool approval rules are configured separately in global and workspace
 `policy.json` files. See [分层权限策略](policy.md) for locations, precedence,
@@ -109,7 +109,7 @@ cancellation behavior.
 
 Set `approval_base_url` to the externally reachable approval page origin or
 base path. Waiting notifications then carry
-`<approval_base_url>/approval?run=<run-id>` as `approval_url`. When it is
+`<approval_base_url>/ui?run=<run-id>` as `approval_url`. When it is
 omitted, the notification contains no approval link.
 
 ## Environment
@@ -519,3 +519,30 @@ An eval result also does not establish HTTP application acceptance. See
 [Agnes application acceptance](agnes-acceptance.md) for the isolated
 `serve` / Manager / approval / persisted-message checks and their execution
 status.
+
+## Session model selection and compatible providers
+
+The composer reads `/v1/models`: the configured default model, each
+`model_profiles` entry as `profile:<name>`, and custom providers as `custom:<id>`.
+A selection affects subsequent runs; named profiles retain their configured
+fallback models. A waiting run retains its resolved model,
+provider ID and approval mode in its checkpoint. Keys are resolved privately
+at runtime and never placed in checkpoints.
+
+Choices live in `session_preferences` in the configured SQLite `db` (default
+`.cloud-harness/harness.db`). Before creating a session, the browser keeps only
+the draft model ID and mode in `cloud-harness.web-draft-preferences`, then
+writes them to the new session. Custom provider keys never go into browser storage.
+
+Custom OpenAI-compatible providers use `compatible-providers.json` beside
+`policy.json`: the directory containing `CLOUD_HARNESS_CONFIG`, or Go's user
+configuration directory plus `cloud-harness` (Linux: `$XDG_CONFIG_HOME/cloud-harness`,
+normally `~/.config/cloud-harness`). The file contains saved keys with mode 0600,
+atomic replacement and serialized writes within the serve process. Do not add
+it to source control, logs or shared backups. Use one settings writer process
+per shared configuration directory.
+
+The authenticated `/v1/providers` API returns only `has_api_key`, never the key.
+An empty key during edit retains the saved value. HTTPS is required except
+for loopback HTTP endpoints. Tests use temporary directories, fixture keys and
+`httptest` endpoints without acceptance provider credentials.

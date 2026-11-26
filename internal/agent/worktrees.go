@@ -32,7 +32,7 @@ func (m *Manager) worktreeManager(run storage.Run) (*Manager, error) {
 		return m, nil
 	}
 	scoped := &Manager{
-		Store: m.Store, Provider: m.Provider, OwnerID: m.OwnerID, Now: m.Now,
+		Store: m.Store, Provider: m.Provider, ProviderResolver: m.ProviderResolver, OwnerID: m.OwnerID, Now: m.Now,
 		Notifier: m.Notifier, ApprovalBaseURL: m.ApprovalBaseURL,
 		LeaseFor: m.LeaseFor, InitialBudget: m.InitialBudget, UseBudget: m.UseBudget,
 		MaxRunTokens: m.MaxRunTokens, MaxRunCostUSD: m.MaxRunCostUSD,

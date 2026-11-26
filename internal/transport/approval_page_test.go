@@ -19,51 +19,23 @@ import (
 
 const approvalTestToken = "simulated-approval-http-token"
 
-func TestApprovalPagePublicStatic(t *testing.T) {
-	m, _ := newServer(t)
-	session, err := m.CreateSession(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	const message = "private run text for the approval page fixture"
-	run, err := m.RunMessage(t.Context(), session.ID, message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := (&Server{Manager: m, Token: approvalTestToken}).Handler()
-
-	const invalidRun = "unknown run <not HTML>"
-	var static string
-	for _, path := range []string{"/approval", "/approval?run=" + run.ID, "/approval?run=" + url.QueryEscape(invalidRun)} {
+func TestApprovalPageRedirectsIntoConversation(t *testing.T) {
+	h := (&Server{Token: approvalTestToken}).Handler()
+	for _, id := range []string{"", "run_fixture", "unknown run <not HTML>&session=other"} {
+		target := "/ui"
+		path := "/approval"
+		if id != "" {
+			path += "?run=" + url.QueryEscape(id)
+			target += "?run=" + url.QueryEscape(id)
+		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/html; charset=utf-8" || rec.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("%s: status %d, headers %v", path, rec.Code, rec.Header())
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != target || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("legacy link did not redirect safely: status=%d location=%q", rec.Code, rec.Header().Get("Location"))
 		}
-		body := rec.Body.String()
-		for _, value := range []string{approvalTestToken, run.ID, session.ID, message, invalidRun} {
-			if strings.Contains(body, value) {
-				t.Fatalf("%s: static HTML includes request or run data", path)
-			}
+		if strings.Contains(rec.Body.String(), approvalTestToken) {
+			t.Fatal("redirect leaked bearer token")
 		}
-		if static == "" {
-			static = body
-		}
-		if body != static {
-			t.Fatalf("%s returned different HTML from /approval", path)
-		}
-	}
-	// Verify the queue entry point in the served script without requiring a browser in go test.
-	if !strings.Contains(static, `if (runID === null) {`) ||
-		!strings.Contains(static, `await loadQueue();`) ||
-		!strings.Contains(static, `const queue = await readQueue();`) ||
-		!strings.Contains(static, `json("/v1/approvals")`) {
-		t.Fatal("the approval page without a run ID must load /v1/approvals")
-	}
-	// Behavior-file warnings are rendered as text in their own alert element.
-	if !strings.Contains(static, `<p id="warnings" class="message" role="alert" hidden></p>`) ||
-		!strings.Contains(static, `showText("warnings", approval ? (invocation?.warnings || []).join("\n\n") : "");`) {
-		t.Fatal("the approval page must show pending_invocation.warnings")
 	}
 }
 
@@ -219,7 +191,7 @@ func TestApprovalPageNotificationToResume(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("waiting notification did not arrive")
 			}
-			path := "/approval?run=" + url.QueryEscape(waiting.ID)
+			path := "/ui?run=" + url.QueryEscape(waiting.ID)
 			if notice.ApprovalURL != server.URL+path || notice.RunID != waiting.ID || notice.EventType != tc.event || notice.Summary != tc.summary {
 				t.Fatalf("waiting notification: %+v", notice)
 			}

@@ -43,16 +43,12 @@ on write requests with a body; see [request checks](docs/api.md#request-checks).
 `serve` stops gracefully on `SIGINT` and `SIGTERM`: runs that are executing
 are cancelled and recorded as `CANCELLED` before the store closes.
 With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
-`/healthz` and the static pages at `/approval` and `/ui` are public. Open
-`/approval` on desktop or mobile to view the pending queue, make an approval
-decision, or answer a question. Open `/ui` to start sessions, send messages,
-and inspect runs. Paste the configured token once on `/approval`; both pages
-share it on the same origin. See the [Web UI reference](docs/api.md#get-ui)
-and [approval page reference](docs/api.md#get-approval).
-Optional webhook, Bark, and ntfy notifications report approval waits, user
-questions, completion, and failure or cancellation. Set `notify.approval_base_url`
-to include a direct link to the waiting run. See
-[notification configuration](docs/config.md#run-notifications).
+`/healthz` and the static UI at `/ui` are public. Open `/ui` to chat,
+inspect runs, select models and approval modes, or configure a compatible API.
+Approval notifications open `/ui?run=<id>` at the corresponding conversation's
+WaitCard. Old `/approval` links redirect into `/ui`. For protected servers,
+configure `cloud-harness.http-token` in same-origin browser localStorage; API
+calls use that token and never put it in notification URLs.
 
 On Linux, `run_command` processes and their children run under kernel resource
 limits (memory, CPU time, file size, open files, process count). The defaults

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isNotFound } from './api';
-import type { ApprovalView, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
+import type { CustomProvider, ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn, Turn } from './Chat';
 import type { TurnActions } from './Chat';
-import { actionLabels, dayGroup, elapsedLabel, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
+import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
@@ -11,13 +11,15 @@ import { loadSessionMessages, mergeSessionMessages } from './history';
 import { SessionHistory } from './SessionHistory';
 import { liveText, mergeEvents } from './timeline';
 
-type View = 'chat' | 'approvals' | 'observability';
+type View = 'chat' | 'observability';
 type Theme = 'light' | 'dark';
 
 const THEME_KEY = 'cloud-harness.web-theme';
 const TITLES_KEY = 'cloud-harness.web-titles';
 const SESSION_KEY = 'cloud-harness.web-session';
 const SIDEBAR_KEY = 'cloud-harness.web-sidebar';
+const DRAFT_PREFERENCES_KEY = 'cloud-harness.web-draft-preferences';
+const DEFAULT_PREFERENCES: SessionPreferences = { model_id: 'default', approval_mode: 'ask' };
 const NARROW = '(max-width: 860px)';
 
 const suggestions = [
@@ -119,12 +121,18 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [runs, setRuns] = useState<Record<string, RunView[]>>({});
   const [titles, setTitles] = useStored<Record<string, string>>(TITLES_KEY, {});
-  const [activeSession, setActiveSession] = useState<string | null>(() => localStorage.getItem(SESSION_KEY));
+  const [activeSession, setActiveSession] = useState<string | null>(() => new URLSearchParams(window.location.search).get('session') || localStorage.getItem(SESSION_KEY));
   const [pending, setPending] = useState<{ sessionId: string; text: string; runId?: string } | null>(null);
   const [events, setEvents] = useState<Record<string, HarnessEvent[]>>({});
   const [live, setLive] = useState<Record<string, string>>({});
   const [acting, setActing] = useState<Record<string, boolean>>({});
-  const [approvals, setApprovals] = useState<ApprovalView[]>([]);
+  const [models, setModels] = useState<ModelOption[]>([{ id: 'default', name: '默认模型', model: '', provider: '' }]);
+  const [providers, setProviders] = useState<CustomProvider[]>([]);
+  const [draftPreferences, setDraftPreferences] = useStored<SessionPreferences>(DRAFT_PREFERENCES_KEY, DEFAULT_PREFERENCES);
+  const [loadedPreferences, setLoadedPreferences] = useState<{ sessionId: string; value: SessionPreferences } | null>(null);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const preferences = activeSession ? (loadedPreferences?.sessionId === activeSession ? loadedPreferences.value : DEFAULT_PREFERENCES) : draftPreferences;
+  const preferencesBusy = savingPreferences || Boolean(activeSession && loadedPreferences?.sessionId !== activeSession);
   const [inspected, setInspected] = useState<string | null>(null);
   const [trace, setTrace] = useState<{ runId: string; data: TraceView } | null>(null);
   const [panel, setPanel] = useState<'trace' | 'events'>('trace');
@@ -140,6 +148,7 @@ export default function App() {
     // effect, and an old effect must not overwrite a newer selection.
     if (sessionId) localStorage.setItem(SESSION_KEY, sessionId);
     else localStorage.removeItem(SESSION_KEY);
+    if (activeSessionRef.current !== sessionId) setLoadedPreferences(null);
     activeSessionRef.current = sessionId;
     setActiveSession(sessionId);
   }, []);
@@ -177,7 +186,7 @@ export default function App() {
     return waiting.find((run) => run.id === answerRun) || waiting[waiting.length - 1] || null;
   }, [activeRuns, answerRun]);
   const answering = sending ? null : asking;
-  const busy = sending || (answering ? Boolean(acting[answering.id]) : activeRuns.some(isActive));
+  const busy = preferencesBusy || sending || (answering ? Boolean(acting[answering.id]) : activeRuns.some(isActive));
   const currentRuns = activeRuns.filter(isActive);
   const finishedRuns = activeRuns.filter((run) => !isActive(run));
 
@@ -222,9 +231,44 @@ export default function App() {
     return run;
   }, [upsertRun]);
 
-  const refreshApprovals = useCallback(async () => {
-    setApprovals(await api.listApprovals());
+  useEffect(() => {
+    api.listModels().then(setModels).catch((reason: unknown) => setError('模型加载失败：' + errorText(reason)));
+    api.listProviders().then(setProviders).catch((reason: unknown) => setError('兼容设置加载失败：' + errorText(reason)));
   }, []);
+
+  useEffect(() => {
+    if (!activeSession) return;
+    const sessionId = activeSession;
+    let cancelled = false;
+    api.getPreferences(sessionId).then((value) => {
+      if (!cancelled) setLoadedPreferences({ sessionId, value });
+    }).catch((reason: unknown) => {
+      if (cancelled) return;
+      if (isNotFound(reason)) forgetMissingSession(sessionId);
+      else setError('会话偏好加载失败：' + errorText(reason));
+    });
+    return () => { cancelled = true; };
+  }, [activeSession, forgetMissingSession]);
+
+  const changePreferences = async (value: SessionPreferences) => {
+    const sessionId = activeSession;
+    if (!sessionId) { setDraftPreferences(value); return; }
+    setSavingPreferences(true);
+    try {
+      const saved = await api.savePreferences(sessionId, value);
+      if (activeSessionRef.current === sessionId) setLoadedPreferences({ sessionId, value: saved });
+    } catch (reason) {
+      setError('会话偏好保存失败：' + errorText(reason));
+      throw reason;
+    } finally { setSavingPreferences(false); }
+  };
+
+  const saveProvider = async (value: Parameters<typeof api.saveProvider>[0]) => {
+    const saved = await api.saveProvider(value);
+    const [options, items] = await Promise.all([api.listModels(), api.listProviders()]);
+    setModels(options); setProviders(items);
+    await changePreferences({ ...preferences, model_id: 'custom:' + saved.id });
+  };
 
   // Live text is drawn once per frame from what the stream has delivered so far.
   const flushLive = useCallback(() => {
@@ -300,7 +344,7 @@ export default function App() {
     if (!window.matchMedia(NARROW).matches) localStorage.setItem(SIDEBAR_KEY, open ? 'open' : 'closed');
   };
 
-  // Connection state, the session list, and the approval badge.
+  // Connection state and the session list.
   useEffect(() => {
     let stopped = false;
     const check = () => {
@@ -311,21 +355,18 @@ export default function App() {
       }).catch(() => {
         if (!stopped) setOnline(false);
       });
-      refreshApprovals().catch(() => undefined);
     };
     check();
     api.listSessions().then(setSessions).catch((reason: unknown) => setError(`会话加载失败：${errorText(reason)}`));
-    const fast = window.setInterval(() => refreshApprovals().catch(() => undefined), 3000);
     const slow = window.setInterval(() => {
       check();
       refreshSessions().catch(() => undefined);
     }, 8000);
     return () => {
       stopped = true;
-      window.clearInterval(fast);
       window.clearInterval(slow);
     };
-  }, [refreshApprovals, refreshSessions]);
+  }, [refreshSessions]);
 
   useEffect(() => {
     if (!activeSession) return;
@@ -368,7 +409,6 @@ export default function App() {
         refreshRun(runId).then((run) => {
           const changed = seenVersion.current[runId] !== run.version;
           seenVersion.current[runId] = run.version;
-          if (changed) refreshApprovals().catch(() => undefined);
           // A proxy that buffers the stream would hide events until the run ends.
           if (changed && Date.now() - (streamedAt.current[runId] || 0) > 2000) pullEvents(runId).catch(() => undefined);
         }).catch(() => undefined);
@@ -378,9 +418,8 @@ export default function App() {
       controller.abort();
       window.clearInterval(timer);
       refreshSessions().catch(() => undefined);
-      refreshApprovals().catch(() => undefined);
     };
-  }, [followKey, onEvent, pullEvents, refreshApprovals, refreshRun, refreshSessions, setLiveText]);
+  }, [followKey, onEvent, pullEvents, refreshRun, refreshSessions, setLiveText]);
 
   // Titles are a UI preference; transcript text always comes from messages.
   useEffect(() => {
@@ -409,24 +448,21 @@ export default function App() {
     return () => { cancelled = true; };
   }, [inspected, inspectedVersion]);
 
-  useEffect(() => {
-    if (view !== 'approvals') return;
-    api.listApprovals().then(setApprovals).catch((reason: unknown) => setError(`审批队列加载失败：${errorText(reason)}`));
-  }, [view]);
-
   // Keep the newest content in view unless the reader scrolled up.
   useEffect(() => {
     const node = threadRef.current;
     if (!node) return;
-    const target = focusRun.current ? node.querySelector(`.history-message[data-run-id="${focusRun.current}"]`) || node.querySelector(`.turn[data-run-id="${focusRun.current}"][data-status="WAITING"], .turn[data-run-id="${focusRun.current}"][data-status="RUNNING"]`) : null;
+    const runSelector = focusRun.current ? '[data-run-id="' + CSS.escape(focusRun.current) + '"]' : '';
+    const target = runSelector ? node.querySelector('.turn' + runSelector + ' .wait-card') || node.querySelector('.turn' + runSelector) || node.querySelector('.history-message' + runSelector) : null;
     if (target) {
       // A run opened by id is shown at its own turn, not at the newest one.
       stickToBottom.current = false;
       target.scrollIntoView({ block: 'start' });
+      if (!history.loading) focusRun.current = null;
     } else if (stickToBottom.current) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [activeRuns, events, history.messages, live, optimistic, view]);
+  }, [activeRuns, events, history.loading, history.messages, live, optimistic, view]);
 
   const openSession = (sessionId: string | null) => {
     stickToBottom.current = true;
@@ -446,6 +482,7 @@ export default function App() {
   const send = async (text: string) => {
     setError('');
     setDraft('');
+    const selectedPreferences = { ...preferences };
     let sessionId = activeSession;
     try {
       if (!sessionId) {
@@ -454,6 +491,8 @@ export default function App() {
         const created = { id: sessionId, created_at: now, updated_at: now, run_count: 0 };
         setSessions((previous) => [created, ...previous]);
         setRuns((previous) => ({ ...previous, [created.id]: [] }));
+        const saved = await api.savePreferences(sessionId, selectedPreferences);
+        setLoadedPreferences({ sessionId, value: saved });
         selectSession(sessionId);
       }
     } catch (reason) {
@@ -484,7 +523,7 @@ export default function App() {
       }).catch(() => undefined);
     }, 500);
     try {
-      adopt(await api.createRun(target, text));
+      adopt(await api.createRun(target, text, selectedPreferences));
     } catch (reason) {
       if (adopted) {
         refreshRuns(target).catch(() => undefined);
@@ -512,7 +551,6 @@ export default function App() {
     } finally {
       setActing((previous) => ({ ...previous, [runId]: false }));
       history.refresh();
-      refreshApprovals().catch(() => undefined);
       refreshRun(runId).catch(() => undefined);
     }
   };
@@ -566,6 +604,22 @@ export default function App() {
       setError(`无法打开运行：${errorText(reason)}`);
     }
   };
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const runId = query.get('run');
+    let cancelled = false;
+    if (runId) {
+      api.getRun(runId).then((run) => {
+        if (cancelled) return;
+        selectSession(run.session_id);
+        setView('chat');
+        focusRun.current = run.id;
+        upsertRun(run);
+      }).catch((reason: unknown) => { if (!cancelled) setError('无法打开运行：' + errorText(reason)); });
+    }
+    return () => { cancelled = true; };
+  }, [selectSession, upsertRun]);
 
   const actions: TurnActions = {
     respond: (runId, body) => void respond(runId, body),
@@ -621,6 +675,14 @@ export default function App() {
       placeholder={answering ? '回答 agent 的问题…' : '给 Cloud Harness 发消息…'}
       hint={online === false ? '未连接到 serve' : answering ? `回答运行 ${shortId(answering.id)} 的问题` : provider ? `模型：${provider}` : ''}
       autoFocus={view === 'chat'}
+      models={models}
+      modelId={preferences.model_id}
+      onModelChange={(model_id) => { void changePreferences({ ...preferences, model_id }).catch(() => undefined); }}
+      approvalMode={preferences.approval_mode}
+      onApprovalModeChange={(approval_mode) => { void changePreferences({ ...preferences, approval_mode }).catch(() => undefined); }}
+      preferencesBusy={preferencesBusy}
+      providers={providers}
+      onSaveProvider={saveProvider}
     />
   );
 
@@ -634,7 +696,6 @@ export default function App() {
         </div>
         <nav className="sidebar-nav">
           <button type="button" className={`nav-item new-chat ${view === 'chat' && !activeSession ? 'current' : ''}`} onClick={() => openSession(null)}><Icon name="compose" />新对话</button>
-          <button type="button" className={`nav-item ${view === 'approvals' ? 'current' : ''}`} onClick={() => showPage('approvals')}><Icon name="shield" />审批{approvals.length > 0 && <span className="badge">{approvals.length}</span>}</button>
           <button type="button" className={`nav-item ${view === 'observability' ? 'current' : ''}`} onClick={() => showPage('observability')}><Icon name="activity" />观测</button>
         </nav>
         <div className="session-list">
@@ -668,7 +729,7 @@ export default function App() {
             <button type="button" className="icon-button" aria-label="展开侧栏" title="展开侧栏" onClick={() => toggleSidebar(true)}><Icon name="sidebar" size={18} /></button>
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
           </>}
-          <h1>{view === 'approvals' ? '审批' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
+          <h1>{view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
           {view === 'chat' && latestRun && <>
             <span className={`chip tone-${statusTone(latestRun.status)}`}>{latestRun.status === 'WAITING' ? waitLabels[latestRun.wait_reason || ''] || statusName(latestRun.status) : statusName(latestRun.status)}</span>
             <button type="button" className={`icon-button ${inspectedRun ? 'current' : ''}`} aria-label="运行详情" title="运行详情" onClick={() => (inspectedRun ? setInspected(null) : actions.inspect(latestRun.id))}><Icon name="panel" size={18} /></button>
@@ -709,38 +770,6 @@ export default function App() {
           </div>
           <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">agent 的工具调用受策略和审批约束；回答可能有误，请核对关键结果。</p></div></div>
         </>}
-
-        {view === 'approvals' && (
-          <div className="page-scroll">
-            <div className="page-inner">
-              <div className="page-head">
-                <div><h2>待处理</h2><p>等待批准的工具调用和 agent 提出的问题。</p></div>
-                <button type="button" className="button" onClick={() => refreshApprovals().catch((reason: unknown) => setError(errorText(reason)))}><Icon name="refresh" size={14} />刷新</button>
-              </div>
-              {approvals.length === 0
-                ? <div className="page-empty"><Icon name="check" size={22} /><strong>没有待处理的请求</strong><span>新的审批和提问会出现在这里。</span></div>
-                : approvals.map((item) => (
-                  <article className="approval-card" key={item.run_id} data-run-id={item.run_id}>
-                    <div className="approval-top">
-                      <Icon name={item.wait_reason === 'approval' ? 'shield' : 'question'} />
-                      <strong>{item.wait_reason === 'approval' ? '工具审批' : '等待你的回答'}</strong>
-                      <span className="approval-wait">{elapsedLabel(item.waiting_seconds)}</span>
-                    </div>
-                    <p className="approval-summary">{item.summary}</p>
-                    <div className="approval-bottom">
-                      <button type="button" className="link-button" onClick={() => openSession(item.session_id)}>{titleOf(item.session_id)}</button>
-                      {item.wait_reason === 'approval'
-                        ? <div className="approval-actions">
-                          <button type="button" className="button" disabled={acting[item.run_id]} onClick={() => void respond(item.run_id, { decision: 'deny' })}>拒绝</button>
-                          <button type="button" className="button primary" disabled={acting[item.run_id]} onClick={() => void respond(item.run_id, { decision: 'approve' })}>{acting[item.run_id] ? '提交中…' : '批准'}</button>
-                        </div>
-                        : <button type="button" className="button" onClick={() => openSession(item.session_id)}>去对话里回答</button>}
-                    </div>
-                  </article>
-                ))}
-            </div>
-          </div>
-        )}
 
         {view === 'observability' && <div className="page-scroll"><Observability onOpenRun={(runId) => void openRun(runId)} /></div>}
       </main>

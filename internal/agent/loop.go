@@ -168,6 +168,11 @@ func (m *Manager) ensureTools() {
 }
 
 type loopState struct {
+	modelID       string
+	model         string
+	fallbackModel string
+	providerID    string
+	approvalMode  string
 	// summaryOff stops summary attempts for this stretch of the run after one
 	// fails, so a broken summary model costs one model call, not one per step.
 	summaryOff     bool
@@ -229,7 +234,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	if err != nil {
 		return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
 	}
-	model := m.Provider
+	model := providerFromContext(ctx, m.Provider)
 	var profiled *provider.ProfileProvider
 	reloadExecutor := true
 	// A consultation can switch the planner and executor's shared profile.
@@ -241,7 +246,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		messages = m.injectSkillCatalog(messages, st)
 	}
 	if hasImages(messages) {
-		if !provider.SupportsImages(m.Provider) {
+		if !provider.SupportsImages(providerFromContext(ctx, m.Provider)) {
 			return m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input"))
 		}
 		for i := range messages {
