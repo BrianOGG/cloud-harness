@@ -113,7 +113,7 @@ func TestProfileProviderCancelsBackoffWithoutAdmittingAnotherAttempt(t *testing.
 	})
 }
 
-func TestProfileProviderDoesNotRetryAfterSSEOutput(t *testing.T) {
+func TestProfileProviderDoesNotRetryAfterSSEContent(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -133,7 +133,9 @@ func TestProfileProviderDoesNotRetryAfterSSEOutput(t *testing.T) {
 	}
 	var deltas []string
 	_, err := p.Complete(t.Context(), Request{OnDelta: func(s string) { deltas = append(deltas, s) }})
-	if !domain.IsCode(err, domain.CodeProviderHTTP) || calls.Load() != 1 || !slices.Equal(deltas, []string{"first"}) {
+	// Unclassified content stays buffered even when the upstream fails. The
+	// consumed SSE response still must not trigger a retry or paid fallback.
+	if !domain.IsCode(err, domain.CodeProviderHTTP) || calls.Load() != 1 || len(deltas) != 0 {
 		t.Errorf("error = %v, calls = %d, deltas = %v", err, calls.Load(), deltas)
 	}
 }
