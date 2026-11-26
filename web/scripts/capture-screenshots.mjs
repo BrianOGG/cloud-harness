@@ -4,7 +4,10 @@ import path from 'node:path';
 import { BrowsingContext, Builder, By, until } from 'selenium-webdriver';
 import firefox from 'selenium-webdriver/firefox.js';
 
-const [baseURL, token, outputDir, mode, approvalSession, approvalRun, approvalMessage, pendingSession, pendingRun, pendingMessage, askSession, askRun, askMessage, failedRun] = process.argv.slice(2);
+const [baseURL, outputDir, mode, approvalSession, approvalRun, pendingSession, pendingRun, askSession, askRun, failedRun] = process.argv.slice(2);
+const token = process.env.CLOUD_HARNESS_HTTP_TOKEN;
+assert.ok(baseURL && outputDir && ['empty', 'populated'].includes(mode), 'Expected base URL, output directory, and empty/populated mode');
+assert.ok(token, 'CLOUD_HARNESS_HTTP_TOKEN is required; do not pass tokens in command arguments');
 const firefoxBinary = process.env.M11_FIREFOX_BINARY || '/tmp/m11-8-firefox/usr/lib/firefox/firefox';
 const geckoBinary = process.env.M11_GECKODRIVER || '/tmp/m11-8-gecko/usr/bin/geckodriver';
 const mobileDir = process.env.M11_MOBILE_SCREENSHOTS;
@@ -24,6 +27,7 @@ async function save(name, dir = outputDir, width = desktop.width) {
 async function setTheme(value) {
   const current = await driver.executeScript('return document.documentElement.dataset.theme');
   if (current !== value) {
+    await openSidebar();
     await driver.findElement(By.css('.theme-toggle')).click();
     await driver.wait(async () => (await driver.executeScript('return document.documentElement.dataset.theme')) === value, 3000);
   }
@@ -118,10 +122,6 @@ async function waitFor(selector) {
   return driver.findElement(By.css(selector));
 }
 
-async function populateMessages(entries) {
-  await driver.executeScript('localStorage.setItem("cloud-harness.web-messages", JSON.stringify(JSON.parse(arguments[0])));', JSON.stringify(entries));
-}
-
 async function drainHTTP() {
   return driver.executeScript('const rows=window.__m11HttpResults||[]; window.__m11HttpResults=[]; return rows;');
 }
@@ -132,6 +132,61 @@ async function instrumentHTTP() {
 
 const sessionItem = (id) => `.session-item[data-session-id="${id}"]`;
 const approvalCard = (runId) => `.approval-card[data-run-id="${runId}"]`;
+const historyMessage = (runId, kind) => `.history-message[data-run-id="${runId}"][data-kind="${kind}"]`;
+
+async function waitForHistoryText(runId, kind, pattern) {
+  const selector = historyMessage(runId, kind);
+  await driver.wait(async () => {
+    const rows = await driver.findElements(By.css(selector));
+    for (const row of rows) if (pattern.test(await row.getText())) return true;
+    return false;
+  }, 12000, `Missing persisted ${kind} for run ${runId}`);
+}
+
+async function checkHistory(sessionId) {
+  const messages = [];
+  const cursors = new Set();
+  let cursor = '';
+  do {
+    // Small pages exercise the complete cursor chain rather than a first-page preview.
+    const query = new URLSearchParams({ limit: '2', cursor });
+    const page = await serveJSON(`/v1/sessions/${sessionId}/messages?${query}`);
+    assert.ok(Array.isArray(page.messages));
+    assert.equal(typeof page.next_cursor, 'string');
+    assert.ok(page.messages.every((message) => message.session_id === sessionId));
+    messages.push(...page.messages);
+    cursor = page.next_cursor;
+    assert.ok(!cursor || !cursors.has(cursor), 'Repeated history cursor');
+    cursors.add(cursor);
+  } while (cursor);
+  assert.equal(new Set(messages.map((message) => message.id)).size, messages.length, 'Duplicate server message IDs');
+  const expected = messages.map((message) => ({
+    id: message.id, run: message.run_id ?? null, kind: message.kind, status: message.status,
+  }));
+  await waitFor('.session-history');
+  await driver.wait(async () => {
+    const actual = await driver.executeScript(() => ({
+      busy: document.querySelector('.session-history')?.getAttribute('aria-busy'),
+      error: Boolean(document.querySelector('.history-error')),
+      rows: [...document.querySelectorAll('.history-message')].map((node) => ({
+        id: node.dataset.messageId, run: node.dataset.runId ?? null,
+        kind: node.dataset.kind, status: node.dataset.status,
+      })),
+    }));
+    return actual.busy === 'false' && !actual.error && JSON.stringify(actual.rows) === JSON.stringify(expected);
+  }, 12000, `Rendered history does not match all persisted messages for ${sessionId}`);
+  assert.equal(await driver.findElement(By.css('.session-item.current')).getAttribute('data-session-id'), sessionId);
+  console.log(`history DOM matches serve: session=${sessionId} messages=${messages.length}`);
+  return messages;
+}
+
+async function openFinishedRun(runId) {
+  const selector = `.turn[data-run-id="${runId}"]`;
+  await waitFor(`${selector}[data-status="COMPLETED"]`);
+  const collapsed = await driver.findElements(By.css('.past-runs:not([open]) > summary'));
+  if (collapsed.length) await collapsed[0].click();
+  return selector;
+}
 
 // On a narrow window the sidebar is an overlay that has to be opened first.
 async function openSidebar() {
@@ -188,7 +243,6 @@ try {
     return;
   }
 
-  await populateMessages({ [approvalRun]: approvalMessage, [pendingRun]: pendingMessage, [askRun]: askMessage });
   await driver.navigate().refresh();
   await waitFor('.welcome');
   await waitFor(sessionItem(approvalSession));
@@ -197,7 +251,8 @@ try {
   // A waiting run shows its approval card in the thread and in the queue.
   await openSession(approvalSession);
   await waitFor(`.turn[data-run-id="${approvalRun}"] .wait-card`);
-  assert.match(await driver.findElement(By.css('.turn .user-bubble')).getText(), /M11_APPROVAL_CHILD/);
+  await waitForHistoryText(approvalRun, 'input', /M11_APPROVAL_CHILD/);
+  await checkHistory(approvalSession);
   assert.match(await driver.findElement(By.css('.wait-card')).getText(), /write_file/);
   await assertMobileLayout(view, 'chat-waiting-approval', 'dark');
   await setTheme('light');
@@ -215,9 +270,10 @@ try {
 
   // The approved run finishes: answer, work block, and the run details drawer.
   await openSession(approvalSession);
-  const turn = `.turn[data-run-id="${approvalRun}"]`;
-  await waitFor(`${turn}[data-status="COMPLETED"] .answer`);
-  assert.match(await driver.findElement(By.css(`${turn} .answer`)).getText(), /parent task completed after approval/);
+  await waitForHistoryText(approvalRun, 'response', /parent task completed after approval/);
+  const approvedHistory = await checkHistory(approvalSession);
+  assert.ok(approvedHistory.some((message) => message.run_id === approvalRun && message.kind === 'approval_decision' && message.content === 'approve'));
+  const turn = await openFinishedRun(approvalRun);
   await driver.findElement(By.css(`${turn} .work-toggle`)).click();
   await waitFor(`${turn} .work-list .work-tool`);
   const workTools = await driver.executeScript((selector) => [...document.querySelectorAll(`${selector} .work-tool`)].map((node) => node.textContent), turn);
@@ -253,8 +309,15 @@ try {
   await waitFor('.inspector .events li');
   const eventTypes = await driver.executeScript(() => [...document.querySelectorAll('.inspector .events summary strong')].map((node) => node.textContent));
   assert.ok(eventTypes.includes('run.created') && eventTypes.includes('run.completed') && eventTypes.includes('child.finished'), eventTypes.join(','));
-  // The child run shares the session but is not a turn of the conversation.
-  assert.equal((await driver.findElements(By.css('.turn'))).length, 1);
+  // Child-run facts remain in this session's transcript with their source run ID.
+  for (const child of runTrace.run.children) {
+    assert.ok(approvedHistory.some((message) => message.run_id === child.id), `Missing child history for ${child.id}`);
+  }
+  await driver.navigate().refresh();
+  assert.deepEqual((await checkHistory(approvalSession)).map((message) => message.id), approvedHistory.map((message) => message.id), 'Refresh changed durable message identities');
+  await openSession(askSession);
+  await openSession(approvalSession);
+  await checkHistory(approvalSession);
 
   // Deny from the queue.
   await nav('approvals');
@@ -266,18 +329,23 @@ try {
   if (!denyRequests.some((row) => row.url.includes(`/v1/runs/${pendingRun}/responses`) && row.status === 200 && row.duration_ms < 1000)) throw new Error(`Queue deny API failed or exceeded one second: ${JSON.stringify(denyRequests)}`);
   console.log(`UI queue Deny HTTP ${JSON.stringify(denyRequests)}`);
   assert.equal((await driver.findElements(By.css('.flash'))).length, 0, 'deny left an error message');
+  await openSession(pendingSession);
+  await waitForHistoryText(pendingRun, 'response', /pending file request was denied and recorded/);
+  const deniedHistory = await checkHistory(pendingSession);
+  assert.ok(deniedHistory.some((message) => message.run_id === pendingRun && message.kind === 'approval_decision' && message.content === 'deny'));
 
   // ask_user: the composer answers the question.
   await openSession(askSession);
   await waitFor('.question');
-  assert.match(await driver.findElement(By.css('.question')).getText(), /Which deployment region/);
+  await waitForHistoryText(askRun, 'question', /Which deployment region/);
+  await checkHistory(askSession);
   await assertMobileLayout(view, 'chat-waiting-user', 'dark');
   await instrumentHTTP();
   await driver.findElement(By.css('.composer textarea')).sendKeys('staging-ui');
   await driver.findElement(By.css('.composer .send')).click();
-  await waitFor(`.turn[data-run-id="${askRun}"][data-status="COMPLETED"] .answer`);
-  if (!(await driver.findElement(By.css('.answer')).getText()).includes('staging-ui')) throw new Error('Final answer is not visible after the ask_user response');
-  assert.match(await driver.findElement(By.css('.exchange')).getText(), /Which deployment region[\s\S]*staging-ui/);
+  await waitForHistoryText(askRun, 'response', /Deployment region confirmed: staging-ui/);
+  await waitForHistoryText(askRun, 'answer', /staging-ui/);
+  await checkHistory(askSession);
   const answerRequests = await drainHTTP();
   if (!answerRequests.some((row) => row.url.includes(`/v1/runs/${askRun}/responses`) && row.status === 200 && row.duration_ms < 1000)) throw new Error(`ask_user response API failed or exceeded one second: ${JSON.stringify(answerRequests)}`);
   console.log(`UI ask_user answer HTTP ${JSON.stringify(answerRequests)}`);
@@ -286,13 +354,16 @@ try {
   await waitFor('.page-empty');
 
   // A new conversation from the welcome screen.
+  await openSidebar();
   await driver.findElement(By.css('.nav-item.new-chat')).click();
   await waitFor('.welcome .composer textarea');
   await instrumentHTTP();
   await driver.findElement(By.css('.composer textarea')).sendKeys('M11_BROWSER_SMOKE Confirm the real UI can send a live request.');
   await driver.findElement(By.css('.composer .send')).click();
-  await waitFor('.turn[data-status="COMPLETED"] .answer');
+  await waitFor('.history-message[data-kind="response"] .history-response');
   assert.match(await driver.findElement(By.css('.session-item.current')).getText(), /M11_BROWSER_SMOKE/);
+  const browserSession = await driver.findElement(By.css('.session-item.current')).getAttribute('data-session-id');
+  await checkHistory(browserSession);
   const browserSendRequests = await drainHTTP();
   if (!browserSendRequests.some((row) => row.url.includes('/v1/sessions') && row.status === 201) || !browserSendRequests.some((row) => row.url.includes('/runs') && row.status === 201)) {
     throw new Error(`Browser send flow failed: ${JSON.stringify(browserSendRequests)}`);
@@ -305,9 +376,8 @@ try {
   const failedDoctorRow = await waitFor('.doctor-list .doctor-fail:has(.link-button)');
   assert.match(await failedDoctorRow.getText(), /失败运行/);
   const assertFailedRun = async (source) => {
-    await waitFor(`.turn[data-run-id="${failedRun}"] .error-card`);
+    await waitForHistoryText(failedRun, 'run_status', /scripted planned failure/);
     assert.equal(await (await waitFor('.inspector-head code')).getText(), failedRun);
-    assert.match(await driver.findElement(By.css('.error-card')).getText(), /scripted planned failure/);
     console.log(`observability ${source} link: opened real failed run ${failedRun}`);
   };
   await failedDoctorRow.findElement(By.css('.link-button')).click();
