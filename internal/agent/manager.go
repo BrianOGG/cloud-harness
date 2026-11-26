@@ -31,15 +31,16 @@ import (
 
 // Manager runs one user message to a terminal or waiting state.
 type Manager struct {
-	Store           storage.Store
-	Provider        provider.Provider
-	Notifier        notify.Notifier
-	ApprovalBaseURL string
-	OwnerID         string
-	Now             func() time.Time
-	LeaseFor        time.Duration
-	InitialBudget   domain.Budget
-	UseBudget       bool
+	Store            storage.Store
+	Provider         provider.Provider
+	ProviderResolver func(string) (provider.Provider, error)
+	Notifier         notify.Notifier
+	ApprovalBaseURL  string
+	OwnerID          string
+	Now              func() time.Time
+	LeaseFor         time.Duration
+	InitialBudget    domain.Budget
+	UseBudget        bool
 	// MaxRunTokens and MaxRunCostUSD cap each new root run's token and cost
 	// spend when UseBudget is unset. Zero is unlimited.
 	MaxRunTokens  int64
@@ -164,15 +165,40 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 
 // RunOptions applies to one run. Plan restricts the model to read-only tools.
 type RunOptions struct {
-	Images []provider.Image
-	Plan   bool
+	Images        []provider.Image
+	Plan          bool
+	ModelID       string
+	Model         string
+	FallbackModel string
+	ProviderID    string
+	ApprovalMode  string
 }
 
 // RunMessageWithOptions creates a run with the supplied inputs and mode.
 func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message string, opts RunOptions) (storage.Run, error) {
+	if opts.ApprovalMode == "" {
+		opts.ApprovalMode = "ask"
+	}
+	if opts.ApprovalMode != "ask" && opts.ApprovalMode != "safe" && opts.ApprovalMode != "workspace-write" {
+		return storage.Run{}, domain.E(domain.CodeInvalidArgument, "invalid approval mode")
+	}
 	images := opts.Images
+	selectedProvider := providerFromContext(ctx, m.Provider)
+	if opts.ProviderID != "" {
+		if m.ProviderResolver == nil {
+			return storage.Run{}, domain.E(domain.CodeProviderConfig, "selected custom provider is unavailable")
+		}
+		resolved, resolveErr := m.ProviderResolver(opts.ProviderID)
+		if resolveErr != nil {
+			return storage.Run{}, resolveErr
+		}
+		selectedProvider = resolved
+		ctx = context.WithValue(ctx, runProviderKey{}, selectedProvider)
+	}
+	ctx = context.WithValue(ctx, runModelKey{}, opts.Model)
+	ctx = context.WithValue(ctx, runFallbackModelKey{}, opts.FallbackModel)
 	if len(images) > 0 {
-		if !provider.SupportsImages(m.Provider) {
+		if !provider.SupportsImages(selectedProvider) {
 			return storage.Run{}, domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input")
 		}
 		if err := provider.ValidateImages(images); err != nil {
@@ -433,7 +459,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		SuffixTokens: contextpkg.Estimate(asm.DynamicSuffix), TokenLimit: m.tokenLimit(),
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
-	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine}
+	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode}
 	for _, ref := range references {
 		if ref.Type == "file" && tools.SensitivePath(ref.Path) {
 			st.sensitive = true
@@ -553,7 +579,7 @@ func (m *Manager) notifyTransition(ctx context.Context, run storage.Run, cause *
 // ApprovalURL returns the configured approval link, or an empty string when unset.
 func (m *Manager) ApprovalURL(runID string) string {
 	if m.ApprovalBaseURL != "" {
-		u, err := url.Parse(strings.TrimRight(m.ApprovalBaseURL, "/") + "/approval")
+		u, err := url.Parse(strings.TrimRight(m.ApprovalBaseURL, "/") + "/ui")
 		if err == nil {
 			q := u.Query()
 			q.Set("run", runID)

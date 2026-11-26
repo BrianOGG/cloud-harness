@@ -139,7 +139,7 @@ func TestLoopbackRefusesForeignHostAndOrigin(t *testing.T) {
 		{"proxied same origin", guardedRequest{method: http.MethodPost, path: "/v1/sessions", host: "127.0.0.1:5173", origin: "http://127.0.0.1:5173"}, http.StatusCreated},
 		{"health", guardedRequest{method: http.MethodGet, path: "/healthz"}, http.StatusOK},
 		{"ui", guardedRequest{method: http.MethodGet, path: "/ui"}, http.StatusOK},
-		{"approval page", guardedRequest{method: http.MethodGet, path: "/approval"}, http.StatusOK},
+		{"legacy approval redirect follows to UI", guardedRequest{method: http.MethodGet, path: "/approval"}, http.StatusOK},
 	} {
 		if status, body := tc.req.do(t, base); status != tc.want {
 			t.Errorf("%s: got %d %s, want %d", tc.name, status, body, tc.want)

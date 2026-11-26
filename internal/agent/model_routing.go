@@ -11,6 +11,16 @@ import (
 )
 
 type modelRoutingKey struct{}
+type runProviderKey struct{}
+type runModelKey struct{}
+type runFallbackModelKey struct{}
+
+func providerFromContext(ctx context.Context, fallback provider.Provider) provider.Provider {
+	if selected, ok := ctx.Value(runProviderKey{}).(provider.Provider); ok && selected != nil {
+		return selected
+	}
+	return fallback
+}
 
 func (m *Manager) withModelRouting(ctx context.Context) (context.Context, error) {
 	if _, ok := ctx.Value(modelRoutingKey{}).(config.ModelRouting); ok {
@@ -32,10 +42,16 @@ func (m *Manager) withModelRouting(ctx context.Context) (context.Context, error)
 func (m *Manager) profiledModel(ctx context.Context, runID string, leaseVersion int64, role config.ModelRole) (*provider.ProfileProvider, error) {
 	routing, _ := ctx.Value(modelRoutingKey{}).(config.ModelRouting)
 	name, profile, ok := routing.Profile(role)
+	selected, _ := ctx.Value(runModelKey{}).(string)
+	explicit := role == config.RoleExecutor && selected != ""
+	if explicit {
+		fallback, _ := ctx.Value(runFallbackModelKey{}).(string)
+		name, profile, ok = "", config.ModelProfile{Model: selected, FallbackModel: fallback}, true
+	}
 	if !ok {
 		return nil, nil
 	}
-	inner := m.Provider
+	inner := providerFromContext(ctx, m.Provider)
 	if role == config.RoleFast {
 		inner = m.Summarizer
 	}
@@ -55,7 +71,8 @@ func (m *Manager) profiledModel(ctx context.Context, runID string, leaseVersion 
 			}
 			var ev provider.FallbackEvent
 			if json.Unmarshal(event.Payload, &ev) == nil {
-				if switched, _, _ := routing.Profile(config.ModelRole(ev.Role)); switched == name && ev.FromModel == profile.Model && ev.ToModel == profile.FallbackModel {
+				switched, _, _ := routing.Profile(config.ModelRole(ev.Role))
+				if (explicit && ev.Role == string(role) || !explicit && switched == name) && ev.FromModel == profile.Model && ev.ToModel == profile.FallbackModel {
 					profile = config.ModelProfile{Model: ev.ToModel}
 					break
 				}
@@ -98,7 +115,19 @@ func (m *Manager) injectModelPlan(ctx context.Context, run storage.Run, leaseVer
 		return nil, err
 	}
 	if planner == nil {
-		return m.injectPlan(ctx, run, messages, text), nil
+		// An explicit run selection also supplies the default planning model.
+		// Keep configured planner roles, but never fall back to another provider
+		// merely because no planner role was mapped.
+		if selected, _ := ctx.Value(runModelKey{}).(string); selected != "" {
+			planner, err = m.profiledModel(ctx, run.ID, leaseVersion, config.RoleExecutor)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if planner == nil {
+			scoped := &Manager{Store: m.Store, Provider: providerFromContext(ctx, m.Provider), Now: m.Now, ModelPrices: m.prices()}
+			return scoped.injectPlan(ctx, run, messages, text), nil
+		}
 	}
 	stopHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
 	defer stopHeartbeat()

@@ -9,3 +9,6 @@
 *.db-journal
 *.out
 /tmp/
+
+# Private user-managed provider credentials
+compatible-providers.json

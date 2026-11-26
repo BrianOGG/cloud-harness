@@ -228,6 +228,15 @@ code, pre, .mono { font-family: var(--mono); }
 .composer:focus-within { border-color: var(--text-tertiary); }
 .composer textarea { display: block; width: 100%; max-height: 220px; padding: 2px 6px 2px 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 15px; line-height: 1.55; resize: none; }
 .composer textarea::placeholder { color: var(--text-tertiary); }
+.composer-options { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-tertiary); font-size: 12px; }
+.composer-options label { display: inline-flex; align-items: center; gap: 6px; }
+.composer-options select, .provider-fields input { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--surface); color: var(--text); font: inherit; }
+.provider-editor { position: relative; }
+.provider-editor summary { cursor: pointer; }
+.provider-fields { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 8px; width: min(520px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.provider-fields label { display: grid; align-items: start; }
+.provider-fields input { width: 100%; }
+.provider-fields [role="alert"] { grid-column: 1 / -1; color: var(--red); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
 .composer-hint { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .send { display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: var(--primary); color: var(--primary-text); cursor: pointer; transition: opacity .12s ease; }
@@ -402,3 +411,10 @@ code, pre, .mono { font-family: var(--mono); }
   .failure-copy .link-button { grid-column: 1 / -1; justify-self: start; }
   .user-bubble { max-width: 92%; }
 }
+
+.work-toggle { max-width: 100%; }
+.work-toggle > span:nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.work-state, .work-caret { flex-shrink: 0; }
+.live-draft { margin: 8px 0; color: var(--text-secondary); }
+.live-draft > summary { cursor: pointer; font-size: 13px; }
+@media (max-width: 540px) { .provider-fields { grid-template-columns: minmax(0, 1fr); } }

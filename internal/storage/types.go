@@ -17,6 +17,14 @@ type Session struct {
 	UpdatedAt time.Time
 }
 
+// SessionPreferences are durable per-conversation runtime choices. Provider credentials never belong here.
+type SessionPreferences struct {
+	SessionID    string
+	ApprovalMode string
+	ModelID      string
+	UpdatedAt    time.Time
+}
+
 // SessionSummary is a session and its run aggregates for read-only listings.
 type SessionSummary struct {
 	ID              string
@@ -225,6 +233,8 @@ type Store interface {
 	CreateSession(ctx context.Context, s Session) error
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListSessions(ctx context.Context) ([]SessionSummary, error)
+	GetSessionPreferences(ctx context.Context, sessionID string) (SessionPreferences, error)
+	SaveSessionPreferences(ctx context.Context, preferences SessionPreferences) error
 	CreateTurn(ctx context.Context, t Turn) error
 	ListMessages(ctx context.Context, sessionID string, after *MessageCursor, limit int) (MessagePage, error)
 	CreateRun(ctx context.Context, r Run) error

@@ -12,7 +12,7 @@ Configure an HTTP bearer token with `serve --http-token TOKEN`, the
 configuration file. A configured token must contain at least 16 characters.
 Every `/v1/` route, including `/v1/sessions`, `/v1/approvals`,
 `/v1/runs/{id}`, and its `/events` stream, uses the same authentication middleware and constant-time
-token comparison. `/healthz`, the static `/approval` page, and `/ui` and its
+token comparison. `/healthz`, the legacy `/approval` redirect, and `/ui` and its
 static resources are available without authentication.
 
 When a token is configured, supply `Authorization: Bearer <token>`. A missing
@@ -111,6 +111,12 @@ the longest a run can hold shutdown.
 flight, closes the remaining connections, and closes the store.
 
 ## Running a run: POST /v1/sessions/{id}/runs
+
+Optional `model_id` and `approval_mode` select this run's model and approval
+behavior. Omitted values use the saved session preferences, initially
+`default` and `ask`. Explicit values are validated and persisted for later
+runs. A run's checkpoint freezes the resolved model name, provider ID and
+approval mode; changing session preferences does not change a waiting run.
 
 The body is `{"message":"..."}`. The response is HTTP 201 with the run view
 described under [GET /v1/sessions/{id}/runs](#get-v1sessionsidruns).
@@ -248,28 +254,14 @@ a fallback each open stream also reads the store every 2 seconds, which is how
 it learns of events written by another process, such as
 `cloud-harness runs resume` against the same database.
 
-## GET /approval
+## GET /approval (legacy redirect)
 
-Open `/approval` to see the waiting queue or `/approval?run=<run-id>` to open
-a specific run. Set `notify.approval_base_url` to the `serve` URL your phone
-can reach to include the run link in waiting notifications. The link carries
-only the run ID. If a reverse proxy adds a path prefix, expose both `/approval`
-and `/v1/` under that prefix.
-
-The embedded page returns `Content-Type: text/html; charset=utf-8` and
-`Cache-Control: no-store`. Anyone can load the same static HTML, even if the
-run ID is unknown. Run data is loaded through the authenticated API. Paste the
-configured HTTP token once for this browser and origin. The page stores it in
-`localStorage` and sends it in the `Authorization: Bearer <token>` header with
-every API request, including the event stream. A 401 shows the token prompt
-and the API error. Clear the site's browser data to remove the stored token.
-
-1. `GET /v1/approvals` lists pending items and provides their summaries and wait times.
-2. `GET /v1/runs/{id}` loads the selected run. `GET /v1/runs/{id}/events`
-   follows updates so the page can show the current wait or final status.
-3. `POST /v1/runs/{id}/responses` sends `{"decision":"approve"}` or
-   `{"decision":"deny"}`. `POST /v1/runs/{id}/answer` sends `{"answer":"..."}`
-   for `ask_user`.
+Old `/approval?run=<run-id>` links return **303 See Other** to
+`/ui?run=<run-id>`; `/approval` redirects to `/ui`. The redirect is public,
+uses `Cache-Control: no-store`, and contains no run data or credential.
+There is no separate approval product page. New notifications use the
+conversation UI directly. The authenticated `/v1/approvals` read API remains
+available to clients.
 
 ## GET /ui
 
@@ -280,11 +272,18 @@ and contain no run data. Navigation to an
 app route under `/ui/` returns the same `index.html` with `Cache-Control: no-store`.
 
 The browser calls the real `/v1/` API on the same origin. If the server
-requires a token, paste it on `/approval` on that origin. The Web UI reads
+requires a token, configure it for that origin in browser storage. The Web UI reads
 `cloud-harness.http-token` from `localStorage` and sends `Authorization: Bearer <token>`
 with API requests, including the event stream. Without a token, the page still
 opens and protected API requests return 401. A reverse proxy serving the Web UI
 should forward `/ui`, `/ui/`, and `/v1/` on the same origin.
+
+Notification links use `/ui?run=<run-id>` to open the run's session and scroll
+to its in-conversation WaitCard. `/ui?session=<session-id>` opens a session.
+Approve/deny remain in that WaitCard; the sidebar offers conversations and
+observability. Work details and uncommitted live drafts are collapsed by
+default, including during active runs. The saved response transcript remains
+visible independently.
 
 To rebuild the assets, run `(cd web && npm ci && npm run build)` with Node.js
 22 (22.12 or later). This writes `web/dist/`, which is checked in so a Go build
@@ -773,7 +772,7 @@ Legacy records with no waiting event fall back to their stored `updated_at`.
 | `summary` | string | Same summary as the Manager's WaitInfo and lifecycle notification: the full pending command text for `run_command`, or the original question for `ask_user`. Other tool approvals use `Waiting for approval: <tool>` as in notifications, followed on new lines by any `pending_invocation.warnings`. |
 | `waiting_since` | string | Start of the current wait, as an ISO 8601 / RFC 3339 UTC timestamp. |
 | `waiting_seconds` | integer | Whole elapsed seconds at request time, rounded down and clamped to zero if the server clock precedes `waiting_since`. |
-| `approval_url` | string, optional | `<approval_base_url>/approval?run=<run-id>` when `notify.approval_base_url` is configured. Trailing base slashes are removed and the run ID is query encoded. Omitted when the base is unset. |
+| `approval_url` | string, optional | `<approval_base_url>/ui?run=<run-id>` when `notify.approval_base_url` is configured. Trailing base slashes are removed and the run ID is query encoded. Omitted when the base is unset. |
 
 Example request:
 
@@ -795,7 +794,7 @@ Example HTTP 200 response, with `notify.approval_base_url` set to
     "summary": "rm -rf -- obsolete-artifacts",
     "waiting_since": "2026-11-19T11:50:00Z",
     "waiting_seconds": 600,
-    "approval_url": "https://harness.example/approval?run=run_approval"
+    "approval_url": "https://harness.example/ui?run=run_approval"
   },
   {
     "run_id": "run_question",
@@ -805,7 +804,7 @@ Example HTTP 200 response, with `notify.approval_base_url` set to
     "summary": "Which deployment region should we use?",
     "waiting_since": "2026-11-19T11:58:00Z",
     "waiting_seconds": 120,
-    "approval_url": "https://harness.example/approval?run=run_question"
+    "approval_url": "https://harness.example/ui?run=run_question"
   }
 ]
 ```
@@ -820,3 +819,37 @@ with `GET /v1/runs/{id}`. Submit approval decisions through the existing
 `{"decision":"deny"}`); submit user answers through that endpoint or
 `POST /v1/runs/{id}/answer` (`{"answer":"..."}`). Open the `approval_url` in
 a browser to handle the wait on the embedded approval page.
+
+## GET /v1/models
+
+Returns an array of `{id, name, model, fallback_model?, provider, provider_id?}`. IDs are
+`default`, `profile:<name>` for configured `model_profiles`, and
+`custom:<id>` for saved compatible providers. The CLI lists named profiles in
+sorted order and preserves their configured fallback models across waits. Credentials are never returned. Unknown model IDs return 400.
+
+## GET /v1/sessions/{id}/preferences
+## PUT /v1/sessions/{id}/preferences
+
+GET returns `{ "approval_mode": "ask", "model_id": "default" }` for a session
+without saved preferences. PUT accepts the same two fields and returns the
+saved values. `approval_mode` is one of `ask`, `safe`, `workspace-write`;
+`model_id` must appear in `/v1/models` (an empty model ID means `default`).
+Invalid settings return 400 and unknown sessions return 404. Values live in
+the serve database's `session_preferences` table (migration 011).
+
+## GET /v1/providers
+## PUT /v1/providers
+
+GET returns an array of `{id, name, base_url, model, has_api_key}`. PUT accepts
+`{id, name, base_url, model, api_key?}` and returns only those public metadata
+fields. A new provider requires a key. Omitting `api_key` or passing an empty
+string when editing keeps its saved key. Neither endpoint returns a complete
+key. The UI uses a password input and clears it after a successful save.
+
+IDs use 1–64 ASCII letters, digits, underscores or hyphens. Base URLs require
+HTTPS; HTTP is accepted only for `localhost` or a loopback IP. User info,
+query strings and fragments are rejected. Provider configuration is saved
+atomically in `<configuration-directory>/compatible-providers.json` with
+mode 0600; this separate file contains credentials and must not be committed.
+All settings endpoints require the same bearer token, Host/Origin checks,
+JSON request content type and body-size limits as the other `/v1/` routes.

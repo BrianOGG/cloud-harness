@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { BudgetExtension, HarnessEvent, RunView } from './api';
+import type { CustomProvider, ModelOption } from './api';
 import { budgetExtension } from './budget';
 import { actionLabels, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
@@ -50,10 +51,9 @@ function WorkRow({ item }: { item: WorkItem }) {
 }
 
 function WorkBlock({ run, events, onOpen }: { run: RunView; events: HarnessEvent[]; onOpen: () => void }) {
-  const active = isActive(run);
-  // Open while the run is in flight; a finished run opens on request.
+  // Work details stay collapsed until requested, even while the run is active.
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const open = toggled ?? active;
+  const open = toggled ?? false;
   const work = buildWork(events);
   const last = work.items[work.items.length - 1];
   let title = `${run.budget.used_model_calls} 次模型调用`;
@@ -151,7 +151,7 @@ export function Turn({ run, events, live, acting, actions }: {
         <span className="run-label">{run.parent_id ? '子运行' : '运行'} {shortId(run.id)}</span>
         <WorkBlock run={run} events={events} onOpen={() => actions.loadEvents(run)} />
         {run.status === 'WAITING' && <WaitCard run={run} acting={acting} actions={actions} />}
-        {run.status === 'RUNNING' && live && <div className="streaming"><Markdown text={live} /></div>}
+        {run.status === 'RUNNING' && live && <details className="live-draft"><summary>查看实时草稿</summary><div className="streaming"><Markdown text={live} /></div></details>}
         <div className="turn-actions">
           <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
           {isActive(run) && run.wait_reason !== 'USER' && <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>}
@@ -172,7 +172,7 @@ export function PendingTurn({ text }: { text: string }) {
   );
 }
 
-export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus }: {
+export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, models, modelId, onModelChange, approvalMode, onApprovalModeChange, providers, onSaveProvider, preferencesBusy }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -182,8 +182,17 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   placeholder: string;
   hint?: string;
   autoFocus?: boolean;
+  models: ModelOption[];
+  modelId: string;
+  onModelChange: (value: string) => void;
+  approvalMode: string;
+  onApprovalModeChange: (value: string) => void;
+  preferencesBusy?: boolean;
+  providers: CustomProvider[];
+  onSaveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string }) => Promise<void>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const selectedProvider = providers.find((item) => 'custom:' + item.id === modelId);
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
@@ -203,6 +212,11 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   return (
     <div className="composer">
       <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
+      <div className="composer-options">
+        <label>审批模式<select aria-label="审批模式" disabled={preferencesBusy} value={approvalMode} onChange={(event) => onApprovalModeChange(event.target.value)}><option value="ask">每次询问</option><option value="safe">自动放行安全操作</option><option value="workspace-write">自动批准工作区文件写入</option></select></label>
+        <label>模型<select aria-label="模型" disabled={preferencesBusy} value={modelId} onChange={(event) => onModelChange(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+        <ProviderEditor key={selectedProvider?.id || 'new'} selectedProvider={selectedProvider} onSaveProvider={onSaveProvider} preferencesBusy={preferencesBusy} />
+      </div>
       <div className="composer-bar">
         <span className="composer-hint">{hint}</span>
         {busy && onStop
@@ -210,5 +224,38 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
           : <button type="button" className="send" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="发送" title="发送（Enter）"><Icon name="up" /></button>}
       </div>
     </div>
+  );
+}
+
+function ProviderEditor({ selectedProvider, onSaveProvider, preferencesBusy }: {
+ selectedProvider?: CustomProvider;
+ onSaveProvider: Parameters<typeof Composer>[0]['onSaveProvider'];
+ preferencesBusy?: boolean;
+}) {
+  const [providerId, setProviderId] = useState(selectedProvider?.id || '');
+  const [providerName, setProviderName] = useState(selectedProvider?.name || '');
+  const [providerURL, setProviderURL] = useState(selectedProvider?.base_url || '');
+  const [providerModel, setProviderModel] = useState(selectedProvider?.model || '');
+  const [providerKey, setProviderKey] = useState('');
+  const [savingProvider, setSavingProvider] = useState(false);
+  const [providerError, setProviderError] = useState('');
+  const saveProvider = async () => {
+    setSavingProvider(true); setProviderError('');
+    try { await onSaveProvider({ id: providerId || crypto.randomUUID(), name: providerName, base_url: providerURL, model: providerModel, ...(providerKey ? { api_key: providerKey } : {}) }); setProviderKey(''); }
+    catch (reason) { setProviderError(reason instanceof Error ? reason.message : '保存失败'); }
+    finally { setSavingProvider(false); }
+  };
+  return (
+        <details className="provider-editor"><summary>OpenAI 兼容设置</summary>
+          <div className="provider-fields">
+            <label>配置 ID<input value={providerId} onChange={(event) => setProviderId(event.target.value)} placeholder="自动生成" /></label>
+            <label>显示名称<input value={providerName} onChange={(event) => setProviderName(event.target.value)} /></label>
+            <label>Base URL<input value={providerURL} onChange={(event) => setProviderURL(event.target.value)} placeholder="https://api.example.com/v1" /></label>
+            <label>模型名<input value={providerModel} onChange={(event) => setProviderModel(event.target.value)} /></label>
+            <label>API key<input type="password" autoComplete="new-password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder={selectedProvider?.has_api_key ? '已保存；留空保留原值' : '输入 API key'} /></label>
+            <button type="button" className="button" disabled={savingProvider || preferencesBusy} onClick={() => void saveProvider()}>{savingProvider ? '保存中…' : '保存并选择模型'}</button>
+            {providerError && <span role="alert">{providerError}</span>}
+          </div>
+        </details>
   );
 }

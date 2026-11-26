@@ -54,7 +54,11 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 	if model == nil {
 		// Keep the default model when no planner profile is mapped. The profile
 		// wrapper still meters each attempt and owns retries at the HTTP boundary.
-		model = &provider.ProfileProvider{Provider: m.Provider, Model: m.Model}
+		selected, _ := ctx.Value(runModelKey{}).(string)
+		if selected == "" {
+			selected = m.Model
+		}
+		model = &provider.ProfileProvider{Provider: providerFromContext(ctx, m.Provider), Model: selected}
 	}
 	before := model.BeforeAttempt
 	lastModel := ""
