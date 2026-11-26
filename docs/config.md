@@ -505,8 +505,17 @@ No key is stored in this repository. The request path is covered by an `httptest
 ```bash
 export OPENAI_API_KEY='sk-...'
 export OPENAI_BASE_URL='https://apihub.agnes-ai.com/v1'
-export OPENAI_MODEL='agnes-2.5-flash'
+export OPENAI_MODEL='agnes-3.0-flash'
 cloud-harness eval run --task batch-three-reads --provider openai
 ```
 
 The command creates the task fixture, runs the tool loop, and prints JSON with `status`, `run_id`, `tool_calls`, and `pass`. The key is not written to the fixture, the trace, or the JSON result.
+
+The [Agnes 3.0 Flash documentation](https://www.agnes-ai.com/doc/agnes-30-flash)
+requires an API key. It lists both nonzero standard prices and a zero Angel
+User Trial Price; billing and availability depend on the account and key.
+This example does not establish a keyless or account-specific free path.
+An eval result also does not establish HTTP application acceptance. See
+[Agnes application acceptance](agnes-acceptance.md) for the isolated
+`serve` / Manager / approval / persisted-message checks and their execution
+status.
