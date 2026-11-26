@@ -7,8 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
-    "test": "tsx scripts/test-sse.ts && tsx scripts/test-sse-http.ts && tsx scripts/test-events.ts && tsx scripts/test-timeline.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts",
+    "test": "tsx scripts/test-sse.ts && tsx scripts/test-sse-http.ts && tsx scripts/test-events.ts && tsx scripts/test-timeline.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts && tsx scripts/test-session-history.ts && tsx scripts/test-session-history-http.ts",
     "test:sse-http": "tsx scripts/test-sse-http.ts",
+    "test:session-history": "tsx scripts/test-session-history.ts",
+    "test:session-history-http": "tsx scripts/test-session-history-http.ts",
     "check:dist": "bash scripts/check-dist.sh",
     "preview": "vite preview"
   },

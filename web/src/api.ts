@@ -69,6 +69,24 @@ export interface SessionView {
   latest_run_at?: string;
 }
 
+export interface SessionMessage {
+  id: string;
+  session_id: string;
+  run_id: string | null;
+  turn_id: string | null;
+  role: 'user' | 'assistant' | 'system';
+  kind: 'input' | 'response' | 'question' | 'answer' | 'approval_requested' | 'approval_decision' | 'run_status';
+  status: 'recorded' | 'failed' | 'cancelled';
+  content: string;
+  event: string;
+  created_at: string;
+}
+
+export interface SessionMessagesPage {
+  messages: SessionMessage[];
+  next_cursor: string;
+}
+
 export interface ApprovalView {
   run_id: string;
   session_id: string;
@@ -178,6 +196,13 @@ export const api = {
   health: () => req<{ status: string; provider: string }>('/healthz'),
   listSessions: () => req<SessionView[]>('/v1/sessions'),
   createSession: () => req<{ id: string }>('/v1/sessions', { method: 'POST' }),
+  listMessages: (sessionId: string, options?: { limit?: number; cursor?: string; signal?: AbortSignal }): Promise<SessionMessagesPage> => {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set('limit', String(options.limit));
+    if (options?.cursor !== undefined) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return req<SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { signal: options?.signal });
+  },
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
   createRun: (sessionId: string, message: string) =>
     req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {

@@ -4,20 +4,16 @@ import type { BudgetExtension, HarnessEvent, RunView } from './api';
 import { budgetExtension } from './budget';
 import { actionLabels, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
-import { CopyButton, Markdown } from './Markdown';
+import { Markdown } from './Markdown';
 import { buildWork } from './timeline';
 import type { WorkItem } from './timeline';
-
-export interface Exchange {
-  q: string;
-  a: string;
-}
 
 export interface TurnActions {
   respond: (runId: string, body: { decision?: string; answer?: string }) => void;
   addBudget: (runId: string, extension: BudgetExtension) => void;
   cancel: (runId: string) => void;
   inspect: (runId: string) => void;
+  focusAnswer: (runId: string) => void;
   loadEvents: (run: RunView) => void;
 }
 
@@ -109,9 +105,9 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
   if (run.wait_reason === 'USER') {
     return (
       <div className="question">
-        <Markdown text={run.question || '运行正在等待你提供更多信息。'} />
         <p className="question-hint">
-          <Icon name="question" size={14} /><span>在下方输入框回答后，运行会继续。</span>
+          <Icon name="question" size={14} /><span>正在等待你的回答，问题见会话历史。</span>
+          <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.focusAnswer(run.id)}>回答这个问题</button>
           <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>
         </p>
       </div>
@@ -142,47 +138,24 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
   return null;
 }
 
-export function Turn({ run, message, exchanges, events, live, acting, actions }: {
+export function Turn({ run, events, live, acting, actions }: {
   run: RunView;
-  message?: string;
-  exchanges: Exchange[];
   events: HarnessEvent[];
   live: string;
   acting: boolean;
   actions: TurnActions;
 }) {
-  const text = run.message || message;
   return (
-    <article className="turn" data-run-id={run.id} data-status={run.status}>
-      <div className="user-row">
-        {text
-          ? <div className="user-bubble">{text}</div>
-          : <div className="user-bubble missing">这条消息不是在本浏览器发送的，原文没有保存。</div>}
-      </div>
+    <article className="turn run-turn" data-run-id={run.id} data-status={run.status} aria-label={`运行 ${shortId(run.id)}`}>
       <div className="assistant">
+        <span className="run-label">{run.parent_id ? '子运行' : '运行'} {shortId(run.id)}</span>
         <WorkBlock run={run} events={events} onOpen={() => actions.loadEvents(run)} />
-        {exchanges.map((exchange, index) => (
-          <div className="exchange" key={index}>
-            {exchange.q && <Markdown text={exchange.q} />}
-            <div className="user-row"><div className="user-bubble">{exchange.a}</div></div>
-          </div>
-        ))}
         {run.status === 'WAITING' && <WaitCard run={run} acting={acting} actions={actions} />}
         {run.status === 'RUNNING' && live && <div className="streaming"><Markdown text={live} /></div>}
-        {run.final_answer && <div className="answer"><Markdown text={run.final_answer} /></div>}
-        {run.status === 'FAILED' && (
-          <div className="error-card" role="alert">
-            <strong>运行失败{run.error?.code ? ` · ${run.error.code}` : ''}</strong>
-            <p>{run.error?.message || '发生未知错误。'}</p>
-          </div>
-        )}
-        {run.status === 'CANCELLED' && <p className="cancelled">已取消</p>}
-        {!isActive(run) && (
-          <div className="turn-actions">
-            {run.final_answer && <CopyButton text={run.final_answer} />}
-            <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
-          </div>
-        )}
+        <div className="turn-actions">
+          <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
+          {isActive(run) && run.wait_reason !== 'USER' && <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>}
+        </div>
       </div>
     </article>
   );
@@ -193,7 +166,7 @@ export function PendingTurn({ text }: { text: string }) {
     <article className="turn" data-status="SENDING">
       <div className="user-row"><div className="user-bubble">{text}</div></div>
       <div className="assistant">
-        <div className="work"><div className="work-toggle static"><span className="work-state tone-run"><span className="spinner" /></span><span className="shimmer">正在思考</span></div></div>
+        <div className="work" role="status"><div className="work-toggle static"><span className="work-state tone-run"><span className="spinner" /></span><span className="shimmer">正在发送…</span></div></div>
       </div>
     </article>
   );
