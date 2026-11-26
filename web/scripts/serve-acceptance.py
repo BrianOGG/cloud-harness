@@ -123,8 +123,9 @@ def wait_healthy(base):
 
 
 def run_node_capture(base, mode, *args):
-    command = ["node", str(WEB / "scripts" / "capture-screenshots.mjs"), base, TOKEN, str(SCREENSHOTS), mode, *args]
-    subprocess.run(command, cwd=WEB, check=True, timeout=120)
+    command = ["node", str(WEB / "scripts" / "capture-screenshots.mjs"), base, str(SCREENSHOTS), mode, *args]
+    env = {**os.environ, "CLOUD_HARNESS_HTTP_TOKEN": TOKEN}
+    subprocess.run(command, cwd=WEB, env=env, check=True, timeout=120)
 
 
 def check_doctor(base, failed_id=None):
@@ -259,9 +260,9 @@ def main():
             last_event_id = max(event["seq"] for event in before_events)
 
             run_node_capture(
-                base, "populated", approval_session, approval_run["id"], approval_message,
-                pending_session, pending_run["id"], pending_message,
-                ask_session, ask_run["id"], ask_message,
+                base, "populated", approval_session, approval_run["id"],
+                pending_session, pending_run["id"],
+                ask_session, ask_run["id"],
                 failed_run["id"],
             )
 
