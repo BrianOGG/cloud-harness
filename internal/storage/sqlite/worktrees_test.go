@@ -83,7 +83,7 @@ func TestMigration007PreservesExistingRunsAndWorktreeBinding(t *testing.T) {
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if version, err := db.SchemaVersion(ctx); err != nil || version != 9 {
+	if version, err := db.SchemaVersion(ctx); err != nil || version != 10 {
 		t.Fatalf("version %d, err %v", version, err)
 	}
 	for _, session := range []string{"", "ses"} {

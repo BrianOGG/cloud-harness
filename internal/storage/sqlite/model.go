@@ -71,6 +71,7 @@ func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse)
 				text.WriteString(item.Text)
 			}
 		}
+		answerResponseID := ""
 		if text.Len() > 0 {
 			if err := insertMessage(ctx, tx, storage.Message{
 				ID: "msg_response_" + rec.ID, SessionID: sessionID, RunID: rec.RunID, TurnID: turnID,
@@ -78,6 +79,20 @@ func (db *DB) SaveModelResponse(ctx context.Context, rec storage.StoredResponse)
 			}); err != nil {
 				return err
 			}
+			if rec.Action == domain.ActionAnswer {
+				answerResponseID = rec.ID
+				for _, item := range items {
+					// finish_turn supplies its answer through arguments, not visible text.
+					if item.ToolCall != nil && item.ToolCall.Name == domain.ToolFinishTurn {
+						answerResponseID = ""
+					}
+				}
+			}
+		}
+		// Preserve source identity across internal work, restarts and projection
+		// pruning. A later user-facing action supersedes an earlier answer.
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET final_answer_response_id = ? WHERE id = ?`, answerResponseID, rec.RunID); err != nil {
+			return err
 		}
 	}
 	if len(rec.Opaque) > 0 {
@@ -431,9 +446,23 @@ func (db *DB) SaveApproval(ctx context.Context, a domain.Approval) error {
 	if err := tx.QueryRowContext(ctx, `SELECT session_id, turn_id FROM runs WHERE id = ?`, a.RunID).Scan(&sessionID, &turnID); err != nil {
 		return err
 	}
+	summary := "Approval requested for " + a.Tool
+	if a.Tool == "run_command" {
+		var arguments string
+		err := tx.QueryRowContext(ctx, `SELECT args_json FROM tool_invocations WHERE id = ? AND run_id = ? AND tool_name = ?`, a.InvocationID, a.RunID, a.Tool).Scan(&arguments)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		var args struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(arguments), &args) == nil && args.Command != "" {
+			summary = args.Command
+		}
+	}
 	if err := insertMessage(ctx, tx, storage.Message{
 		ID: "msg_approval_" + a.ID + "_requested", SessionID: sessionID, RunID: a.RunID, TurnID: turnID,
-		Role: "system", Source: "approval", Kind: "approval_requested", Status: "recorded", Content: "Approval requested for " + a.Tool, CreatedAt: created,
+		Role: "system", Source: "approval", Kind: "approval_requested", Status: "recorded", Content: summary, CreatedAt: created,
 	}); err != nil {
 		return err
 	}

@@ -21,7 +21,7 @@ func (db *DB) ListMessages(ctx context.Context, sessionID string, after *storage
 	if limit > maxMessagePageSize {
 		return storage.MessagePage{}, domain.E(domain.CodeInvalidArgument, "message limit must be at most 200")
 	}
-	if after != nil && (after.ID == "" || after.CreatedAt.IsZero()) {
+	if after != nil && after.ID == "" {
 		return storage.MessagePage{}, domain.E(domain.CodeInvalidArgument, "invalid message cursor")
 	}
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -35,7 +35,9 @@ func (db *DB) ListMessages(ctx context.Context, sessionID string, after *storage
 		WHERE session_id = ?`
 	args := []any{sessionID}
 	if after != nil {
-		created := formatTime(after.CreatedAt)
+		// A non-nil cursor carries a logical boundary, including year one.
+		// formatTime treats a zero time as an omitted write timestamp.
+		created := after.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		query += ` AND (created_at > ? OR (created_at = ? AND id > ?))`
 		args = append(args, created, created, after.ID)
 	}
