@@ -1,5 +1,9 @@
 # Agnes 应用链验收（2026-11-26，上海时间）
 
+> 当前状态：CH-PM 已在 Osaka 的 127.0.0.1:19441（目标模型 agnes-3.0-flash）
+> 完成真实回复、自然 WAITING/APPROVAL、approve 写入及两次 transcript 一致性复核。
+> 账单与零费用 entitlement 仍未核实；下文原 Provider 未执行的表述仅指早期交付阶段。
+
 初始 Provider 交付范围：**文档与脚本；当时真实 Agnes 验收尚未执行**。该阶段交付了无密钥配置、provider 定点回归和真实应用的缺失密钥负向证据。后续 Chief 已完成一次隔离真实应用验收；详见本文末尾的 Chief follow-up。外部零账单和账号权益仍未核实。
 
 ## 官方资料与免费性边界
@@ -57,7 +61,8 @@ workspace 和独立 harness.db。凭据仅由该请求进程使用原文件
 读取启动输出时只保留已脱敏的 provider、endpoint、model、db、workspace、超时等
 指定字段，不输出整份配置。配置文件本身不能证明运行进程没有环境覆盖。
 
-以下为 Chief 审查后自行执行的步骤，本次 Provider 未执行：
+以下是原 Provider 阶段的 19437 脚本用法，当时未执行 --run；
+后续 19441 的真实验收与 CH-PM approve 复核见文末，不应据此判断当前尚未执行：
 
 ~~~bash
 python3 scripts/acceptance-agnes.py --run --decision deny --timeout 900
@@ -123,3 +128,21 @@ unverified_account_entitlement，必须与单独的官方价格、账号权益�
 - **当前预览**：现有服务已在 `127.0.0.1:19442` 恢复运行，provider=`openai`，模型=`agnes-3.0-flash`，仅绑定 loopback，使用独立新数据库和 workspace；`/healthz` 返回 200。该当前实例仅做了健康检查，没有重复发送模型请求。二进制 SHA-256：`6217159ba90471963eda529270b880f85e08de94cff52c74ef8ebb21664fb0aa`，Go VCS revision 为 0de12ae88e34d2aa5881e0edfcf93907b887853d。密钥从权限为 0600 的指定凭据文件装载；当前配置、日志和进程参数不包含密钥。
 
 初始提交证据（无密钥负向测试及脚本离线验证）仍按上文记录；本 follow-up 的真实模型证据单独标注，不将本地成本或模型元数据解释为外部账单证明。
+
+## CH-PM approve 与 transcript 复核（2026-11-26，上海时间）
+
+CH-PM 于 14:44:57—14:45:08 对 Osaka 的 127.0.0.1:19441 进行后续审查，
+目标模型为 agnes-3.0-flash；它与同实例较早的 v4 deny 验收为两次独立执行。
+本次文档修订只读核对已保存证据，没有重跑模型调用或审批。
+
+- 第一轮到达 COMPLETED，保存了非空真实模型回复；此处不复制回复内容。
+- 第二轮自然由 RUNNING 进入 WAITING，wait_reason 和 wait_kind 均为 APPROVAL。
+- 正常 approve 后，同一轮恢复并到达 COMPLETED，workspace 下
+  ch-pm-acceptance.txt 已写入；此处不复制文件内容。
+- 连续两次读取 transcript，各返回 8 条消息，两次完整结果完全一致。
+
+证据：/tmp/ch-pm-agnes-acceptance-20261126.json。
+同实例 v4 证据的三条持久模型响应元数据均记录 agnes-3.0-flash；
+后续审查的上游 host/model 日志字符串扫描未命中，不能将该扫描写成额外归属证明。
+账单、账号权益及零费用 entitlement 仍未核实；本地 cost=0 不是外部零账单证明。
+本文不嵌入原始 transcript、密钥、文件内容或其他敏感值。
