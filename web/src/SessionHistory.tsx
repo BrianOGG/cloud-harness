@@ -49,6 +49,8 @@ export function SessionHistory({ messages, loading, error, onRefresh, onInspect 
         {messages.map((message) => {
           const user = message.role === 'user';
           const system = message.role === 'system';
+          const mappedApprovalDecision = message.kind === 'approval_decision'
+            && (message.content === 'approve' || message.content === 'deny');
           const time = new Date(message.created_at);
           return (
             <li key={message.id} className={`history-message history-${message.role}`} data-message-id={message.id} data-run-id={message.run_id ?? undefined} data-kind={message.kind} data-status={message.status}>
@@ -59,7 +61,7 @@ export function SessionHistory({ messages, loading, error, onRefresh, onInspect 
               {user
                 ? <div className="user-row"><div className="user-bubble">{message.content || '（空消息）'}</div></div>
                 : system
-                  ? <div className={`history-fact ${message.status === 'failed' ? 'history-failed' : ''}`}><strong>{factLabel(message)}</strong><p>{message.content || '（空消息）'}</p></div>
+                  ? <div className={`history-fact ${message.status === 'failed' ? 'history-failed' : ''}`}><strong>{factLabel(message)}</strong>{!mappedApprovalDecision && <p>{message.content || '（空消息）'}</p>}</div>
                   : <div className="history-response"><Markdown text={message.content || '（空消息）'} /></div>}
               <div className="history-actions">
                 {message.role === 'assistant' && <CopyButton text={message.content} />}

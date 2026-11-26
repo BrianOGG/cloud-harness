@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import React, { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { SessionMessage } from '../src/api';
 import { loadSessionMessages, mergeSessionMessages } from '../src/history';
+Object.assign(globalThis, { React });
+const { SessionHistory } = await import('../src/SessionHistory');
 
 // Oracle: docs/api.md messages contract and the CP-1 public client contract.
 // Synthetic durable facts, not model output or browser acceptance evidence.
@@ -61,6 +65,25 @@ const transcript: SessionMessage[] = [
 ].map((row, index) => ({ ...row, created_at: '2026-11-25T09:00:02.' + String(index).padStart(9, '0') + 'Z' }));
 
 type Captured = { url: URL; signal: AbortSignal | null | undefined; headers: Headers };
+await test('approval history: mapped labels replace raw decisions and unknown values remain visible', () => {
+  function renderDecision(content: string): string {
+    const message = fact('msg_decision', { role: 'system', kind: 'approval_decision', content });
+    return renderToStaticMarkup(createElement(SessionHistory, {
+      messages: [message], loading: false, error: '', onRefresh: () => {}, onInspect: () => {},
+    }));
+  }
+
+  const approved = renderDecision('approve');
+  assert.match(approved, /已批准/);
+  assert.doesNotMatch(approved, />approve</);
+
+  const denied = renderDecision('deny');
+  assert.match(denied, /已拒绝/);
+  assert.doesNotMatch(denied, />deny</);
+
+  const unknown = renderDecision('manual-review');
+  assert.match(unknown, /manual-review/);
+});
 async function withPages(pages: unknown[], exercise: (seen: Captured[]) => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch;
   const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
