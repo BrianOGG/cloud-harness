@@ -1,9 +1,6 @@
 # Agnes 应用链验收（2026-11-26，上海时间）
 
-本次 Provider 范围：**无凭据文档与脚本交付；真实 Agnes 验收未执行**。已交付独立验收脚本、
-无密钥配置、provider 定点回归和真实应用的缺失密钥负向证据。
-没有取得真实 Agnes 回复、模型触发的审批或外部零账单证明。
-后续真实凭据调用及 19437 实例由 Chief 审查后负责，本次收口不启动该实例。
+初始 Provider 交付范围：**文档与脚本；当时真实 Agnes 验收尚未执行**。该阶段交付了无密钥配置、provider 定点回归和真实应用的缺失密钥负向证据。后续 Chief 已完成一次隔离真实应用验收；详见本文末尾的 Chief follow-up。外部零账单和账号权益仍未核实。
 
 ## 官方资料与免费性边界
 
@@ -115,4 +112,14 @@ unverified_account_entitlement，必须与单独的官方价格、账号权益�
 离线检查脚本、二进制和交接材料。负向检查的服务已经退出，端口 19437 未留进程；
 当时供未来真实验收的 harness.db 尚未创建，workspace 为空。上述端口与目录状态
 为 11:34 的历史观察；本次收口不再探测或操作 Chief 接管的实例与运行数据。
-无提交、推送、PR 或合入；由 Chief 组合审查并统一发布。
+该次 Provider 初始收口没有提交、推送或创建 PR；由 Chief 组合审查并统一发布。
+
+
+## Chief follow-up（2026-11-26，上海时间）
+
+在 Osaka 的隔离副本 `dev@0de12ae88e34d2aa5881e0edfcf93907b887853d` 上完成后续运行。
+
+- **应用验收**：隔离实例 `127.0.0.1:19441` 使用 `openai` provider、Agnes endpoint 和 `agnes-3.0-flash`；拒绝决策路径返回 `application_checks_passed`。真实首轮回复、第二轮自然进入 `WAITING(APPROVAL)`、拒绝后的终态与审批持久化、工作区未写入目标文件以及历史复读稳定均通过。证据：session `ses_ac3449fb0c78ab1edd69c4206ec30154`，记录在 Osaka 隔离目录 `cp1-dev-0de12ae-agnes-20261126-v4/evidence.json`。`external_free_status` 仍为 `unverified_account_entitlement`；这不证明零费用或账单权益。
+- **当前预览**：现有服务已在 `127.0.0.1:19442` 恢复运行，provider=`openai`，模型=`agnes-3.0-flash`，仅绑定 loopback，使用独立新数据库和 workspace；`/healthz` 返回 200。该当前实例仅做了健康检查，没有重复发送模型请求。二进制 SHA-256：`6217159ba90471963eda529270b880f85e08de94cff52c74ef8ebb21664fb0aa`，Go VCS revision 为 0de12ae88e34d2aa5881e0edfcf93907b887853d。密钥从权限为 0600 的指定凭据文件装载；当前配置、日志和进程参数不包含密钥。
+
+初始提交证据（无密钥负向测试及脚本离线验证）仍按上文记录；本 follow-up 的真实模型证据单独标注，不将本地成本或模型元数据解释为外部账单证明。
