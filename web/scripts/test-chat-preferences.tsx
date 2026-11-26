@@ -31,6 +31,8 @@ let models = [...initialModels];
 let providers: { id: string; name: string; base_url: string; model: string; has_api_key: boolean }[] = [];
 let seen: { path: string; method: string; body?: Record<string, string> }[] = [];
 let linked = false;
+let connectionFailure = false;
+let saveFailure = false;
 
 globalThis.fetch = async (input, init) => {
   const path = String(input), method = init?.method || 'GET';
@@ -41,10 +43,19 @@ globalThis.fetch = async (input, init) => {
   else if (path === '/v1/models') result = models;
   else if (path === '/v1/providers') {
     if (method === 'PUT') {
+      if (saveFailure) return new Response(JSON.stringify({ error: '保存失败，请重试' }), { status: 500 });
       const p = { id: body!.id, name: body!.name, base_url: body!.base_url, model: body!.model, has_api_key: true };
-      providers = [p]; models = [...initialModels, { id: 'custom:' + p.id, name: p.name, model: p.model, provider: 'openai' }];
+      providers = [...providers.filter((item) => item.id !== p.id), p]; models = [...initialModels, ...providers.map((item) => ({ id: 'custom:' + item.id, name: item.name, model: item.model, provider: 'openai' }))];
       result = p;
     } else result = providers;
+  } else if (path.startsWith('/v1/providers/')) {
+    if (method === 'DELETE') {
+      providers = providers.filter((p) => p.id !== path.split('/')[3]);
+      models = models.filter((m) => m.id !== 'custom:' + path.split('/')[3]);
+      return new Response(null, { status: 204 });
+    }
+    if (connectionFailure) return new Response(JSON.stringify({ error: '连接失败' }), { status: 502 });
+    result = { ok: true, model_available: true };
   } else if (path === '/v1/sessions') result = method === 'POST' ? { id: 'ses_created' } : ['ses_a', 'ses_b'].map((id) => ({ id, created_at: now, updated_at: now, run_count: linked && id === 'ses_a' ? 1 : 0 }));
   else if (path.endsWith('/preferences')) {
     const id = path.split('/')[3];
@@ -62,9 +73,15 @@ async function reset(query = '') {
   if (root) await act(async () => { root!.unmount(); root = undefined; });
   localStorage.clear(); window.history.replaceState(null, '', '/ui/' + query);
   preferences = { ses_a: { model_id: 'profile:fast', approval_mode: 'safe' }, ses_b: { ...defaultPrefs } };
-  models = [...initialModels]; providers = []; seen = []; linked = false; scrolledTo = null;
+  models = [...initialModels]; providers = []; seen = []; linked = false; scrolledTo = null; connectionFailure = false; saveFailure = false;
 }
 async function choose(label: string, value: string) {
+  if (label === '审批模式') {
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
+    const index = ['ask', 'safe', 'workspace-write'].indexOf(value);
+    await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[index].click(); });
+    return;
+  }
   const select = container.querySelector<HTMLSelectElement>('select[aria-label="' + label + '"]')!;
   assert.ok(select && !select.disabled);
   await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -77,22 +94,30 @@ async function type(selector: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+async function clickText(text: string) {
+  const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === text);
+  assert.ok(button, 'Missing button: ' + text); assert.equal(button.disabled, false);
+  await act(async () => { button.click(); });
+}
+async function submitProvider() {
+  await act(async () => { container.querySelector('.provider-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+}
 try {
   await test('session preferences load, save, and stay separate across conversations', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="审批模式"]')!.value, 'safe');
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="模型"]')!.value, 'profile:fast');
+    assert.equal(container.querySelector('button[aria-label="审批模式"]')!.textContent, '自动放行安全操作');
+    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="会话模型"]')!.value, 'profile:fast');
     assert.equal([...container.querySelectorAll('.sidebar-nav button')].some((b) => b.textContent === '审批'), false);
     assert.ok(container.textContent?.includes('观测'));
     await choose('审批模式', 'workspace-write');
     assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'workspace-write' });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-id="ses_b"]')!.click(); });
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="模型"]')!.value, 'default');
-    await choose('模型', 'profile:fast');
+    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="会话模型"]')!.value, 'default');
+    await choose('会话模型', 'profile:fast');
     assert.deepEqual(preferences.ses_b, { model_id: 'profile:fast', approval_mode: 'ask' });
   });
   await test('new conversation keeps local choices, then persists them and passes createRun options', async () => {
-    await reset(); await mount(); await choose('审批模式', 'safe'); await choose('模型', 'profile:fast');
+    await reset(); await mount(); await choose('审批模式', 'safe'); await choose('会话模型', 'profile:fast');
     assert.equal(seen.some((r) => r.method === 'PUT' && r.path.includes('/preferences')), false);
     assert.deepEqual(JSON.parse(localStorage.getItem('cloud-harness.web-draft-preferences')!), { approval_mode: 'safe', model_id: 'profile:fast' });
     await type('textarea', 'hello');
@@ -111,34 +136,96 @@ try {
   await test('running work and live draft default closed, expand independently of transcript and WaitCard', async () => {
     await reset();
     let loaded = 0;
+    const decisions: string[] = [];
     const events: HarnessEvent[] = [{ seq: 1, type: 'model.completed', data: '{"action":"EXECUTE","input_tokens":1}' }];
-    const actions = { respond() {}, addBudget() {}, cancel() {}, inspect() {}, focusAnswer() {}, loadEvents() { loaded++; } };
+    const actions = { respond(_id: string, body: { decision?: string }) { decisions.push(body.decision || ''); }, addBudget() {}, cancel() {}, inspect() {}, focusAnswer() {}, loadEvents() { loaded++; } };
     await mount(<><SessionHistory messages={[{ id: 'answer', session_id: 'ses_a', run_id: null, turn_id: null, role: 'assistant', kind: 'response', content: '最终回答正文', status: 'recorded', created_at: now }]} loading={false} error="" onRefresh={() => {}} onInspect={() => {}} /><Turn run={{ ...waiting, status: 'RUNNING' }} events={events} live="未提交实时草稿" acting={false} actions={actions} /><Turn run={waiting} events={events} live="" acting={false} actions={actions} /></>);
     assert.equal(container.querySelectorAll('.work-list').length, 0);
     assert.equal(container.querySelector<HTMLDetailsElement>('.live-draft')!.open, false);
     assert.ok(container.querySelector('.wait-card'));
     assert.ok(container.querySelector('.session-history')?.textContent?.includes('最终回答正文'));
+    assert.equal(container.querySelector('.work .wait-card'), null);
+    await clickText('批准并继续'); await clickText('拒绝');
+    assert.deepEqual(decisions, ['approve', 'deny']);
     await act(async () => { container.querySelector<HTMLButtonElement>('.work-toggle')!.click(); });
     assert.equal(container.querySelectorAll('.work-list').length, 1); assert.equal(loaded, 1);
     await act(async () => { container.querySelector<HTMLButtonElement>('.work-toggle')!.click(); });
     assert.equal(container.querySelectorAll('.work-list').length, 0);
   });
-  await test('provider form hides, clears and preserves saved credentials on blank edits', async () => {
+  await test('chat header owns model selection and composer only offers the current approval chip', async () => {
     await reset(); await mount();
-    const fields = container.querySelectorAll<HTMLInputElement>('.provider-fields input');
-    // Label position provides a stable target without depending on display text.
-    const values = ['fixture', 'Fixture', 'http://127.0.0.1:1234', 'custom', 'test-only-form-key'];
-    for (let i = 0; i < fields.length; i++) {
-      await act(async () => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(fields[i], values[i]); fields[i].dispatchEvent(new Event('input', { bubbles: true })); });
-    }
-    assert.equal(fields[4].type, 'password');
-    await act(async () => { container.querySelector<HTMLButtonElement>('.provider-fields button')!.click(); });
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="模型"]')!.value, 'custom:fixture');
-    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    assert.equal(keyInput.value, ''); assert.equal(keyInput.placeholder, '已保存；留空保留原值');
-    await act(async () => { container.querySelector<HTMLButtonElement>('.provider-fields button')!.click(); });
+    assert.ok(container.querySelector('header select[aria-label="会话模型"]'));
+    assert.equal(container.querySelector('header label'), null);
+    const composer = container.querySelector('.composer')!;
+    assert.equal(composer.querySelector('select, input, form, .provider-editor'), null);
+    assert.equal(composer.querySelectorAll('textarea').length, 1);
+    assert.equal(composer.querySelector('button[aria-label="审批模式"]')!.textContent, '每次询问');
+    assert.equal(composer.querySelector('.approval-mode-popover'), null);
+    await act(async () => { composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
+    assert.ok(composer.textContent?.includes('当前会话 / 下一次运行'));
+    await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    assert.equal(composer.querySelector('.approval-mode-popover'), null);
+    assert.equal(seen.some((r) => r.path === '/v1/providers'), false);
+  });
+  await test('settings CRUD, blank key edits and connection checks never auto-select models or lose the draft', async () => {
+    await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
+    await type('textarea', '保留我的草稿');
+    await clickText('设置');
+    assert.ok(container.querySelector('[aria-label="模型服务设置"]'));
+    assert.equal(container.querySelector('textarea'), null);
+    assert.ok(container.textContent?.includes('全局 / 用户配置'));
+    await clickText('添加模型服务');
+    await type('#provider-name', 'Fixture'); await type('#provider-url', 'http://127.0.0.1:1234/v1'); await type('#provider-model', 'custom'); await type('#provider-key', 'test-only-form-key');
+    assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.type, 'password');
+    await submitProvider();
+    assert.equal(providers.length, 1);
+    const id = providers[0].id;
+    assert.equal(container.querySelector('input[type="password"]'), null);
+    assert.ok(container.textContent?.includes('密钥已配置'));
+    assert.equal(container.innerHTML.includes('test-only-form-key'), false);
+    assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'safe' });
+    await clickText('连接检测'); assert.ok(container.textContent?.includes('连接成功，模型已列出'));
+    connectionFailure = true; await clickText('连接检测'); assert.ok(container.querySelector('.provider-card [role="alert"]'));
+    await clickText('编辑');
+    assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.value, '');
+    assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.placeholder, '已保存；留空保留原值');
+    await type('#provider-name', 'Renamed'); await submitProvider();
     const saves = seen.filter((r) => r.path === '/v1/providers' && r.method === 'PUT');
-    assert.equal(saves.length, 2); assert.equal(saves[1].body?.api_key, undefined);
+    assert.equal(saves.length, 2); assert.equal(saves[1].body?.api_key, undefined); assert.equal(saves[1].body?.id, id);
+    await clickText('返回会话');
+    assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '保留我的草稿');
+    assert.equal(container.querySelector<HTMLSelectElement>('.header-model')!.value, 'profile:fast');
+    await choose('会话模型', 'custom:' + id);
+    await clickText('设置'); await clickText('删除');
+    assert.ok(container.textContent?.includes('当前模型可能变得不可用'));
+    assert.equal(seen.some((r) => r.method === 'DELETE'), false);
+    await clickText('取消'); assert.equal(providers.length, 1);
+    await clickText('删除'); await clickText('确认删除'); assert.equal(providers.length, 0);
+    assert.equal(preferences.ses_a.model_id, 'custom:' + id);
+    await clickText('返回会话');
+    assert.ok(container.querySelector('.header-model')?.textContent?.includes('模型不可用'));
+    assert.ok(container.textContent?.includes('当前模型不可用，请重新选择'));
+    assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, true);
+    assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '保留我的草稿');
+    await choose('会话模型', 'default');
+    assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, false);
+  });
+  await test('no configured models has a settings action and preserves the unsent draft', async () => {
+    await reset(); models = []; await mount(); await type('textarea', '尚未发送');
+    assert.ok(container.textContent?.includes('还没有已配置模型'));
+    assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, true);
+    await clickText('去配置模型服务'); await clickText('返回会话');
+    assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '尚未发送');
+    assert.equal(seen.some((r) => r.path.endsWith('/runs?wait=0')), false);
+  });
+  await test('provider save failure stays in settings without losing editable values', async () => {
+    await reset(); await mount(); await clickText('设置'); await clickText('添加模型服务');
+    await type('#provider-name', 'Fixture'); await type('#provider-url', 'https://example.invalid/v1'); await type('#provider-model', 'fixture'); await type('#provider-key', 'test-only-form-key');
+    saveFailure = true; await submitProvider();
+    assert.ok(container.querySelector('.provider-form [role="alert"]'));
+    assert.equal(container.querySelector<HTMLInputElement>('#provider-name')!.value, 'Fixture');
+    assert.equal(providers.length, 0);
+    assert.equal(seen.some((r) => r.method === 'PUT' && r.path.includes('/preferences')), false);
   });
 } finally {
   if (root) await act(async () => { root!.unmount(); });

@@ -115,9 +115,9 @@
 
 ## M11-8：Web 真 serve 全流程（旧界面的验收记录）
 
-- 会话列表、运行记录、审批队列均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
+- 会话列表、运行记录、会话内待审批卡均以服务端 API 为准。运行详情展示状态、等待原因、四组预算、最终回答/错误、执行步骤、工具批次、子任务和事件流。
 - 当前会话里每个 RUNNING/WAITING run 保持一条 SSE 连接（`api.streamEvents`），事件按 seq 合并，断线后带 `Last-Event-ID` 重连，重连前先清空该 run 已显示的流式文本；`stream.delta` 实时显示在对话气泡里，`stream.reset` 清空当前响应的文本（`liveText`）。另有约 1 秒一次的 run 视图轮询。可见轨迹只包含编排层状态，不展示模型思维链。
-- 审批队列可以直接 Approve/Deny；ask_user 从运行详情回复。服务端负责恢复运行（请求立即返回），前端通过事件流跟进状态。
+- 会话内 WaitCard 可以直接 Approve/Deny；ask_user 在会话内回答。服务端负责恢复运行（请求立即返回），前端通过事件流跟进状态。
 - token 使用 `localStorage['cloud-harness.http-token']`。不设置 token 时 UI 仍可打开，受保护 API 错误会提示 token 设置位置。
 - `npm test` 检查 Last-Event-ID 续接和四组预算计数。`web/scripts/serve-acceptance.py` 通过脚本化 OpenAI 兼容 provider 对真实 serve 运行审批批次、子任务和 ask_user 流程，并用浏览器截取浅/深主题截图。
 
@@ -146,7 +146,7 @@
 | 5 状态与预算、14 取消 | 顶栏状态徽标、输入框的停止按钮；预算在运行详情里 |
 | 6 步骤、7 工具调用、9 子任务 | 每轮回答上方可折叠的过程块，由事件流生成（`timeline.ts`）；运行中展开，结束后折叠 |
 | 8 事件流 | 运行详情的「事件」页签 |
-| 10 审批、12 补预算、13 对账 | 对话里的操作卡片；审批也在「审批」页 |
+| 10 审批、12 补预算、13 对账 | 对话里的操作卡片；没有独立审批页 |
 | 11 回答提问 | 问题显示为 agent 的消息，在输入框里回答 |
 | 15 错误与终态 | 对话里的失败卡片和「已取消」，接口错误显示在顶部 |
 
@@ -159,16 +159,24 @@
 
 ## 会话偏好与内嵌审批（2026-11-27）
 
-- Composer 从 `GET /v1/models` 与 `GET /v1/providers` 加载模型与兼容 provider 元数据。
+- 会话 header 从 `GET /v1/models` 加载已配置模型，用紧凑当前值菜单选择，无可见「模型」类别标签。
   切换会话读取 `GET /v1/sessions/{id}/preferences`，切换模型/审批模式通过同一路径
   PUT 保存。加载或保存偏好时禁用相关选择与发送，避免用旧值发起运行。
 - 新对话偏好暂存于 `cloud-harness.web-draft-preferences`；创建会话后先 PUT，再在
   `createRun` 中显式携带 `model_id`、`approval_mode`。
-- 自定义 API 走 `PUT /v1/providers`，密码输入框留空保留原 key；保存成功清空输入。
-  provider 编辑器按所选 ID 初始化，API 与浏览器存储都不保存服务器回显的完整 key。
+- 自定义 API 统一在侧栏「设置 → 模型服务」管理（`Settings.tsx`）：列表、搜索、添加、编辑、删除确认、连接检测。
+  连接是全局 / 用户配置；保存与删除不自动改写会话模型或审批模式，返回会话后自行在 header 选择模型。
+  `GET/PUT /v1/providers` 只返回公开元数据，列表仅显示密钥已配置/掩码状态。
+  密码输入框留空保留原 key，填写则替换；保存成功清空并关闭表单。完整 key 不进入 localStorage。
+  `DELETE /v1/providers/{id}` 删除连接，确认文案说明当前模型可能不可用；删除后原选中 ID 保留并提示重选。
+  `POST /v1/providers/{id}/test` 只检测已保存服务的 /models，显示进行中/成功/失败，不发推理请求；支持手动模型 ID，暂不自动导入模型列表。
+- Composer 只负责多行草稿、发送/停止和当前审批模式 chip。chip 展开后显示三个模式的范围说明，作用于当前会话 / 下一次运行。
+  Composer 不接收 provider 元数据、Base URL 或 API key，不含凭据表单，也不重复模型下拉。
+  无模型或原模型已删除时，在输入框外提供「去配置模型服务」入口；往返设置页保留原地草稿。
 - 没有侧栏审批按钮和独立审批视图。`/ui?run=<id>` 定位会话及 WaitCard；
   `/ui?session=<id>` 打开指定会话。批准、拒绝、用户回答留在会话内，观测页保留。
 - WorkBlock 运行中与结束后均默认折叠为一行摘要，可手动展开；实时草稿独立折叠。
   已保存回答正文与当前 WaitCard 始终处于折叠区外。
 - `npm test` 包含实际 App/Composer/Turn 的 JSDOM 行为回归：偏好持久化与隔离、
-  新会话发送参数、通知深链、折叠与可见正文、兼容 provider 密钥输入与空值编辑。
+  新会话发送参数、通知深链、折叠与可见正文、header 选模、composer 边界、设置 CRUD、密钥输入与空值编辑、连接检测、删除后重选与无模型草稿保留。
+- `npm run check:dist` 对照 Git 暂存区校验重新构建的 dist；可在提交前暂存构建产物后运行，CI 中暂存区与 HEAD 一致。

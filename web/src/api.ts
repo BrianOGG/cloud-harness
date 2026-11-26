@@ -219,6 +219,8 @@ export const api = {
   listModels: () => req<ModelOption[]>('/v1/models'),
   listProviders: () => req<CustomProvider[]>('/v1/providers'),
   saveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string }) => req<CustomProvider>('/v1/providers', { method: 'PUT', body: JSON.stringify(value) }),
+  deleteProvider: (id: string) => req<void>('/v1/providers/' + encodeURIComponent(id), { method: 'DELETE' }),
+  testProvider: (id: string) => req<{ ok: boolean; model_available: boolean }>('/v1/providers/' + encodeURIComponent(id) + '/test', { method: 'POST' }),
   listMessages: (sessionId: string, options?: { limit?: number; cursor?: string; signal?: AbortSignal }): Promise<SessionMessagesPage> => {
     const params = new URLSearchParams();
     if (options?.limit !== undefined) params.set('limit', String(options.limit));

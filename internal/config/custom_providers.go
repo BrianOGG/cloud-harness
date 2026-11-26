@@ -136,36 +136,61 @@ func (s CustomProviderStore) Save(input CustomProvider) (CustomProviderInfo, err
 		}
 		data.Providers = append(data.Providers, input)
 	}
-	if err := os.MkdirAll(s.Directory, 0o700); err != nil {
+	if err := s.write(data); err != nil {
 		return CustomProviderInfo{}, err
+	}
+	return CustomProviderInfo{ID: input.ID, Name: input.Name, BaseURL: input.BaseURL, Model: input.Model, HasAPIKey: true}, nil
+}
+
+// Delete changes only the connection catalog, not session or run preferences.
+func (s CustomProviderStore) Delete(id string) error {
+	customProviderMu.Lock()
+	defer customProviderMu.Unlock()
+	data, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i, p := range data.Providers {
+		if p.ID == id {
+			data.Providers = append(data.Providers[:i], data.Providers[i+1:]...)
+			return s.write(data)
+		}
+	}
+	return domain.E(domain.CodeNotFound, "custom provider not found")
+}
+
+// Callers hold customProviderMu. Replacement uses a private temporary file.
+func (s CustomProviderStore) write(data customProviderFile) error {
+	if err := os.MkdirAll(s.Directory, 0o700); err != nil {
+		return err
 	}
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return CustomProviderInfo{}, err
+		return err
 	}
 	f, err := os.CreateTemp(s.Directory, ".compatible-providers-*")
 	if err != nil {
-		return CustomProviderInfo{}, err
+		return err
 	}
 	name := f.Name()
 	defer func() { _ = os.Remove(name) }()
 	if err := f.Chmod(0o600); err != nil {
 		_ = f.Close()
-		return CustomProviderInfo{}, err
+		return err
 	}
 	if _, err := f.Write(raw); err != nil {
 		_ = f.Close()
-		return CustomProviderInfo{}, err
+		return err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return CustomProviderInfo{}, err
+		return err
 	}
 	if err := f.Close(); err != nil {
-		return CustomProviderInfo{}, err
+		return err
 	}
 	if err := os.Rename(name, s.path()); err != nil {
-		return CustomProviderInfo{}, err
+		return err
 	}
-	return CustomProviderInfo{ID: input.ID, Name: input.Name, BaseURL: input.BaseURL, Model: input.Model, HasAPIKey: true}, nil
+	return nil
 }

@@ -845,6 +845,11 @@ GET returns an array of `{id, name, base_url, model, has_api_key}`. PUT accepts
 fields. A new provider requires a key. Omitting `api_key` or passing an empty
 string when editing keeps its saved key. Neither endpoint returns a complete
 key. The UI uses a password input and clears it after a successful save.
+Manage these connections in **设置 → 模型服务**, reached from the sidebar.
+Connections are global/user configuration. Saving or deleting a connection
+does not rewrite a session's model selection or approval mode. Select the
+model in the **conversation header**; the composer only has the draft,
+send/stop, and the current approval-mode chip, with no API configuration form.
 
 IDs use 1–64 ASCII letters, digits, underscores or hyphens. Base URLs require
 HTTPS; HTTP is accepted only for `localhost` or a loopback IP. User info,
@@ -853,3 +858,31 @@ atomically in `<configuration-directory>/compatible-providers.json` with
 mode 0600; this separate file contains credentials and must not be committed.
 All settings endpoints require the same bearer token, Host/Origin checks,
 JSON request content type and body-size limits as the other `/v1/` routes.
+
+## DELETE /v1/providers/{id}
+
+Deletes a saved compatible connection and its credential, returning 204 with
+no body. Unknown IDs return 404. The atomic file replacement retains mode
+0600. It does not modify session preferences or existing run snapshots.
+The deleted `custom:<id>` disappears from `GET /v1/models`. A session that
+selected it keeps that ID and must explicitly select another configured model
+before starting a new run. The UI asks for confirmation and explains that
+the current model may become unavailable; the unsent draft is retained.
+
+## POST /v1/providers/{id}/test
+
+Tests a **saved** connection; accepts no credentials or configuration body.
+Makes one read-only authenticated `GET <base_url>/models` request with a
+10-second timeout and a 1 MiB response limit. Redirects are not followed.
+Returns `{ "ok": true, "model_available": true }` if the configured model ID
+appears in the catalog; `model_available: false` means the connection answered
+but did not list that model. This is a catalog/authentication check, not a
+guarantee of inference or tool-calling support, and it never starts inference.
+The UI provides a manual model ID; automatic model discovery/import is not
+implemented. Services without `/models` may still be saved and used manually.
+
+Unknown provider IDs return 404. Network failures, redirects, non-200 status,
+oversize or invalid catalogs return 502 with a fixed, redacted error; an HTTP
+failure can include only its numeric `upstream_status`. Neither the saved key,
+upstream response body, nor raw network errors are returned. This endpoint and
+DELETE have the same request protection as other settings endpoints.
