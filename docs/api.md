@@ -254,6 +254,24 @@ a fallback each open stream also reads the store every 2 seconds, which is how
 it learns of events written by another process, such as
 `cloud-harness runs resume` against the same database.
 
+## GET /v1/runs/{id}/trace
+
+Returns a read-only `{session_id, run}` execution trace. `run.steps` contains
+model response identities and their ordered `batches`; each batch has its
+ordered `calls`. A call contains `id`, `provider_call_id`, `name`, `status`,
+`ordinal`, optional `arguments`, and optional `result`. `arguments` is the
+persisted tool argument JSON, including the command and requested working
+directory when applicable. `result` is the paired persisted
+`{ok, data?, error?}`; `error` has `code`, `message`, and optional `ref`. This
+preserves a denied invocation's recorded error rather than inferring its
+outcome from a preceding approval request. A call without a result omits it;
+clients must not invent a successful result from an approval decision.
+
+Use this endpoint when expanding a turn's process to inspect command
+parameters, tool output, or recorded denial errors. Invocation status events
+do not carry these full arguments and results. The trace does not include
+provider opaque bytes, continuation records, or run checkpoints.
+
 ## GET /approval (legacy redirect)
 
 Old `/approval?run=<run-id>` links return **303 See Other** to
@@ -399,7 +417,10 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | --- | --- | --- |
 | `id` | string | Run ID. |
 | `session_id` | string | Owning session ID. |
+| `turn_id` | string, optional | Persisted turn identity; use with `parent_id` to group root and child runs without inferring relationships from message text. |
 | `parent_id` | string, optional | ID of the run that delegated this child run. Absent for a run started by a message. |
+| `approval_mode` | string, optional | Actual `ask`, `safe`, or `workspace-write` mode frozen in this run's checkpoint. It is independent of the session's next-turn preference. Omitted when a legacy or unavailable checkpoint cannot establish the mode; clients must not substitute current session preferences. |
+| `workspace` | string, optional | Execution workspace root from this run's checkpoint policy. A command's optional `pending_invocation.arguments.cwd` is relative to this workspace (or an absolute path subject to the existing boundary check). Omitted when no checkpoint policy is available. |
 | `status` | string | Current run status. |
 | `wait_reason` | string, optional | Reason the run is waiting. |
 | `wait_kind` | string, optional | Wait kind, matching `wait_reason` when present. |
@@ -836,6 +857,9 @@ saved values. `approval_mode` is one of `ask`, `safe`, `workspace-write`;
 `model_id` must appear in `/v1/models` (an empty model ID means `default`).
 Invalid settings return 400 and unknown sessions return 404. Values live in
 the serve database's `session_preferences` table (migration 011).
+These choices apply to the next turn. Changing them does not replay or
+authorize an invocation already waiting, or change any active run's snapshot.
+The run view's optional `approval_mode` reports that snapshot separately.
 
 ## GET /v1/providers
 ## PUT /v1/providers

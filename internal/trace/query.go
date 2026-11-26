@@ -1,14 +1,21 @@
 package trace
 
-import "github.com/BrianOGG/cloud-harness/internal/storage"
+import (
+	"encoding/json"
+
+	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
+)
 
 // Call is one tool invocation inside a batch. Opaque bytes are not included.
 type Call struct {
-	ID             string `json:"id"`
-	ProviderCallID string `json:"provider_call_id"`
-	Name           string `json:"name"`
-	Status         string `json:"status"`
-	Ordinal        int    `json:"ordinal"`
+	ID             string             `json:"id"`
+	ProviderCallID string             `json:"provider_call_id"`
+	Name           string             `json:"name"`
+	Status         string             `json:"status"`
+	Ordinal        int                `json:"ordinal"`
+	Arguments      json.RawMessage    `json:"arguments,omitempty"`
+	Result         *domain.CallResult `json:"result,omitempty"`
 }
 
 // Batch is one ordered tool batch under a step.
@@ -53,6 +60,7 @@ func Assemble(run storage.Run, responses []storage.StoredResponse, batches []sto
 			view.Calls = append(view.Calls, Call{
 				ID: inv.ID, ProviderCallID: inv.ProviderCallID, Name: inv.Name,
 				Status: string(inv.Status), Ordinal: inv.Ordinal,
+				Arguments: inv.Arguments, Result: inv.Result,
 			})
 		}
 		byResponse[batch.ModelResponseID] = append(byResponse[batch.ModelResponseID], view)

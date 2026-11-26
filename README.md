@@ -196,6 +196,18 @@ The authenticated `GET /v1/sessions` and `GET /v1/sessions/{id}/runs` API
 routes list sessions with run aggregates and each session's runs. See the
 [HTTP API reference](docs/api.md#get-v1-sessions).
 
+Web 会话按 `turn_id` / `run_id` 投影为一轮：用户输入与根运行终态的
+`final_answer` 默认显示，已处理审批、工具细节、中间文本与子运行收进默认关闭的过程摘要。
+历史审计仍完整保留；刷新、重连和恢复使用相同规则。真正待审批的操作、用户提问、
+预算暂停与结果待确认继续在折叠区外显示，失败或无最终答复时如实显示状态。
+
+Composer 的审批选择明确作用于**下一轮**；进行中的回合展示自己的运行快照，
+切换偏好不会放行或重放当前调用。模式 ID 与后端权限不变：`ask` 显示“按策略确认”，
+`safe` 显示“文件读取与 Git 查看自动”，`workspace-write` 显示“工作区文件编辑自动 · 命令另行确认”。
+`safe` 只自动授权既有七类文件读取 / Git 查看工具，`workspace-write` 另加通过边界校验的
+`write_file` / `edit_file`。两者均不因模式本身授予 `run_command`；既有允许 / 拒绝规则和
+默认安全命令 `ls` / `pwd` / `wc` 仍按原规则处理。本版未增加受限诊断命令自动执行能力。
+
 `cloud-harness retain --days 30` deletes history-index rows older than 30 days. Run rows stay.
 
 ## Layout

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isNotFound } from './api';
 import type { ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
-import { Composer, PendingTurn, Turn } from './Chat';
+import { Composer, PendingTurn } from './Chat';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
@@ -162,6 +162,7 @@ export default function App() {
 
   const lastSeq = useRef<Record<string, number>>({});
   const streamedAt = useRef<Record<string, number>>({});
+  const responding = useRef(new Set<string>());
   const seenVersion = useRef<Record<string, number>>({});
   const liveNow = useRef<Record<string, string>>({});
   const liveFrame = useRef(0);
@@ -189,8 +190,6 @@ export default function App() {
   }, [activeRuns, answerRun]);
   const answering = sending ? null : asking;
   const busy = preferencesBusy || sending || (answering ? Boolean(acting[answering.id]) : activeRuns.some(isActive));
-  const currentRuns = activeRuns.filter(isActive);
-  const finishedRuns = activeRuns.filter((run) => !isActive(run));
 
   const upsertRun = useCallback((run: RunView) => {
     setRuns((previous) => {
@@ -425,7 +424,7 @@ export default function App() {
     };
   }, [followKey, onEvent, pullEvents, refreshRun, refreshSessions, setLiveText]);
 
-  // Titles are a UI preference; transcript text always comes from messages.
+  // Titles are a UI preference; turn output uses the authoritative root run final_answer.
   useEffect(() => {
     if (!activeSession || titles[activeSession]) return;
     const text = history.messages.find((message) => message.kind === 'input')?.content;
@@ -457,7 +456,7 @@ export default function App() {
     const node = threadRef.current;
     if (!node) return;
     const runSelector = focusRun.current ? '[data-run-id="' + CSS.escape(focusRun.current) + '"]' : '';
-    const target = runSelector ? node.querySelector('.turn' + runSelector + ' .wait-card') || node.querySelector('.turn' + runSelector) || node.querySelector('.history-message' + runSelector) : null;
+    const target = runSelector ? node.querySelector('.current-run' + runSelector + ' .wait-card') || node.querySelector('.turn' + runSelector + ' .wait-card') || node.querySelector('.turn' + runSelector) || node.querySelector('.history-message' + runSelector) : null;
     if (target) {
       // A run opened by id is shown at its own turn, not at the newest one.
       stickToBottom.current = false;
@@ -544,6 +543,8 @@ export default function App() {
   };
 
   const respond = async (runId: string, body: { decision?: string; answer?: string }) => {
+    if (responding.current.has(runId)) return false;
+    responding.current.add(runId);
     setError('');
     setActing((previous) => ({ ...previous, [runId]: true }));
     try {
@@ -553,6 +554,7 @@ export default function App() {
       setError(`提交失败：${errorText(reason)}`);
       return false;
     } finally {
+      responding.current.delete(runId);
       setActing((previous) => ({ ...previous, [runId]: false }));
       history.refresh();
       refreshRun(runId).catch(() => undefined);
@@ -770,15 +772,8 @@ export default function App() {
             stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
           }}>
             <div className="thread-inner">
-              <SessionHistory messages={history.messages} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
+              <SessionHistory messages={history.messages} runs={activeRuns} events={events} live={live} acting={acting} actions={actions} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
               {optimistic && <PendingTurn text={optimistic.text} />}
-              {currentRuns.length > 0 && <section className="session-runs" aria-label="运行过程与当前操作">
-                <h2>运行过程与当前操作</h2>
-                {currentRuns.map((run) => <Turn key={run.id} run={run} events={events[run.id] || []} live={live[run.id] || ''} acting={Boolean(acting[run.id])} actions={actions} />)}
-              </section>}
-              {finishedRuns.length > 0 && <details className="past-runs"><summary>已结束的运行过程 · {finishedRuns.length}</summary>
-                {finishedRuns.map((run) => <Turn key={run.id} run={run} events={events[run.id] || []} live="" acting={Boolean(acting[run.id])} actions={actions} />)}
-              </details>}
             </div>
           </div>
           <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">agent 的工具调用受策略和审批约束；回答可能有误，请核对关键结果。</p></div></div>
