@@ -160,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/providers", s.customProviders)
 	mux.HandleFunc("PUT /v1/providers", s.customProviders)
+	mux.HandleFunc("DELETE /v1/providers/{id}", s.deleteCustomProvider)
+	mux.HandleFunc("POST /v1/providers/{id}/test", s.testCustomProvider)
 	mux.HandleFunc("GET /approval", serveApprovalPage)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)

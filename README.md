@@ -45,6 +45,13 @@ are cancelled and recorded as `CANCELLED` before the store closes.
 With a configured token, `/v1/` routes require `Authorization: Bearer <token>`.
 `/healthz` and the static UI at `/ui` are public. Open `/ui` to chat,
 inspect runs, select models and approval modes, or configure a compatible API.
+Custom APIs are managed under **设置 → 模型服务** in the sidebar: add, edit,
+delete, and test saved OpenAI-compatible connections there. Connections are
+global/user configuration; saving one never changes the current conversation's
+selection. Select the model in the **conversation header**. The composer keeps
+the multiline draft, send/stop, and a compact approval-mode chip for the
+current session / next run; it contains no API credentials form.
+Connection tests only read the provider's model catalog, not inference.
 Approval notifications open `/ui?run=<id>` at the corresponding conversation's
 WaitCard. Old `/approval` links redirect into `/ui`. For protected servers,
 configure `cloud-harness.http-token` in same-origin browser localStorage; API

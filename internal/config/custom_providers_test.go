@@ -3,11 +3,52 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
+
+func TestCustomProviderDeletePreservesOtherConnectionsAndPrivateMode(t *testing.T) {
+	store := CustomProviderStore{Directory: t.TempDir()}
+	for _, id := range []string{"first", "second"} {
+		if _, err := store.Save(CustomProvider{ID: id, Name: id, BaseURL: "https://example.invalid/v1", Model: "fixture", APIKey: "fixture-only"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Delete("first"); err != nil {
+		t.Fatal(err)
+	}
+	reopened := CustomProviderStore{Directory: store.Directory}
+	if _, err := reopened.Get("first"); err == nil {
+		t.Fatal("deleted connection still exists")
+	}
+	if p, err := reopened.Get("second"); err != nil || p.APIKey == "" {
+		t.Fatal("other connection changed")
+	}
+	if err := reopened.Delete("missing"); err == nil {
+		t.Fatal("missing connection must return not found")
+	} else {
+		var de *domain.Error
+		if !errors.As(err, &de) || de.Code != domain.CodeNotFound {
+			t.Fatal("wrong error for missing connection")
+		}
+	}
+	if err := reopened.Delete("second"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := reopened.List()
+	if err != nil || len(items) != 0 {
+		t.Fatal("catalog should be empty")
+	}
+	stat, err := os.Stat(filepath.Join(store.Directory, "compatible-providers.json"))
+	if err != nil || stat.Mode().Perm() != 0o600 {
+		t.Fatal("delete must retain mode 0600")
+	}
+}
 
 func TestCustomProviderStorePersistsPrivateKeyWithoutEcho(t *testing.T) {
 	store := CustomProviderStore{Directory: t.TempDir()}

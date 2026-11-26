@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { BudgetExtension, HarnessEvent, RunView } from './api';
-import type { CustomProvider, ModelOption } from './api';
 import { budgetExtension } from './budget';
 import { actionLabels, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
@@ -172,7 +171,7 @@ export function PendingTurn({ text }: { text: string }) {
   );
 }
 
-export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, models, modelId, onModelChange, approvalMode, onApprovalModeChange, providers, onSaveProvider, preferencesBusy }: {
+export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, approvalMode, onApprovalModeChange, preferencesBusy }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -182,17 +181,11 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   placeholder: string;
   hint?: string;
   autoFocus?: boolean;
-  models: ModelOption[];
-  modelId: string;
-  onModelChange: (value: string) => void;
   approvalMode: string;
   onApprovalModeChange: (value: string) => void;
   preferencesBusy?: boolean;
-  providers: CustomProvider[];
-  onSaveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string }) => Promise<void>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  const selectedProvider = providers.find((item) => 'custom:' + item.id === modelId);
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
@@ -212,12 +205,8 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   return (
     <div className="composer">
       <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
-      <div className="composer-options">
-        <label>审批模式<select aria-label="审批模式" disabled={preferencesBusy} value={approvalMode} onChange={(event) => onApprovalModeChange(event.target.value)}><option value="ask">每次询问</option><option value="safe">自动放行安全操作</option><option value="workspace-write">自动批准工作区文件写入</option></select></label>
-        <label>模型<select aria-label="模型" disabled={preferencesBusy} value={modelId} onChange={(event) => onModelChange(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-        <ProviderEditor key={selectedProvider?.id || 'new'} selectedProvider={selectedProvider} onSaveProvider={onSaveProvider} preferencesBusy={preferencesBusy} />
-      </div>
       <div className="composer-bar">
+        <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} disabled={preferencesBusy} />
         <span className="composer-hint">{hint}</span>
         {busy && onStop
           ? <button type="button" className="send stop" onClick={onStop} disabled={stopping} aria-label="停止运行" title="停止运行"><Icon name="stop" /></button>
@@ -227,35 +216,29 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   );
 }
 
-function ProviderEditor({ selectedProvider, onSaveProvider, preferencesBusy }: {
- selectedProvider?: CustomProvider;
- onSaveProvider: Parameters<typeof Composer>[0]['onSaveProvider'];
- preferencesBusy?: boolean;
-}) {
-  const [providerId, setProviderId] = useState(selectedProvider?.id || '');
-  const [providerName, setProviderName] = useState(selectedProvider?.name || '');
-  const [providerURL, setProviderURL] = useState(selectedProvider?.base_url || '');
-  const [providerModel, setProviderModel] = useState(selectedProvider?.model || '');
-  const [providerKey, setProviderKey] = useState('');
-  const [savingProvider, setSavingProvider] = useState(false);
-  const [providerError, setProviderError] = useState('');
-  const saveProvider = async () => {
-    setSavingProvider(true); setProviderError('');
-    try { await onSaveProvider({ id: providerId || crypto.randomUUID(), name: providerName, base_url: providerURL, model: providerModel, ...(providerKey ? { api_key: providerKey } : {}) }); setProviderKey(''); }
-    catch (reason) { setProviderError(reason instanceof Error ? reason.message : '保存失败'); }
-    finally { setSavingProvider(false); }
-  };
-  return (
-        <details className="provider-editor"><summary>OpenAI 兼容设置</summary>
-          <div className="provider-fields">
-            <label>配置 ID<input value={providerId} onChange={(event) => setProviderId(event.target.value)} placeholder="自动生成" /></label>
-            <label>显示名称<input value={providerName} onChange={(event) => setProviderName(event.target.value)} /></label>
-            <label>Base URL<input value={providerURL} onChange={(event) => setProviderURL(event.target.value)} placeholder="https://api.example.com/v1" /></label>
-            <label>模型名<input value={providerModel} onChange={(event) => setProviderModel(event.target.value)} /></label>
-            <label>API key<input type="password" autoComplete="new-password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder={selectedProvider?.has_api_key ? '已保存；留空保留原值' : '输入 API key'} /></label>
-            <button type="button" className="button" disabled={savingProvider || preferencesBusy} onClick={() => void saveProvider()}>{savingProvider ? '保存中…' : '保存并选择模型'}</button>
-            {providerError && <span role="alert">{providerError}</span>}
-          </div>
-        </details>
-  );
+const approvalModes = [
+  { id: 'ask', label: '每次询问', description: '需要审批的操作逐次询问；已有拒绝规则仍然生效。' },
+  { id: 'safe', label: '自动放行安全操作', description: '自动放行策略认定的安全操作，其他操作仍需审批。' },
+  { id: 'workspace-write', label: '自动批准工作区文件写入', description: '在安全操作之外，自动批准工作区内文件写入；其他操作仍按策略审批。' },
+];
+
+function ApprovalModeMenu({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') { setOpen(false); button.current?.focus(); } };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
+  }, [open]);
+  return <div className="approval-mode" ref={ref}>
+    <button ref={button} type="button" className="value-chip" aria-label="审批模式" aria-expanded={open} disabled={disabled} title="当前会话 / 下一次运行的审批模式" onClick={() => setOpen(!open)}><Icon name="shield" size={13} /><span>{approvalModes.find((mode) => mode.id === value)?.label || value}</span><Icon name="down" size={12} /></button>
+    {open && <div className="approval-mode-popover" role="group" aria-label="选择审批模式">
+      <p>作用于当前会话 / 下一次运行，不改变已在等待的运行。</p>
+      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" aria-pressed={value === mode.id} disabled={disabled} onClick={() => { onChange(mode.id); setOpen(false); button.current?.focus(); }}><strong>{mode.label}</strong><span>{mode.description}</span></button>)}
+    </div>}
+  </div>;
 }

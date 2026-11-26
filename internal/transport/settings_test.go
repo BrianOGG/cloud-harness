@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
@@ -123,5 +124,122 @@ func TestSettingsEndpointsRemainGuarded(t *testing.T) {
 				t.Errorf("%s %s escaped token check: %d", method, path, rec.Code)
 			}
 		}
+	}
+}
+
+func TestProviderDeleteKeepsPreferencesAndRemovesModel(t *testing.T) {
+	m, _ := newServer(t)
+	settings := config.CustomProviderStore{Directory: t.TempDir()}
+	h := (&Server{Manager: m, Token: approvalTestToken, ProviderSettings: settings}).Handler()
+	request := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+approvalTestToken)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("%s status=%d want=%d", method, rec.Code, want)
+		}
+		return rec
+	}
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := config.CustomProvider{ID: "fixture", Name: "Fixture", BaseURL: "https://example.invalid/v1", Model: "fixture", APIKey: "fixture-only-delete"}
+	raw, _ := json.Marshal(p)
+	request("PUT", "/v1/providers", string(raw), 200)
+	prefs := map[string]string{"model_id": "custom:fixture", "approval_mode": "safe"}
+	raw, _ = json.Marshal(prefs)
+	request("PUT", "/v1/sessions/"+session.ID+"/preferences", string(raw), 200)
+	request("DELETE", "/v1/providers/fixture", "", 204)
+	request("DELETE", "/v1/providers/fixture", "", 404)
+	request("POST", "/v1/providers/fixture/test", "", 404)
+	if strings.Contains(request("GET", "/v1/models", "", 200).Body.String(), "custom:fixture") {
+		t.Fatal("deleted model remains selectable")
+	}
+	saved, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || saved.ModelID != "custom:fixture" || saved.ApprovalMode != "safe" {
+		t.Fatal("delete changed session preferences")
+	}
+	raw, _ = json.Marshal(map[string]string{"message": "fixture", "model_id": "custom:fixture", "approval_mode": "safe"})
+	request("POST", "/v1/sessions/"+session.ID+"/runs?wait=0", string(raw), 400)
+	for _, item := range []struct{ method, path string }{{"DELETE", "/v1/providers/fixture"}, {"POST", "/v1/providers/fixture/test"}} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(item.method, item.path, nil))
+		if rec.Code != 401 {
+			t.Fatal("provider operation escaped bearer protection")
+		}
+	}
+}
+
+func TestProviderConnectionCheckIsReadOnlyBoundedAndRedacted(t *testing.T) {
+	const fakeKey = "fixture-only-connection-check"
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { redirected.Add(1); w.WriteHeader(200) }))
+	defer target.Close()
+	for _, scenario := range []string{"found", "missing", "unauthorized", "redirect", "invalid", "oversize", "empty"} {
+		t.Run(scenario, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || r.URL.Path != "/v1/models" {
+					t.Error("check must only GET models")
+				}
+				if r.Header.Get("Authorization") != "Bearer "+fakeKey {
+					t.Error("saved fixture key not used")
+				}
+				switch scenario {
+				case "unauthorized":
+					w.WriteHeader(401)
+					_, _ = io.WriteString(w, fakeKey)
+				case "redirect":
+					http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+				case "invalid":
+					_, _ = io.WriteString(w, fakeKey)
+				case "oversize":
+					_, _ = io.WriteString(w, strings.Repeat(" ", (1<<20)+1))
+				default:
+					ids := []map[string]string{}
+					if scenario == "found" {
+						ids = append(ids, map[string]string{"id": "fixture"})
+					}
+					if scenario == "missing" {
+						ids = append(ids, map[string]string{"id": "other"})
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": ids})
+				}
+			}))
+			defer upstream.Close()
+			settings := config.CustomProviderStore{Directory: t.TempDir()}
+			if _, err := settings.Save(config.CustomProvider{ID: "fixture", Name: "Fixture", BaseURL: upstream.URL + "/v1", Model: "fixture", APIKey: fakeKey}); err != nil {
+				t.Fatal(err)
+			}
+			h := (&Server{Token: approvalTestToken, ProviderSettings: settings}).Handler()
+			req := httptest.NewRequest("POST", "/v1/providers/fixture/test", nil)
+			req.Header.Set("Authorization", "Bearer "+approvalTestToken)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			want := 502
+			if scenario == "found" || scenario == "missing" || scenario == "empty" {
+				want = 200
+			}
+			if rec.Code != want {
+				t.Fatalf("status=%d want=%d", rec.Code, want)
+			}
+			if strings.Contains(rec.Body.String(), fakeKey) {
+				t.Fatal("upstream credential leaked")
+			}
+			if want == 200 {
+				var result map[string]bool
+				if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || !result["ok"] || result["model_available"] != (scenario == "found") {
+					t.Fatal("wrong connection result")
+				}
+			}
+		})
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("connection test followed a redirect")
 	}
 }

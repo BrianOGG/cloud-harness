@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isNotFound } from './api';
-import type { CustomProvider, ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
+import type { ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn, Turn } from './Chat';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
@@ -9,9 +9,10 @@ import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
 import { loadSessionMessages, mergeSessionMessages } from './history';
 import { SessionHistory } from './SessionHistory';
+import { Settings } from './Settings';
 import { liveText, mergeEvents } from './timeline';
 
-type View = 'chat' | 'observability';
+type View = 'chat' | 'observability' | 'settings';
 type Theme = 'light' | 'dark';
 
 const THEME_KEY = 'cloud-harness.web-theme';
@@ -126,8 +127,9 @@ export default function App() {
   const [events, setEvents] = useState<Record<string, HarnessEvent[]>>({});
   const [live, setLive] = useState<Record<string, string>>({});
   const [acting, setActing] = useState<Record<string, boolean>>({});
-  const [models, setModels] = useState<ModelOption[]>([{ id: 'default', name: '默认模型', model: '', provider: '' }]);
-  const [providers, setProviders] = useState<CustomProvider[]>([]);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
   const [draftPreferences, setDraftPreferences] = useStored<SessionPreferences>(DRAFT_PREFERENCES_KEY, DEFAULT_PREFERENCES);
   const [loadedPreferences, setLoadedPreferences] = useState<{ sessionId: string; value: SessionPreferences } | null>(null);
   const [savingPreferences, setSavingPreferences] = useState(false);
@@ -231,9 +233,18 @@ export default function App() {
     return run;
   }, [upsertRun]);
 
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true); setModelsError('');
+    try { setModels(await api.listModels()); }
+    catch (reason) { setModelsError('模型加载失败：' + errorText(reason)); }
+    finally { setModelsLoading(false); }
+  }, []);
   useEffect(() => {
-    api.listModels().then(setModels).catch((reason: unknown) => setError('模型加载失败：' + errorText(reason)));
-    api.listProviders().then(setProviders).catch((reason: unknown) => setError('兼容设置加载失败：' + errorText(reason)));
+    let cancelled = false;
+    api.listModels().then((items) => { if (!cancelled) setModels(items); })
+      .catch((reason: unknown) => { if (!cancelled) setModelsError('模型加载失败：' + errorText(reason)); })
+      .finally(() => { if (!cancelled) setModelsLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -261,13 +272,6 @@ export default function App() {
       setError('会话偏好保存失败：' + errorText(reason));
       throw reason;
     } finally { setSavingPreferences(false); }
-  };
-
-  const saveProvider = async (value: Parameters<typeof api.saveProvider>[0]) => {
-    const saved = await api.saveProvider(value);
-    const [options, items] = await Promise.all([api.listModels(), api.listProviders()]);
-    setModels(options); setProviders(items);
-    await changePreferences({ ...preferences, model_id: 'custom:' + saved.id });
   };
 
   // Live text is drawn once per frame from what the stream has delivered so far.
@@ -659,31 +663,35 @@ export default function App() {
     if (activeSession) void refreshRuns(activeSession).catch(() => undefined);
   };
   const empty = view === 'chat' && !activeSession && !optimistic;
+  const modelAvailable = models.some((model) => model.id === preferences.model_id);
+  const modelBlocked = modelsLoading || Boolean(modelsError) || !modelAvailable;
   const composer = (
+    <>
+    {!modelsLoading && (modelsError || !modelAvailable) && <div className="model-notice" role="status">
+      <span>{modelsError || (models.length === 0 ? '还没有已配置模型。' : '当前模型不可用，请重新选择。')}</span>
+      {modelsError && <button type="button" className="ghost-button" onClick={() => void refreshModels()}>重试</button>}
+      <button type="button" className="ghost-button" onClick={() => showPage('settings')}>去配置模型服务</button>
+    </div>}
     <Composer
       value={draft}
       onChange={setDraft}
       onSubmit={() => {
         const text = draft.trim();
-        if (!text) return;
+        if (!text || busy || (!answering && modelBlocked)) return;
         if (answering) void answer(answering, text);
         else void send(text);
       }}
       onStop={latestRun && isActive(latestRun) ? () => void stop() : undefined}
-      busy={Boolean(busy)}
+      busy={Boolean(busy || (!answering && modelBlocked))}
       stopping={latestRun ? acting[latestRun.id] : false}
       placeholder={answering ? '回答 agent 的问题…' : '给 Cloud Harness 发消息…'}
-      hint={online === false ? '未连接到 serve' : answering ? `回答运行 ${shortId(answering.id)} 的问题` : provider ? `模型：${provider}` : ''}
+      hint={online === false ? '未连接到 serve' : answering ? `回答运行 ${shortId(answering.id)} 的问题` : 'Enter 发送 · Shift+Enter 换行'}
       autoFocus={view === 'chat'}
-      models={models}
-      modelId={preferences.model_id}
-      onModelChange={(model_id) => { void changePreferences({ ...preferences, model_id }).catch(() => undefined); }}
       approvalMode={preferences.approval_mode}
       onApprovalModeChange={(approval_mode) => { void changePreferences({ ...preferences, approval_mode }).catch(() => undefined); }}
-      preferencesBusy={preferencesBusy}
-      providers={providers}
-      onSaveProvider={saveProvider}
+      preferencesBusy={preferencesBusy || modelBlocked}
     />
+    </>
   );
 
   return (
@@ -714,6 +722,7 @@ export default function App() {
             </section>
           ))}
         </div>
+        <nav className="sidebar-settings" aria-label="应用设置"><button type="button" className={'nav-item ' + (view === 'settings' ? 'current' : '')} onClick={() => showPage('settings')}><Icon name="settings" />设置</button></nav>
         <div className="sidebar-foot">
           <span className="connection" title={online === false ? '无法连接 serve' : '已连接 serve'}>
             <span className={`dot ${online === false ? 'tone-fail' : online ? 'tone-ok' : 'tone-idle'}`} />
@@ -729,7 +738,11 @@ export default function App() {
             <button type="button" className="icon-button" aria-label="展开侧栏" title="展开侧栏" onClick={() => toggleSidebar(true)}><Icon name="sidebar" size={18} /></button>
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
           </>}
-          <h1>{view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
+          <h1>{view === 'settings' ? '设置' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
+          {view === 'chat' && <select className="value-chip header-model" aria-label="会话模型" title="当前会话 / 下一次运行的模型" disabled={preferencesBusy || modelsLoading || Boolean(modelsError)} value={preferences.model_id} onChange={(event) => { void changePreferences({ ...preferences, model_id: event.target.value }).catch(() => undefined); }}>
+            {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
+            {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+          </select>}
           {view === 'chat' && latestRun && <>
             <span className={`chip tone-${statusTone(latestRun.status)}`}>{latestRun.status === 'WAITING' ? waitLabels[latestRun.wait_reason || ''] || statusName(latestRun.status) : statusName(latestRun.status)}</span>
             <button type="button" className={`icon-button ${inspectedRun ? 'current' : ''}`} aria-label="运行详情" title="运行详情" onClick={() => (inspectedRun ? setInspected(null) : actions.inspect(latestRun.id))}><Icon name="panel" size={18} /></button>
@@ -772,6 +785,7 @@ export default function App() {
         </>}
 
         {view === 'observability' && <div className="page-scroll"><Observability onOpenRun={(runId) => void openRun(runId)} /></div>}
+        {view === 'settings' && <div className="page-scroll"><Settings onModelsChanged={refreshModels} onBack={() => showPage('chat')} /></div>}
       </main>
 
       {inspectedRun && view === 'chat' && (
