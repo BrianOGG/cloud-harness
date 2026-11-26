@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from './api';
+import { api, isNotFound } from './api';
 import type { ApprovalView, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn, Turn } from './Chat';
 import type { TurnActions } from './Chat';
@@ -10,7 +10,6 @@ import { RunBudget } from './RunBudget';
 import { loadSessionMessages, mergeSessionMessages } from './history';
 import { SessionHistory } from './SessionHistory';
 import { liveText, mergeEvents } from './timeline';
-import './App.css';
 
 type View = 'chat' | 'approvals' | 'observability';
 type Theme = 'light' | 'dark';
@@ -50,7 +49,7 @@ const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve
 
 // A full cursor walk is atomic from the reader's perspective. Further updates
 // queue one more walk instead of repeatedly aborting a large session's history.
-function useSessionMessages(sessionId: string | null, revision: string) {
+function useSessionMessages(sessionId: string | null, revision: string, onMissing: (sessionId: string) => void) {
   const [state, setState] = useState<{ sessionId: string | null; messages: SessionMessage[]; loading: boolean; error: string }>({ sessionId: null, messages: [], loading: false, error: '' });
   const current = useRef<{ sync: () => Promise<void> } | null>(null);
   const refresh = useCallback(() => { void current.current?.sync(); }, []);
@@ -79,6 +78,10 @@ function useSessionMessages(sessionId: string | null, revision: string) {
             setState({ sessionId, messages: mergeSessionMessages([], messages), loading: request.again, error: '' });
           } catch (reason) {
             if (controller.signal.aborted || current.current !== request) return;
+            if (isNotFound(reason)) {
+              onMissing(sessionId);
+              return;
+            }
             setState((previous) => ({ ...previous, loading: request.again, error: errorText(reason) }));
           }
         } while (request.again && !controller.signal.aborted);
@@ -96,7 +99,7 @@ function useSessionMessages(sessionId: string | null, revision: string) {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [sessionId]);
+  }, [sessionId, onMissing]);
 
   useEffect(refresh, [sessionId, revision, refresh]);
 
@@ -131,6 +134,21 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [answerRun, setAnswerRun] = useState<string | null>(null);
 
+  const activeSessionRef = useRef(activeSession);
+  const selectSession = useCallback((sessionId: string | null) => {
+    // Save inside the selection action: a reload must not beat a passive
+    // effect, and an old effect must not overwrite a newer selection.
+    if (sessionId) localStorage.setItem(SESSION_KEY, sessionId);
+    else localStorage.removeItem(SESSION_KEY);
+    activeSessionRef.current = sessionId;
+    setActiveSession(sessionId);
+  }, []);
+  const forgetMissingSession = useCallback((sessionId: string) => {
+    if (activeSessionRef.current !== sessionId) return;
+    selectSession(null);
+    setError('');
+  }, [selectSession]);
+
   const lastSeq = useRef<Record<string, number>>({});
   const streamedAt = useRef<Record<string, number>>({});
   const seenVersion = useRef<Record<string, number>>({});
@@ -150,7 +168,7 @@ export default function App() {
   const latestRun = [...activeRuns].reverse().find((run) => !run.parent_id) || activeRuns[activeRuns.length - 1] || null;
   const followKey = useMemo(() => activeRuns.filter(isActive).map((run) => run.id).join(','), [activeRuns]);
   const historyRevision = `${sessionRevision}|${activeRuns.map((run) => `${run.id}:${run.version}:${run.status}:${events[run.id]?.at(-1)?.seq || 0}`).join('|')}`;
-  const history = useSessionMessages(activeSession, historyRevision);
+  const history = useSessionMessages(activeSession, historyRevision, forgetMissingSession);
   const sending = pending !== null;
   const optimistic = pending && pending.sessionId === activeSession && !history.messages.some((message) => message.kind === 'input' && message.run_id === pending.runId) ? pending : null;
   // A question can also wait on a run that is no longer the newest of the session.
@@ -282,11 +300,6 @@ export default function App() {
     if (!window.matchMedia(NARROW).matches) localStorage.setItem(SIDEBAR_KEY, open ? 'open' : 'closed');
   };
 
-  useEffect(() => {
-    if (activeSession) localStorage.setItem(SESSION_KEY, activeSession);
-    else localStorage.removeItem(SESSION_KEY);
-  }, [activeSession]);
-
   // Connection state, the session list, and the approval badge.
   useEffect(() => {
     let stopped = false;
@@ -319,13 +332,13 @@ export default function App() {
     const sessionId = activeSession;
     let stopped = false;
     refreshRuns(sessionId).catch((reason: unknown) => {
-      if (stopped) return;
+      if (stopped || activeSessionRef.current !== sessionId) return;
       // A session id saved by an earlier serve database no longer exists.
-      if (/not.?found|404/i.test(errorText(reason))) setActiveSession((current) => (current === sessionId ? null : current));
+      if (isNotFound(reason)) forgetMissingSession(sessionId);
       else setError(`运行状态加载失败：${errorText(reason)}`);
     });
     return () => { stopped = true; };
-  }, [activeSession, sessionRevision, refreshRuns]);
+  }, [activeSession, sessionRevision, refreshRuns, forgetMissingSession]);
 
   // Follow every run of the open session that has not finished: one event
   // stream each, plus a poll of the run view once a second.
@@ -421,7 +434,7 @@ export default function App() {
     setView('chat');
     setInspected(null);
     setAnswerRun(null);
-    setActiveSession(sessionId);
+    selectSession(sessionId);
     if (window.matchMedia(NARROW).matches) setSidebarOpen(false);
   };
 
@@ -441,7 +454,7 @@ export default function App() {
         const created = { id: sessionId, created_at: now, updated_at: now, run_count: 0 };
         setSessions((previous) => [created, ...previous]);
         setRuns((previous) => ({ ...previous, [created.id]: [] }));
-        setActiveSession(sessionId);
+        selectSession(sessionId);
       }
     } catch (reason) {
       setDraft(text);

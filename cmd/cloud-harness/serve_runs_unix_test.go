@@ -30,10 +30,12 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	// The upstream sends one text delta and then stalls, so the run is in the
 	// middle of a model response when the signal arrives.
 	stalled := make(chan struct{})
+	inModel := make(chan struct{}, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"thinking\"}}]}\n\n")
 		w.(http.Flusher).Flush()
+		inModel <- struct{}{}
 		select {
 		case <-stalled:
 		case <-r.Context().Done():
@@ -127,9 +129,15 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 		t.Fatalf("run is %s right after creation", run.Status)
 	}
 
-	// Wait for the delta, which proves the run is inside the model call.
+	// The upstream has started a response, but its content is unclassified
+	// until completion and must not be published as a visible delta.
 	streamCtx, stopStream := context.WithTimeout(context.Background(), 20*time.Second)
 	defer stopStream()
+	select {
+	case <-inModel:
+	case <-streamCtx.Done():
+		t.Fatal("run did not enter the upstream model call")
+	}
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, base+"/v1/runs/"+run.ID+"/events", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -140,12 +148,12 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	}
 	defer func() { _ = stream.Body.Close() }()
 	lines := bufio.NewScanner(stream.Body)
-	sawDelta := false
-	for !sawDelta && lines.Scan() {
-		sawDelta = lines.Text() == "event: stream.delta"
+	sawCreated := false
+	for !sawCreated && lines.Scan() {
+		sawCreated = lines.Text() == "event: run.created"
 	}
-	if !sawDelta {
-		t.Fatalf("no stream.delta before the stream ended: %v stderr=%s", lines.Err(), stderr.String())
+	if !sawCreated {
+		t.Fatalf("no run.created before the stream ended: %v stderr=%s", lines.Err(), stderr.String())
 	}
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -164,6 +172,9 @@ func TestServeCancelsExecutingRunOnSIGTERM(t *testing.T) {
 	sawCancelled := false
 	for lines.Scan() {
 		sawCancelled = sawCancelled || lines.Text() == "event: run.cancelled"
+		if lines.Text() == "event: stream.delta" {
+			t.Error("unclassified content was sent to the subscriber")
+		}
 	}
 	if !sawCancelled {
 		t.Error("the subscriber was not sent run.cancelled")

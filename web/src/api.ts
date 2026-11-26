@@ -155,6 +155,20 @@ export interface DoctorCheck {
 
 const TOKEN_HINT = '需要有效的 HTTP token。请在浏览器 localStorage 设置 cloud-harness.http-token。';
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+export function isNotFound(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.status === 404;
+}
+
 function eventsRequest(runId: string, after: number, signal: AbortSignal): Promise<Response> {
   const headers = new Headers({ Accept: 'text/event-stream' });
   if (after > 0) headers.set('Last-Event-ID', String(after));
@@ -186,7 +200,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       // Keep the HTTP status when the error response is not JSON.
     }
     if (response.status === 401) message = TOKEN_HINT;
-    throw new Error(message);
+    throw new ApiError(response.status, message);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

@@ -27,6 +27,7 @@ type assembler struct {
 	sawDone   bool
 	usage     domain.Usage
 	onDelta   func(string)
+	deltas    []string
 }
 
 func newAssembler() *assembler {
@@ -80,7 +81,7 @@ func (a *assembler) consumeData(line []byte) error {
 			a.finish = ch.FinishReason
 		}
 		if ch.Delta.Content != "" && a.onDelta != nil {
-			a.onDelta(ch.Delta.Content)
+			a.deltas = append(a.deltas, ch.Delta.Content)
 		}
 		a.text.WriteString(ch.Delta.Content)
 		a.reasoning.WriteString(ch.Delta.ReasoningContent)
@@ -104,6 +105,7 @@ func (a *assembler) consumeData(line []byte) error {
 }
 
 func (a *assembler) response() domain.ModelResponse {
+	text, inlineReasoning, tagged := splitThinkingContent(a.text.String())
 	items := make([]domain.ResponseItem, 0, 2+len(a.order))
 	add := func(it domain.ResponseItem) {
 		it.Ordinal = len(items)
@@ -119,8 +121,13 @@ func (a *assembler) response() domain.ModelResponse {
 			},
 		})
 	}
-	if a.text.Len() > 0 {
-		add(domain.ResponseItem{Kind: domain.ItemText, Text: a.text.String()})
+	if inlineReasoning != "" {
+		add(domain.ResponseItem{Kind: domain.ItemOpaque, Opaque: &domain.OpaqueItem{
+			Provider: "openai", Kind: "reasoning_content", Payload: []byte(inlineReasoning),
+		}})
+	}
+	if text != "" {
+		add(domain.ResponseItem{Kind: domain.ItemText, Text: text})
 	}
 	for _, idx := range a.order {
 		call := a.calls[idx]
@@ -142,6 +149,21 @@ func (a *assembler) response() domain.ModelResponse {
 		add(domain.ResponseItem{Kind: domain.ItemUsage, Usage: &u})
 	}
 	complete := a.finish != ""
+	// Until the complete content is known, a later orphan </think> can turn
+	// any prefix into private reasoning. Do not publish it through OnDelta
+	// first: trace streams cannot retract leaked text. Preserve plain-content
+	// chunk boundaries, but release them only after classification.
+	if complete && a.onDelta != nil {
+		if tagged {
+			if text != "" {
+				a.onDelta(text)
+			}
+		} else {
+			for _, delta := range a.deltas {
+				a.onDelta(delta)
+			}
+		}
+	}
 	return domain.ModelResponse{
 		Provider:           "openai",
 		ProviderResponseID: a.id,
@@ -216,7 +238,7 @@ func parseChatJSON(body []byte, onDelta ...func(string)) (domain.ModelResponse, 
 		a.usage = parsed.Usage.domain()
 	}
 	if msg.Content != "" && a.onDelta != nil {
-		a.onDelta(msg.Content)
+		a.deltas = append(a.deltas, msg.Content)
 	}
 	a.text.WriteString(msg.Content)
 	a.reasoning.WriteString(msg.ReasoningContent)
