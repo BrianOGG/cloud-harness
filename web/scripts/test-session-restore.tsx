@@ -19,7 +19,7 @@ const { default: App } = await import('../src/App');
 const key = 'cloud-harness.web-session';
 const id = 'ses_saved';
 const session = { id, created_at: '2026-11-26T01:00:00Z', updated_at: '2026-11-26T01:00:00Z', run_count: 0 };
-const message = { id: 'msg_saved', session_id: id, run_id: null, turn_id: null, role: 'assistant', kind: 'response', status: 'recorded', content: '重新挂载后自动加载的历史', event: '', created_at: session.created_at };
+const message = { id: 'msg_saved', session_id: id, run_id: 'run_saved', turn_id: 'turn_saved', role: 'assistant', kind: 'response', status: 'recorded', content: '重新挂载后自动加载的历史', event: '', created_at: session.created_at };
 const container = document.getElementById('root')!;
 let root: Root | undefined;
 const seen: string[] = [];
@@ -39,7 +39,7 @@ globalThis.fetch = async (input) => {
   else if (path === '/v1/models') body = [{ id: 'default', name: '默认模型', model: 'fixture', provider: 'fixture' }];
   else if (path.endsWith('/preferences')) body = { model_id: 'default', approval_mode: 'ask' };
   else if (path === '/v1/sessions') { await holdSessions; body = [session]; }
-  else if (path.endsWith('/runs')) { status = runsStatus; body = status === 200 ? [] : { error: { message: runError } }; }
+  else if (path.endsWith('/runs')) { status = runsStatus; body = status === 200 ? [{ id: 'run_saved', session_id: id, turn_id: 'turn_saved', status: 'COMPLETED', final_answer: message.content, version: 1, budget: { used_tool_calls: 0 } }] : { error: { message: runError } }; }
   else if (path.includes('/messages')) { status = messagesStatus; body = status === 200 ? { messages: [message], next_cursor: '' } : { error: { message: 'record not found' } }; }
   else throw new Error('Unexpected request: ' + path);
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -94,7 +94,9 @@ try {
     await mount();
     assert.equal(localStorage.getItem(key), id);
     assert.ok(container.querySelector('[data-session-id="ses_saved"]')?.classList.contains('current'));
-    assert.ok(container.textContent?.includes(message.content));
+    assert.equal(container.querySelector('.turn-final'), null, 'a failed run lookup cannot certify a response as final');
+    await act(async () => { container.querySelector<HTMLButtonElement>('.work-toggle')!.click(); });
+    assert.ok(container.textContent?.includes(message.content), 'retained transcript remains available in the process audit');
     assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes(runError));
     await unmount();
   });

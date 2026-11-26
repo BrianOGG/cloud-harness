@@ -45,8 +45,12 @@ export interface PendingInvocation {
 export interface RunView {
   id: string;
   session_id: string;
+  turn_id?: string;
   // Set on a child run started by delegate_task.
   parent_id?: string;
+  // Frozen runtime choices from this run's checkpoint, never session preferences.
+  approval_mode?: string;
+  workspace?: string;
   status: 'RUNNING' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string;
   wait_reason?: 'USER' | 'APPROVAL' | 'CHILD' | 'BUDGET' | 'RECONCILIATION' | string;
   wait_kind?: string;
@@ -107,6 +111,8 @@ export interface TraceCall {
   name: string;
   status: string;
   ordinal: number;
+  arguments?: unknown;
+  result?: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } };
 }
 export interface TraceBatch {
   id: string;

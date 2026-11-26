@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { SessionMessage } from '../src/api';
 import { loadSessionMessages, mergeSessionMessages } from '../src/history';
 Object.assign(globalThis, { React });
-const { SessionHistory } = await import('../src/SessionHistory');
+const { MessageList } = await import('../src/MessageList');
 
 // Oracle: docs/api.md messages contract and the CP-1 public client contract.
 // Synthetic durable facts, not model output or browser acceptance evidence.
@@ -68,8 +68,8 @@ type Captured = { url: URL; signal: AbortSignal | null | undefined; headers: Hea
 await test('approval history: mapped labels replace raw decisions and unknown values remain visible', () => {
   function renderDecision(content: string): string {
     const message = fact('msg_decision', { role: 'system', kind: 'approval_decision', content });
-    return renderToStaticMarkup(createElement(SessionHistory, {
-      messages: [message], loading: false, error: '', onRefresh: () => {}, onInspect: () => {},
+    return renderToStaticMarkup(createElement(MessageList, {
+      messages: [message], onInspect: () => {},
     }));
   }
 

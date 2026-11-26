@@ -73,7 +73,7 @@
 ### 7. 工具调用模块
 - 职责：按批次展示工具调用：批次状态（顺序执行）、每次调用的名称、序号、状态（待审批/已派发/运行中/成功/失败/结果未知）；点开看参数与返回结果。
 - 数据：trace 的 batches/calls 给名称与状态骨架；事件 `tool.batch` 给批次概要。
-- 边界：调用的**参数与结果**后端存储里都有（Invocation.Arguments / Result{ok,data,error}），但 trace 接口目前只透出 name/status/ordinal——demo 若要展示参数/结果详情，需后端给 trace 的 call 节点补 `arguments` 与 `result` 字段（小改动），或先用假数据占位并标注。
+- 边界：调用的**参数与结果**后端存储里都有（Invocation.Arguments / Result{ok,data,error}），trace 的 call 节点提供只读 `arguments` 与 `result`。默认转录收起这些数据，展开过程后按调用 ID 查看；不暴露 provider opaque continuation。
 
 ### 8. 事件流模块（调试面板）
 - 职责：按序号滚动展示 run 的全部持久事件（类型 + 时间 + payload 摘要），支持按类型筛选、自动跟随最新。
@@ -144,18 +144,18 @@
 | 1 连接状态、2 会话管理 | 侧栏：底部连接状态和 provider，按日期分组的对话列表，标题取首条消息 |
 | 4 对话框 | 对话区：用户消息在右，回答按 Markdown 渲染；底部输入框，回车发送，运行中变成停止按钮 |
 | 5 状态与预算、14 取消 | 顶栏状态徽标、输入框的停止按钮；预算在运行详情里 |
-| 6 步骤、7 工具调用、9 子任务 | 每轮回答上方可折叠的过程块，由事件流生成（`timeline.ts`）；运行中展开，结束后折叠 |
+| 6 步骤、7 工具调用、9 子任务 | 每轮一个默认收起的过程摘要；保存的消息与运行事件统一按轮投影，展开后查看过程和审计 |
 | 8 事件流 | 运行详情的「事件」页签 |
 | 10 审批、12 补预算、13 对账 | 对话里的操作卡片；没有独立审批页 |
 | 11 回答提问 | 问题显示为 agent 的消息，在输入框里回答 |
 | 15 错误与终态 | 对话里的失败卡片和「已取消」，接口错误显示在顶部 |
 
 - `POST /v1/sessions/{id}/runs` 立即返回 `RUNNING` 的 run（M13-2 起的默认行为，前端仍显式带 `?wait=0`）。请求在途时前端轮询会话的 run 列表，找到新 run 后立即跟随它的事件流，所以对等到 run 停下才返回的旧服务端同样适用。
-- `stream.delta`（没有 `id`，payload `{"text": "..."}`）到达时逐段显示在回答位置，run 结束后以 `final_answer` 为准。约束 3 在 serve 发出 delta 之前仍然成立。
-- 带 `parent_id` 的 run 是子 run，不作为对话轮次显示。
+- `stream.delta`（没有 `id`，payload `{"text": "..."}`）属于过程里的实时草稿，默认收起；根 run 完成后，正文只以该根运行终态的 `final_answer` 为准。约束 3 在 serve 发出 delta 之前仍然成立。
+- 带 `parent_id` 的 run 是子 run，细节归入所属根轮过程，不将子 run 的 response 或 final_answer 当成 Harness 根运行最终答复；子 run 的当前待办仍必须可见。
 - 没有模型 key 时用 `scripts/demo-provider.py` 演示工具调用、审批、提问、子任务和失败。
 - 验收：从仓库根目录运行 `bash web/scripts/acceptance.sh`，它用脚本化 provider 对真实 serve 走完审批、拒绝、提问、子任务、失败和新对话，截图写入 `web/screenshots/chat/`。
-- 工具参数只有待审批的那次调用能看到（run 视图的 `pending_invocation`）；其余调用的参数和结果仍受模块 7 的字段限制。
+- 待批操作使用 run 视图的 `pending_invocation`；已处理调用的参数 / 结果在展开本轮过程后通过只读 trace 查看，规则来源来自持久 `policy.decided` 事件。
 
 ## 会话偏好与内嵌审批（2026-11-27）
 
@@ -170,13 +170,18 @@
   密码输入框留空保留原 key，填写则替换；保存成功清空并关闭表单。完整 key 不进入 localStorage。
   `DELETE /v1/providers/{id}` 删除连接，确认文案说明当前模型可能不可用；删除后原选中 ID 保留并提示重选。
   `POST /v1/providers/{id}/test` 只检测已保存服务的 /models，显示进行中/成功/失败，不发推理请求；支持手动模型 ID，暂不自动导入模型列表。
-- Composer 只负责多行草稿、发送/停止和当前审批模式 chip。chip 展开后显示三个模式的范围说明，作用于当前会话 / 下一次运行。
+- Composer 只负责多行草稿、发送/停止和标注“下一轮”的审批模式 chip（`ApprovalMode.tsx`）。chip 展开后显示三个模式的范围说明；偏好只作用于下一轮，不改变正在运行或等待的回合，也不会自动重放或放行当前调用。
   Composer 不接收 provider 元数据、Base URL 或 API key，不含凭据表单，也不重复模型下拉。
   无模型或原模型已删除时，在输入框外提供「去配置模型服务」入口；往返设置页保留原地草稿。
 - 没有侧栏审批按钮和独立审批视图。`/ui?run=<id>` 定位会话及 WaitCard；
   `/ui?session=<id>` 打开指定会话。批准、拒绝、用户回答留在会话内，观测页保留。
-- WorkBlock 运行中与结束后均默认折叠为一行摘要，可手动展开；实时草稿独立折叠。
-  已保存回答正文与当前 WaitCard 始终处于折叠区外。
+- 统一转录由 `transcript.ts` 投影、`SessionHistory.tsx` / `Chat.tsx` 共用，`MessageList.tsx` 保留人类对话与原始审计条目。以 `turn_id` / `run_id` 分组，区分根运行与子运行，不再让 SessionHistory、Turn 和旧 past-runs 分别重复画主正文。完成后默认显示用户输入、根运行权威 `final_answer` 以及一行过程摘要；没有最终答复时如实显示状态。
+  模型中间文本、工具参数 / 结果、已处理审批请求 / 决定与子运行细节归入默认收起的过程；用户主动展开后，事件刷新不强制收起。审计消息 ID、真实历史顺序与持久化记录不改。
+  当前 WaitCard 由 `run.pending_invocation` 与待办状态产生，不猜历史最后一条审批请求；当前提问 / 回答、预算暂停与未知结果确认保留在折叠区外。审批提交中禁止重复操作，失败仍保留待办；成功后同一次调用退回过程摘要。
+- 现有模式 ID 保持 `ask` / `safe` / `workspace-write`，可见名称依次为“按策略确认”/“文件读取与 Git 查看自动”/“工作区文件编辑自动 · 命令另行确认”。
+  `ask` 沿用既有策略与底层许可，不代表每个读工具都询问；`safe` 只自动授权 `read_file` / `list_dir` / `list_files` / `grep` / `git_status` / `git_diff` / `git_log`；`workspace-write` 再加通过现有边界校验的 `write_file` / `edit_file`。
+  三模式均不因模式本身授予命令；既有明确 allow、默认安全命令 `ls` / `pwd` / `wc` 与 deny 继续生效。待批解释说明该轮模式的真实范围，不以“模式保存失败”或“一切命令必弹窗”代替原因。
+  正在运行或等待的回合展示该轮快照模式，与下一轮选择分开；旧运行缺少快照时明确标为未记录，不用当前会话偏好补猜。受限诊断自动执行本版未交付，没有对应已生效控件。
 - `npm test` 包含实际 App/Composer/Turn 的 JSDOM 行为回归：偏好持久化与隔离、
   新会话发送参数、通知深链、折叠与可见正文、header 选模、composer 边界、设置 CRUD、密钥输入与空值编辑、连接检测、删除后重选与无模型草稿保留。
 - `npm run check:dist` 对照 Git 暂存区校验重新构建的 dist；可在提交前暂存构建产物后运行，CI 中暂存区与 HEAD 一致。

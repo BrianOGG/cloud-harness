@@ -7,13 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
-    "test": "tsx scripts/test-sse.ts && tsx scripts/test-sse-http.ts && tsx scripts/test-events.ts && tsx scripts/test-timeline.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts && tsx scripts/test-session-history.ts && tsx scripts/test-session-history-http.ts && npm run test:session-restore && npm run test:chat-preferences",
+    "test": "tsx scripts/test-sse.ts && tsx scripts/test-sse-http.ts && tsx scripts/test-events.ts && tsx scripts/test-timeline.ts && tsx scripts/test-observability.ts && tsx scripts/test-proxy.ts && tsx scripts/test-session-history.ts && tsx scripts/test-session-history-http.ts && npm run test:session-restore && npm run test:chat-preferences && npm run test:transcript && npm run test:approval-mode",
     "test:sse-http": "tsx scripts/test-sse-http.ts",
     "test:session-history": "tsx scripts/test-session-history.ts",
     "test:session-history-http": "tsx scripts/test-session-history-http.ts",
     "check:dist": "bash scripts/check-dist.sh",
     "preview": "vite preview",
     "test:session-restore": "tsx --tsconfig tsconfig.app.json scripts/test-session-restore.tsx",
+    "test:transcript": "tsx --tsconfig tsconfig.app.json scripts/test-transcript.tsx",
+    "test:approval-mode": "tsx --tsconfig tsconfig.app.json scripts/test-approval-mode.tsx",
     "test:chat-preferences": "tsx --tsconfig tsconfig.app.json scripts/test-chat-preferences.tsx"
   },
   "dependencies": {

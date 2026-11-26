@@ -783,7 +783,10 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 type view struct {
 	ID                string                   `json:"id"`
 	SessionID         string                   `json:"session_id"`
+	TurnID            string                   `json:"turn_id,omitempty"`
 	ParentID          string                   `json:"parent_id,omitempty"`
+	ApprovalMode      string                   `json:"approval_mode,omitempty"`
+	Workspace         string                   `json:"workspace,omitempty"`
 	Status            domain.RunStatus         `json:"status"`
 	WaitReason        domain.WaitReason        `json:"wait_reason,omitempty"`
 	WaitKind          domain.WaitReason        `json:"wait_kind,omitempty"`
@@ -797,9 +800,29 @@ type view struct {
 
 func (s *Server) runView(ctx context.Context, run storage.Run) view {
 	v := view{
-		ID: run.ID, SessionID: run.SessionID, ParentID: run.ParentRunID, Status: run.Status, WaitReason: run.WaitReason,
+		ID: run.ID, SessionID: run.SessionID, TurnID: run.TurnID, ParentID: run.ParentRunID, Status: run.Status, WaitReason: run.WaitReason,
 		WaitKind: run.WaitReason, Budget: run.Budget, FinalAnswer: run.FinalAnswer,
 		Error: run.Error, Version: run.Version,
+	}
+	// Read only the public runtime choices from the persisted checkpoint. The
+	// session preference is for a future turn and must never stand in for this
+	// run's snapshot, including after a restart or while approval is pending.
+	if s.Manager != nil && s.Manager.Store != nil {
+		var snapshot struct {
+			ApprovalMode string `json:"approval_mode"`
+			Policy       *struct {
+				Workspace string `json:"workspace"`
+			} `json:"policy"`
+		}
+		if raw, err := s.Manager.Store.LatestCheckpoint(ctx, run.ID); err == nil && json.Unmarshal(raw, &snapshot) == nil {
+			switch snapshot.ApprovalMode {
+			case "ask", "safe", "workspace-write":
+				v.ApprovalMode = snapshot.ApprovalMode
+			}
+			if snapshot.Policy != nil {
+				v.Workspace = snapshot.Policy.Workspace
+			}
+		}
 	}
 	if run.Status == domain.RunWaiting && s.Manager != nil {
 		if info, err := s.Manager.WaitInfo(ctx, run); err == nil {

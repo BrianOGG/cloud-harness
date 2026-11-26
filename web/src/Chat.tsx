@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import type { BudgetExtension, HarnessEvent, RunView } from './api';
+import { api } from './api';
+import type { BudgetExtension, HarnessEvent, RunView, TraceView } from './api';
+import { ApprovalModeMenu } from './ApprovalMode';
+import { approvalModeLabel, approvalWaitReason } from './approval';
+import { MessageList } from './MessageList';
+import { turnSummary } from './transcript';
+import type { TranscriptTurn } from './transcript';
 import { budgetExtension } from './budget';
-import { actionLabels, isActive, shortId, statusName, statusTone, waitLabels } from './format';
+import { actionLabels, errorText, isActive, shortId, statusName, statusTone } from './format';
 import { Icon } from './Icon';
-import { Markdown } from './Markdown';
+import { CopyButton, Markdown } from './Markdown';
 import { buildWork } from './timeline';
 import type { WorkItem } from './timeline';
 
@@ -49,49 +55,73 @@ function WorkRow({ item }: { item: WorkItem }) {
   return <li className="work-row"><span className="work-icon"><Icon name="right" size={14} /></span><span className="work-label">{item.label}</span></li>;
 }
 
-function WorkBlock({ run, events, onOpen }: { run: RunView; events: HarnessEvent[]; onOpen: () => void }) {
-  // Work details stay collapsed until requested, even while the run is active.
-  const [toggled, setToggled] = useState<boolean | null>(null);
-  const open = toggled ?? false;
-  const work = buildWork(events);
-  const last = work.items[work.items.length - 1];
-  let title = `${run.budget.used_model_calls} 次模型调用`;
-  if (run.budget.used_tool_calls) title += ` · ${run.budget.used_tool_calls} 次工具调用`;
-  if (run.budget.used_child_runs) title += ` · ${run.budget.used_child_runs} 个子任务`;
-  if (run.status === 'RUNNING') {
-    title = last?.kind === 'tool' && statusTone(last.status) === 'run' ? `正在运行 ${last.name}` : '正在思考';
-  } else if (run.status === 'WAITING') {
-    title = waitLabels[run.wait_reason || ''] || '等待处理';
-  }
-  const toggle = () => {
-    if (!open) onOpen();
-    setToggled(!open);
-  };
-
+function WorkBlock({ turn, events, live, actions }: { turn: TranscriptTurn; events: Record<string, HarnessEvent[]>; live: Record<string, string>; actions: TurnActions }) {
+  const [open, setOpen] = useState(false);
+  const [traces, setTraces] = useState<Record<string, { data?: TraceView; error?: string }>>({});
+  const [retry, setRetry] = useState(0);
+  const versions = JSON.stringify(turn.runs.map((run) => [run.id, run.version]));
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    for (const [id] of JSON.parse(versions) as [string, number][]) {
+      api.getTrace(id).then((data) => {
+        if (!cancelled) setTraces((previous) => ({ ...previous, [id]: { data } }));
+      }).catch((reason: unknown) => {
+        if (!cancelled) setTraces((previous) => ({ ...previous, [id]: { error: errorText(reason) } }));
+      });
+    }
+    return () => { cancelled = true; };
+  }, [open, versions, retry]);
+  const status = turn.root?.status || '';
   return (
-    <div className={`work ${open ? 'open' : ''}`}>
-      <button type="button" className="work-toggle" aria-expanded={open} onClick={toggle}>
-        <span className={`work-state tone-${statusTone(run.status)}`}>
-          {run.status === 'RUNNING' ? <span className="spinner" /> : <Icon name={run.status === 'COMPLETED' ? 'check' : run.status === 'WAITING' ? 'question' : 'alert'} size={13} />}
+    <div className={'work ' + (open ? 'open' : '')}>
+      <button type="button" className="work-toggle" aria-expanded={open} onClick={() => {
+        if (!open) turn.runs.forEach((run) => actions.loadEvents(run));
+        setOpen(!open);
+      }}>
+        <span className={'work-state tone-' + statusTone(status)}>
+          {status === 'RUNNING' ? <span className="spinner" /> : <Icon name={status === 'COMPLETED' ? 'check' : status === 'WAITING' ? 'question' : 'alert'} size={13} />}
         </span>
-        <span className={run.status === 'RUNNING' ? 'shimmer' : ''}>{title}</span>
-        <span className="work-caret"><Icon name="right" size={13} /></span>
+        <span>{turnSummary(turn)}</span><span className="work-caret"><Icon name="right" size={13} /></span>
       </button>
-      {open && work.items.length > 0 && (
-        <ul className="work-list">
-          {work.items.map((item) => <WorkRow key={`${item.kind}-${item.seq}-${item.kind === 'tool' ? item.key : ''}`} item={item} />)}
-        </ul>
-      )}
+      {open && <div className="turn-process" aria-label="本轮过程审计">
+        <p className="process-note">完整历史按原始顺序保留；模型中间文本与子运行输出仅供过程查看。审批请求和决定属于同次调用，不是新的待办。</p>
+        <MessageList messages={turn.process} onInspect={actions.inspect} />
+        {turn.runs.map((run) => {
+          const log = events[run.id] || [];
+          const work = buildWork(log);
+          const trace = traces[run.id];
+          const calls = (trace?.data?.run?.steps || []).flatMap((step) => (step.batches || []).flatMap((batch) => batch.calls || []));
+          return <section className="process-run" key={run.id}>
+            <h3>{run.parent_id ? '子运行' : '根运行'} {shortId(run.id)} · {statusName(run.status)}</h3>
+            <p className="process-note">本轮快照：{approvalModeLabel(run.approval_mode)}{run.workspace ? ' · 工作区 ' + run.workspace : ''}</p>
+            {work.items.length > 0 && <ul className="work-list">{work.items.map((item) => <WorkRow key={item.kind + '-' + item.seq + '-' + (item.kind === 'tool' ? item.key : '')} item={item} />)}</ul>}
+            {run.status === 'RUNNING' && live[run.id] && <div className="live-draft"><strong>实时草稿（非最终答复）</strong><div className="streaming"><Markdown text={live[run.id]} /></div></div>}
+            {trace?.error && <p className="history-error" role="alert">工具明细加载失败：{trace.error}<button type="button" className="ghost-button" onClick={() => setRetry((value) => value + 1)}>重试工具明细</button></p>}
+            {!trace && <p className="process-note" role="status">正在加载工具参数与结果…</p>}
+            {calls.map((call) => <details className="process-call" key={call.id}><summary><code>{call.name}</code> · {statusName(call.status)}</summary><p className="process-note">调用 {call.id}</p>{call.arguments !== undefined && <><strong>参数</strong><pre>{JSON.stringify(call.arguments, null, 2)}</pre></>}{call.result !== undefined && <><strong>结果</strong><pre>{JSON.stringify(call.result, null, 2)}</pre></>}</details>)}
+            {log.length > 0 ? <details className="process-event-log"><summary>规则来源与状态事件 · {log.length} 条</summary><ol>{log.map((event) => <li key={event.seq}><code>#{event.seq} {event.type}</code><pre>{event.data}</pre></li>)}</ol></details> : <p className="process-note">详细事件尚未加载；可从运行详情查看或重新展开。</p>}
+            <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
+          </section>;
+        })}
+      </div>}
     </div>
   );
 }
 
-function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; actions: TurnActions }) {
+function WaitCard({ run, acting, actions, questionVisible = false }: { run: RunView; acting: boolean; actions: TurnActions; questionVisible?: boolean }) {
   const pending = run.pending_invocation;
   if (run.wait_reason === 'APPROVAL') {
+    if (!pending) return <div className="wait-card" role="status">正在同步待批操作的权威详情，请刷新运行状态。</div>;
     return (
       <div className="wait-card" role="group" aria-label="等待审批">
         <div className="wait-head"><Icon name="shield" /><strong>需要你的批准</strong><code>{pending?.tool || pending?.name || '工具调用'}</code></div>
+        <p className="wait-text">{approvalWaitReason(run.approval_mode, pending.tool || pending.name)}</p>
+        <dl className="wait-context">
+          <dt>本轮工作区</dt><dd>{run.workspace || '快照未提供'}</dd>
+          <dt>工作目录参数</dt><dd>{pending.arguments && typeof pending.arguments === 'object' && 'cwd' in pending.arguments && typeof pending.arguments.cwd === 'string' && pending.arguments.cwd ? pending.arguments.cwd + '（相对于本轮工作区解析；绝对路径仍由后端校验）' : run.workspace || '快照未提供，请核对调用参数'}</dd>
+          <dt>资源范围</dt><dd>{pending.resources?.join(' · ') || '见调用参数；未提供独立资源摘要'}</dd>
+        </dl>
         {(pending?.warnings ?? []).map((warning) => <p key={warning} className="wait-warning" role="alert"><Icon name="alert" size={14} />{warning}</p>)}
         {pending?.arguments !== undefined && <pre className="wait-args">{JSON.stringify(pending.arguments, null, 2)}</pre>}
         <div className="wait-actions">
@@ -104,6 +134,7 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
   if (run.wait_reason === 'USER') {
     return (
       <div className="question">
+        {!questionVisible && run.question && <div className="current-question"><Markdown text={run.question} /></div>}
         <p className="question-hint">
           <Icon name="question" size={14} /><span>正在等待你的回答，问题见会话历史。</span>
           <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.focusAnswer(run.id)}>回答这个问题</button>
@@ -137,24 +168,30 @@ function WaitCard({ run, acting, actions }: { run: RunView; acting: boolean; act
   return null;
 }
 
-export function Turn({ run, events, live, acting, actions }: {
-  run: RunView;
-  events: HarnessEvent[];
-  live: string;
-  acting: boolean;
+export function Turn({ turn, events, live, acting, actions }: {
+  turn: TranscriptTurn;
+  events: Record<string, HarnessEvent[]>;
+  live: Record<string, string>;
+  acting: Record<string, boolean>;
   actions: TurnActions;
 }) {
+  const root = turn.root;
   return (
-    <article className="turn run-turn" data-run-id={run.id} data-status={run.status} aria-label={`运行 ${shortId(run.id)}`}>
+    <article className="turn run-turn" data-run-id={root?.id} data-turn-id={turn.id} data-status={root?.status} aria-label={root ? '运行 ' + shortId(root.id) : '历史轮次'}>
+      <MessageList messages={turn.conversation} onInspect={actions.inspect} />
       <div className="assistant">
-        <span className="run-label">{run.parent_id ? '子运行' : '运行'} {shortId(run.id)}</span>
-        <WorkBlock run={run} events={events} onOpen={() => actions.loadEvents(run)} />
-        {run.status === 'WAITING' && <WaitCard run={run} acting={acting} actions={actions} />}
-        {run.status === 'RUNNING' && live && <details className="live-draft"><summary>查看实时草稿</summary><div className="streaming"><Markdown text={live} /></div></details>}
-        <div className="turn-actions">
-          <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
-          {isActive(run) && run.wait_reason !== 'USER' && <button type="button" className="ghost-button" disabled={acting} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>}
-        </div>
+        {turn.finalAnswer && <div className="turn-final" aria-label="Harness 最终答复"><Markdown text={turn.finalAnswer} /><CopyButton text={turn.finalAnswer} /></div>}
+        {root?.status === 'FAILED' && <div className="error-card" role="alert"><strong>运行失败</strong><p>{root.error?.message || root.error?.code || '本轮未生成最终答复。请查看过程或运行详情。'}</p></div>}
+        {root?.status === 'CANCELLED' && <p className="cancelled">本轮已取消，未生成最终答复。</p>}
+        <WorkBlock turn={turn} events={events} live={live} actions={actions} />
+        {turn.runs.filter(isActive).map((run) => <section key={run.id} className="current-run" data-run-id={run.id} aria-label={(run.parent_id ? '子运行' : '本轮') + '当前操作'}>
+          <p className="run-snapshot">{run.parent_id ? '子运行 ' + shortId(run.id) : '本轮'}实际生效 · {approvalModeLabel(run.approval_mode)}<span>（运行快照；下一轮选择不会改变此轮）</span></p>
+          {run.status === 'WAITING' && <WaitCard run={run} acting={Boolean(acting[run.id])} actions={actions} questionVisible={turn.conversation.some((message) => message.run_id === run.id && message.kind === 'question' && message.content === run.question)} />}
+          <div className="turn-actions">
+            <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
+            {run.wait_reason !== 'USER' && <button type="button" className="ghost-button" disabled={acting[run.id]} onClick={() => actions.cancel(run.id)}><Icon name="stop" size={12} /><span>取消运行</span></button>}
+          </div>
+        </section>)}
       </div>
     </article>
   );
@@ -214,31 +251,4 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
       </div>
     </div>
   );
-}
-
-const approvalModes = [
-  { id: 'ask', label: '每次询问', description: '需要审批的操作逐次询问；已有拒绝规则仍然生效。' },
-  { id: 'safe', label: '自动放行安全操作', description: '自动放行策略认定的安全操作，其他操作仍需审批。' },
-  { id: 'workspace-write', label: '自动批准工作区文件写入', description: '在安全操作之外，自动批准工作区内文件写入；其他操作仍按策略审批。' },
-];
-
-function ApprovalModeMenu({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
-    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') { setOpen(false); button.current?.focus(); } };
-    document.addEventListener('pointerdown', outside);
-    document.addEventListener('keydown', escape);
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
-  }, [open]);
-  return <div className="approval-mode" ref={ref}>
-    <button ref={button} type="button" className="value-chip" aria-label="审批模式" aria-expanded={open} disabled={disabled} title="当前会话 / 下一次运行的审批模式" onClick={() => setOpen(!open)}><Icon name="shield" size={13} /><span>{approvalModes.find((mode) => mode.id === value)?.label || value}</span><Icon name="down" size={12} /></button>
-    {open && <div className="approval-mode-popover" role="group" aria-label="选择审批模式">
-      <p>作用于当前会话 / 下一次运行，不改变已在等待的运行。</p>
-      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" aria-pressed={value === mode.id} disabled={disabled} onClick={() => { onChange(mode.id); setOpen(false); button.current?.focus(); }}><strong>{mode.label}</strong><span>{mode.description}</span></button>)}
-    </div>}
-  </div>;
 }

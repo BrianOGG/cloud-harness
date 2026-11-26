@@ -156,14 +156,29 @@ code, pre, .mono { font-family: var(--mono); }
 .history-failed { border-color: var(--red); }
 .history-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 12px 0; padding: 12px; border-radius: 10px; background: var(--red-bg); color: var(--red); overflow-wrap: anywhere; font-size: 13px; }
 .history-empty { margin: 32px 0; color: var(--text-secondary); text-align: center; font-size: 13px; }
-.session-runs { margin-top: 28px; border-top: 1px solid var(--line); }
-.session-runs h2 { margin: 16px 0 0; color: var(--text-secondary); font-size: 13px; font-weight: 550; }
-.run-turn .assistant { margin-top: 0; }
-.run-label { color: var(--text-tertiary); font-family: var(--mono); font-size: 11px; }
-.past-runs { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
-.past-runs > summary { width: fit-content; padding: 6px 0; color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+.run-turn .assistant { margin-top: 12px; }
+.turn-final { min-width: 0; overflow-wrap: anywhere; }
+.turn-final > .copy-button { margin-top: 6px; }
+.turn-process { margin: 8px 0; padding: 8px 0 8px 14px; border-left: 2px solid var(--line); }
+.turn-process .history-list { gap: 12px; }
+.turn-process .history-fact { padding: 6px 10px; }
+.process-note, .run-snapshot { margin: 4px 0 8px; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.run-snapshot span { display: block; color: var(--text-tertiary); }
+.process-run { margin-top: 16px; }
+.process-run h3 { margin: 0 0 6px; color: var(--text-secondary); font-size: 12px; font-weight: 550; }
+.process-call { margin: 8px 0; font-size: 12px; }
+.process-call > summary { cursor: pointer; }
+.process-call pre { max-height: 320px; padding: 8px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-muted); border-radius: 6px; }
+.process-event-log { font-size: 12px; }
+.process-event-log > summary { cursor: pointer; color: var(--text-secondary); }
+.process-event-log ol { padding-left: 20px; }
+.process-event-log pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.current-run { display: grid; gap: 6px; }
+.wait-context { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 10px 0 0; font-size: 12px; }
+.wait-context dt { color: var(--text-secondary); }
+.wait-context dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.work-toggle { display: inline-flex; align-items: center; gap: 8px; margin-left: -8px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13.5px; }
+.work-toggle { max-width: 100%; text-align: left; display: inline-flex; align-items: center; gap: 8px; margin-left: -8px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13.5px; }
 .work-toggle:not(.static):hover { background: var(--surface-muted); color: var(--text); }
 .work-toggle.static { cursor: default; }
 .work-state { display: inline-grid; place-items: center; width: 16px; height: 16px; }
