@@ -497,6 +497,11 @@ code, pre, .mono { font-family: var(--mono); }
 
 /* Model-service form and the compact next-turn reasoning choice. */
 .header-reasoning { flex: 0 0 auto; max-width: 125px; }
+.reasoning-effort { position: relative; flex: 0 0 auto; min-width: 0; }
+.reasoning-effort-popover { position: absolute; z-index: 12; top: calc(100% + 8px); right: 0; width: 120px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.reasoning-effort-option { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 30px; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; text-align: left; }
+.reasoning-effort-option:hover, .reasoning-effort-option[aria-pressed='true'] { background: var(--accent-soft); }
+.reasoning-effort-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .provider-protocol { align-items: flex-end; }
 .provider-models { max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 .provider-models legend { color: var(--text-secondary); font-size: 13px; }

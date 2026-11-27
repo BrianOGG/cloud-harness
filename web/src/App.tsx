@@ -7,6 +7,7 @@ import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statu
 import { Icon } from './Icon';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
+import { ReasoningEffortMenu } from './ReasoningEffort';
 import { loadSessionMessages, mergeSessionMessages } from './history';
 import { SessionHistory } from './SessionHistory';
 import { Settings } from './Settings';
@@ -747,9 +748,7 @@ export default function App() {
               {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
               {modelGroups.map((group) => <optgroup key={group} label={models.find((model) => (model.provider_id || '') === group)?.provider_name || (group === '' ? '默认服务' : group)}>{models.filter((model) => (model.provider_id || '') === group).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>)}
             </select>
-            <select className="value-chip header-reasoning" aria-label="思考强度" title="下一轮生效" disabled={preferencesBusy || modelBlocked || selectedModel?.thinking === 'unsupported'} value={selectedModel?.thinking === 'unsupported' ? 'unsupported' : preferences.reasoning_effort || 'default'} onChange={(event) => { void changePreferences({ ...preferences, reasoning_effort: event.target.value as SessionPreferences['reasoning_effort'] }).catch(() => undefined); }}>
-              {selectedModel?.thinking === 'unsupported' ? <option value="unsupported">思考：不支持</option> : Object.entries({ default: '默认', off: '关', low: '低', medium: '中', high: '高' }).map(([value, label]) => <option key={value} value={value}>思考：{label}</option>)}
-            </select>
+            <ReasoningEffortMenu value={preferences.reasoning_effort} disabled={preferencesBusy || modelBlocked} unsupported={selectedModel?.thinking === 'unsupported'} onChange={(reasoning_effort) => { void changePreferences({ ...preferences, reasoning_effort }).catch(() => undefined); }} />
           </>}
         </header>
 
