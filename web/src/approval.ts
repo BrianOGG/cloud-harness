@@ -14,9 +14,14 @@ export const approvalModes = [
     label: '工作区文件编辑自动 · 命令另行确认',
     description: '在文件读取与 Git 查看范围上，增加通过现有边界校验的 write_file、edit_file；不授予工作区外写入、敏感或控制路径权限。命令不会因本模式自动获准。',
   },
+  {
+    id: 'full-auto',
+    label: '完全自主',
+    description: '自动执行本会询问的命令、写入及其他工具调用；既有拒绝规则仍生效。仅在你信任当前任务时使用。',
+  },
 ];
 
-export const commandScope = '既有明确允许与默认安全命令 ls / pwd / wc 仍按原规则处理；其他命令按策略询问或拒绝。';
+export const commandScope = '既有明确允许与默认安全命令 ls / pwd / wc 仍按原规则处理；ask / safe / workspace-write 下的其他命令按策略询问或拒绝；完全自主自动放行策略要求询问的调用，既有拒绝仍拒绝。';
 
 // Missing snapshot data must never be replaced by the next-turn preference.
 export function approvalModeLabel(mode?: string): string {
@@ -29,6 +34,7 @@ export function approvalModeDescription(mode?: string): string {
 
 // This describes the mode boundary, not a guessed backend policy decision.
 export function approvalWaitReason(mode?: string, tool?: string): string {
+  if (mode === 'full-auto') return `本轮记录为完全自主，策略要求询问的调用应自动放行；${tool === 'run_command' ? '这条命令' : '此调用'}当前仍由后端要求确认，请以实际待办为准。`;
   if (tool === 'run_command') {
     if (mode === 'workspace-write') return '本轮模式仅自动授权允许范围内的文件读取与编辑，这条命令不在模式自动执行范围；当前由后端要求确认。';
     if (mode === 'safe') return '本轮模式仅自动授权文件读取与 Git 查看，不包含命令自动授权；这条命令当前由后端要求确认。';

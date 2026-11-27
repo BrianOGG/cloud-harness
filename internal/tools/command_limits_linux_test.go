@@ -178,7 +178,10 @@ func TestRunCommandKilledAtFileSizeLimit(t *testing.T) {
 }
 
 func TestRunCommandMemoryLimit(t *testing.T) {
-	limitHelpers(t, map[string]string{"grow": "a=xxxxxxxx\nwhile :; do a=$a$a; done"})
+	// Ask a standard utility to allocate a buffer beyond RLIMIT_DATA. Shells
+	// report expansion exhaustion differently (dash exits 2 before the limit
+	// signal), so use dd's stable allocation failure output for classification.
+	limitHelpers(t, map[string]string{"grow": "dd if=/dev/zero of=/dev/null bs=67108864 count=1"})
 	for name, limits := range map[string]CommandLimits{
 		"memory_bytes": {MemoryBytes: u64(32 << 20)},
 		// The default memory limit stays on and is the looser of the two.
@@ -243,7 +246,9 @@ func TestRunCommandUnaffectedByDefaultLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"ok\") }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, out = runLimited(t, context.Background(), root, CommandLimits{}, "go build ./...")
+	// This isolated module is intentionally outside Git; Go 1.27's automatic
+	// VCS stamping otherwise fails before testing resource-limit behavior.
+	res, out = runLimited(t, context.Background(), root, CommandLimits{}, "go build -buildvcs=false ./...")
 	if !res.OK || out.ExitCode != 0 || out.ResourceLimit != nil {
 		t.Fatalf("go build failed under default limits: %+v %+v", res, out)
 	}

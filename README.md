@@ -203,9 +203,10 @@ Web 会话按 `turn_id` / `run_id` 投影为一轮：用户输入与根运行终
 
 Composer 的审批选择明确作用于**下一轮**；进行中的回合展示自己的运行快照，
 切换偏好不会放行或重放当前调用。模式 ID 与后端权限不变：`ask` 显示“按策略确认”，
-`safe` 显示“文件读取与 Git 查看自动”，`workspace-write` 显示“工作区文件编辑自动 · 命令另行确认”。
+`safe` 显示“文件读取与 Git 查看自动”，`workspace-write` 显示“工作区文件编辑自动 · 命令另行确认”；`full-auto` 显示“完全自主”，经风险确认并勾选后对下一轮生效，自动放行策略要求询问的调用，既有拒绝仍生效。
 `safe` 只自动授权既有七类文件读取 / Git 查看工具，`workspace-write` 另加通过边界校验的
-`write_file` / `edit_file`。两者均不因模式本身授予 `run_command`；既有允许 / 拒绝规则和
+`write_file` / `edit_file`。`ask`、`safe`、`workspace-write` 不因模式本身授予 `run_command`；`full-auto` 会自动放行本会询问的命令、写入与其他工具，既有拒绝仍生效；
+既有允许 / 拒绝规则和
 默认安全命令 `ls` / `pwd` / `wc` 仍按原规则处理。本版未增加受限诊断命令自动执行能力。
 
 `cloud-harness retain --days 30` deletes history-index rows older than 30 days. Run rows stay.

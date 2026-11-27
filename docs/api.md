@@ -419,7 +419,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | `session_id` | string | Owning session ID. |
 | `turn_id` | string, optional | Persisted turn identity; use with `parent_id` to group root and child runs without inferring relationships from message text. |
 | `parent_id` | string, optional | ID of the run that delegated this child run. Absent for a run started by a message. |
-| `approval_mode` | string, optional | Actual `ask`, `safe`, or `workspace-write` mode frozen in this run's checkpoint. It is independent of the session's next-turn preference. Omitted when a legacy or unavailable checkpoint cannot establish the mode; clients must not substitute current session preferences. |
+| `approval_mode` | string, optional | Actual `ask`, `safe`, `workspace-write`, or `full-auto` mode frozen in this run's checkpoint. It is independent of the session's next-turn preference. Omitted when a legacy or unavailable checkpoint cannot establish the mode; clients must not substitute current session preferences. |
 | `workspace` | string, optional | Execution workspace root from this run's checkpoint policy. A command's optional `pending_invocation.arguments.cwd` is relative to this workspace (or an absolute path subject to the existing boundary check). Omitted when no checkpoint policy is available. |
 | `status` | string | Current run status. |
 | `wait_reason` | string, optional | Reason the run is waiting. |
@@ -853,10 +853,10 @@ sorted order and preserves their configured fallback models across waits. Creden
 
 GET returns `{ "approval_mode": "ask", "model_id": "default" }` for a session
 without saved preferences. PUT accepts the same two fields and returns the
-saved values. `approval_mode` is one of `ask`, `safe`, `workspace-write`;
+saved values. `approval_mode` is one of `ask`, `safe`, `workspace-write`, `full-auto`;
 `model_id` must appear in `/v1/models` (an empty model ID means `default`).
 Invalid settings return 400 and unknown sessions return 404. Values live in
-the serve database's `session_preferences` table (migration 011).
+the serve database's `session_preferences` table (migration 012 extends its mode constraint).
 These choices apply to the next turn. Changing them does not replay or
 authorize an invocation already waiting, or change any active run's snapshot.
 The run view's optional `approval_mode` reports that snapshot separately.

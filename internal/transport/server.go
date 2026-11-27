@@ -329,7 +329,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			body.ApprovalMode = "ask"
 		}
 	}
-	if body.ApprovalMode != "ask" && body.ApprovalMode != "safe" && body.ApprovalMode != "workspace-write" {
+	if body.ApprovalMode != "ask" && body.ApprovalMode != "safe" && body.ApprovalMode != "workspace-write" && body.ApprovalMode != "full-auto" {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid approval mode"))
 		return
 	}
@@ -816,7 +816,7 @@ func (s *Server) runView(ctx context.Context, run storage.Run) view {
 		}
 		if raw, err := s.Manager.Store.LatestCheckpoint(ctx, run.ID); err == nil && json.Unmarshal(raw, &snapshot) == nil {
 			switch snapshot.ApprovalMode {
-			case "ask", "safe", "workspace-write":
+			case "ask", "safe", "workspace-write", "full-auto":
 				v.ApprovalMode = snapshot.ApprovalMode
 			}
 			if snapshot.Policy != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
@@ -83,10 +84,18 @@ func TestApprovalModeIntegrationWriteAndCommandBoundaries(t *testing.T) {
 		{"workspace-write", "write_file", "{\"path\":\"out.txt\",\"content\":\"ok\"}", domain.RunCompleted},
 		{"workspace-write", "edit_file", "{\"path\":\"out.txt\",\"old_string\":\"before\",\"new_string\":\"after\"}", domain.RunCompleted},
 		{"workspace-write", "run_command", "{\"command\":\"echo never-auto-approve\"}", domain.RunWaiting},
+		{"ask", "run_command", `{"command":"echo never-auto-approve"}`, domain.RunWaiting},
+		{"safe", "run_command", `{"command":"echo never-auto-approve"}`, domain.RunWaiting},
+		{"full-auto", "run_command", `{"command":"uname -a"}`, domain.RunCompleted},
+		{"full-auto", "run_command", `{"command":"cat /proc/cpuinfo"}`, domain.RunCompleted},
+		{"full-auto", "run_command", `{"command":"cat /proc/meminfo"}`, domain.RunCompleted},
+		{"full-auto", "run_command", `{"command":"echo never-auto-approve"}`, domain.RunCompleted},
+		{"full-auto", "write_file", `{"path":"out.txt","content":"ok"}`, domain.RunCompleted},
+		{"full-auto", "edit_file", `{"path":"out.txt","old_string":"before","new_string":"after"}`, domain.RunCompleted},
 	} {
 		t.Run(tc.mode+"/"+tc.tool, func(t *testing.T) {
 			isolatedPolicyConfig(t)
-			m, _, root := testManager(t, &provider.Mock{Responses: []domain.ModelResponse{toolResp(domain.ToolCall{ProviderCallID: "tool", Name: tc.tool, Arguments: json.RawMessage(tc.args)}), textOnly("done")}})
+			m, db, root := testManager(t, &provider.Mock{Responses: []domain.ModelResponse{toolResp(domain.ToolCall{ProviderCallID: "tool", Name: tc.tool, Arguments: json.RawMessage(tc.args)}), textOnly("done")}})
 			m.SkipPlanner = true
 			m.DisableSnapshots = true
 			if err := os.WriteFile(filepath.Join(root, "out.txt"), []byte("before"), 0o600); err != nil {
@@ -100,7 +109,29 @@ func TestApprovalModeIntegrationWriteAndCommandBoundaries(t *testing.T) {
 			if err != nil || run.Status != tc.want {
 				t.Fatalf("status=%s want=%s err=%v", run.Status, tc.want, err)
 			}
-			if tc.mode == "workspace-write" && tc.tool != "run_command" {
+			if tc.mode == "full-auto" {
+				batches, err := db.LoadBatches(t.Context(), run.ID)
+				if err != nil || len(batches) != 1 || len(batches[0].Invocations) != 1 {
+					t.Fatalf("batches=%+v err=%v", batches, err)
+				}
+				inv := batches[0].Invocations[0]
+				if inv.Status != domain.InvSucceeded || !inv.Dispatched || inv.Result == nil || inv.Result.Error != nil {
+					t.Fatalf("full-auto did not execute successfully: %+v", inv)
+				}
+				approvals, err := db.ListApprovals(t.Context(), run.ID)
+				if err != nil || len(approvals) != 0 {
+					t.Fatalf("full-auto requested approval: %+v err=%v", approvals, err)
+				}
+				events := policyEvents(t, db, run.ID)
+				var decision security.PolicyDecision
+				if len(events) != 1 || json.Unmarshal(events[0].Payload, &decision) != nil || decision.Effect != security.EffectAllow || decision.Source != "session_mode" || decision.Rule != "full-auto session mode" {
+					t.Fatalf("full-auto audit decision missing: %+v", events)
+				}
+				if tc.tool == "run_command" && decision.CommandSHA256 == "" {
+					t.Fatal("command audit selector missing")
+				}
+			}
+			if (tc.mode == "workspace-write" || tc.mode == "full-auto") && tc.tool != "run_command" {
 				content, err := os.ReadFile(filepath.Join(root, "out.txt"))
 				want := "ok"
 				if tc.tool == "edit_file" {
@@ -109,6 +140,49 @@ func TestApprovalModeIntegrationWriteAndCommandBoundaries(t *testing.T) {
 				if err != nil || string(content) != want {
 					t.Fatal("workspace write/edit did not execute successfully")
 				}
+			}
+		})
+	}
+}
+
+func TestFullAutoModeIsFrozenAcrossResume(t *testing.T) {
+	for _, mode := range []string{"ask", "full-auto"} {
+		t.Run(mode, func(t *testing.T) {
+			isolatedPolicyConfig(t)
+			mock := &provider.Mock{Responses: []domain.ModelResponse{
+				toolResp(domain.ToolCall{ProviderCallID: "question", Name: domain.ToolAskUser, Arguments: json.RawMessage(`{"question":"continue?"}`)}),
+				toolResp(domain.ToolCall{ProviderCallID: "command", Name: "run_command", Arguments: json.RawMessage(`{"command":"echo snapshot-mode"}`)}),
+				textOnly("done"),
+			}}
+			m, db, workspace := testManager(t, mock)
+			m.SkipPlanner, m.DisableSnapshots = true, true
+			session, err := m.CreateSession(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := m.RunMessageWithOptions(t.Context(), session.ID, "work", RunOptions{ApprovalMode: mode})
+			if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
+				t.Fatalf("initial status=%s reason=%s err=%v", run.Status, run.WaitReason, err)
+			}
+			nextMode := "full-auto"
+			if mode == "full-auto" {
+				nextMode = "ask"
+			}
+			if err := db.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: nextMode}); err != nil {
+				t.Fatal(err)
+			}
+			fresh := &Manager{Store: db, Provider: mock, Broker: m.Broker, Workspace: workspace, OwnerID: "frozen-mode", DisableSnapshots: true}
+			run, err = fresh.Resume(t.Context(), run.ID, ResumeInput{Answer: "yes"})
+			want := domain.RunWaiting
+			if mode == "full-auto" {
+				want = domain.RunCompleted
+			}
+			if err != nil || run.Status != want || (want == domain.RunWaiting && run.WaitReason != domain.WaitApproval) {
+				t.Fatalf("resumed mode changed with preference: status=%s reason=%s err=%v", run.Status, run.WaitReason, err)
+			}
+			snap, err := fresh.loadCheckpoint(t.Context(), run.ID)
+			if err != nil || snap.ApprovalMode != mode {
+				t.Fatalf("frozen mode=%q err=%v", snap.ApprovalMode, err)
 			}
 		})
 	}

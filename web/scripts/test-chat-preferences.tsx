@@ -11,6 +11,8 @@ for (const key of ['window', 'document', 'localStorage', 'HTMLElement', 'Event',
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, CSS: { escape: (s: string) => s.replace(/[^\w-]/g, '\\$&') } });
 Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
+dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
 let scrolledTo: Element | null = null;
 dom.window.HTMLElement.prototype.scrollIntoView = function () { scrolledTo = this; };
 const { createRoot } = await import('react-dom/client');
@@ -76,8 +78,14 @@ async function reset(query = '') {
 async function choose(label: string, value: string) {
   if (label === '审批模式') {
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
-    const index = ['ask', 'safe', 'workspace-write'].indexOf(value);
+    const index = ['ask', 'safe', 'workspace-write', 'full-auto'].indexOf(value);
     await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[index].click(); });
+    if (value === 'full-auto') {
+      assert.equal(container.querySelector<HTMLDialogElement>('dialog')?.open, true);
+      assert.equal(container.querySelector<HTMLButtonElement>('dialog .primary')!.disabled, true);
+      await act(async () => { container.querySelector<HTMLInputElement>('dialog input[type="checkbox"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('dialog .primary')!.click(); });
+    }
     return;
   }
   const select = container.querySelector<HTMLSelectElement>('select[aria-label="' + label + '"]')!;
@@ -115,13 +123,27 @@ try {
     assert.deepEqual(preferences.ses_b, { model_id: 'profile:fast', approval_mode: 'ask' });
   });
   await test('new conversation keeps local choices, then persists them and passes createRun options', async () => {
-    await reset(); await mount(); await choose('审批模式', 'safe'); await choose('会话模型', 'profile:fast');
+    await reset(); await mount(); await choose('审批模式', 'full-auto'); await choose('会话模型', 'profile:fast');
     assert.equal(seen.some((r) => r.method === 'PUT' && r.path.includes('/preferences')), false);
-    assert.deepEqual(JSON.parse(localStorage.getItem('cloud-harness.web-draft-preferences')!), { approval_mode: 'safe', model_id: 'profile:fast' });
+    assert.deepEqual(JSON.parse(localStorage.getItem('cloud-harness.web-draft-preferences')!), { approval_mode: 'full-auto', model_id: 'profile:fast' });
     await type('textarea', 'hello');
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="发送"]')!.click(); });
-    assert.deepEqual(preferences.ses_created, { approval_mode: 'safe', model_id: 'profile:fast' });
-    assert.deepEqual(seen.find((r) => r.path.endsWith('/runs?wait=0'))?.body, { message: 'hello', approval_mode: 'safe', model_id: 'profile:fast' });
+    assert.deepEqual(preferences.ses_created, { approval_mode: 'full-auto', model_id: 'profile:fast' });
+    assert.deepEqual(seen.find((r) => r.path.endsWith('/runs?wait=0'))?.body, { message: 'hello', approval_mode: 'full-auto', model_id: 'profile:fast' });
+  });
+  await test('an existing session confirms full-auto before persisting the next-turn preference', async () => {
+    await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
+    const mode = container.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!;
+    await act(async () => { mode.click(); });
+    await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[3].click(); });
+    assert.equal(seen.some((r) => r.method === 'PUT' && r.path.includes('/preferences')), false);
+    assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'safe' });
+    assert.equal(container.querySelector<HTMLButtonElement>('dialog .primary')!.disabled, true);
+    await act(async () => { container.querySelector<HTMLInputElement>('dialog input[type="checkbox"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('dialog .primary')!.click(); });
+    assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'full-auto' });
+    assert.ok(seen.some((r) => r.method === 'PUT' && r.path === '/v1/sessions/ses_a/preferences' && r.body?.approval_mode === 'full-auto'));
+    assert.equal(container.querySelector('dialog'), null);
   });
   await test('notification run deep link selects its conversation and visible WaitCard', async () => {
     await reset('?run=run_wait'); linked = true; await mount();
