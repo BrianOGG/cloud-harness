@@ -75,6 +75,70 @@ func TestDetectProtocolShapes(t *testing.T) {
 	}
 }
 
+func TestOfficialProtocol(t *testing.T) {
+	for _, tc := range []struct{ host, want string }{
+		{"generativelanguage.googleapis.com", "gemini"},
+		{"GenerativeLanguage.googleapis.com", "gemini"},
+		{"api.anthropic.com", "anthropic"},
+		{"API.ANTHROPIC.COM", "anthropic"},
+		{"api.openai.com", ""},
+		{"agnes.example.com", ""},
+	} {
+		if got := OfficialProtocol(tc.host); got != tc.want {
+			t.Fatalf("host=%s got=%s want=%s", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestLooksLikeAndEndpointHint(t *testing.T) {
+	agnesOpenAI := `{"object":"list","data":[{"id":"agnes-3.0-flash","object":"model","supported_endpoint_types":["openai"]}]}`
+	agnesAnthropic := `{"data":[{"id":"agnes-3.0-flash","type":"model","display_name":"agnes-3.0-flash"}],"has_more":false,"first_id":"a","last_id":"z"}`
+	hintAnthropic := `{"object":"list","data":[{"id":"only-claude","object":"model","supported_endpoint_types":["anthropic"]}]}`
+	if !LooksLikeOpenAI([]byte(agnesOpenAI)) || LooksLikeAnthropic([]byte(agnesOpenAI)) {
+		t.Fatal("agnes openai body should only look like OpenAI")
+	}
+	if !LooksLikeAnthropic([]byte(agnesAnthropic)) || LooksLikeOpenAI([]byte(agnesAnthropic)) {
+		t.Fatal("agnes anthropic body should only look like Anthropic")
+	}
+	if OpenAIEndpointHint([]byte(agnesOpenAI)) != "" {
+		t.Fatal("openai endpoint types should not override")
+	}
+	if OpenAIEndpointHint([]byte(hintAnthropic)) != "anthropic" {
+		t.Fatal("anthropic-only endpoint types should hint anthropic")
+	}
+	if OpenAIEndpointHint([]byte(`{"data":[{"id":"x","supported_endpoint_types":["anthropic","gemini"]}]}`)) != "" {
+		t.Fatal("mixed non-openai types should not hint")
+	}
+}
+
+func TestSelectAutoProtocolPrefersOpenAI(t *testing.T) {
+	openaiModels := []Model{{ID: "agnes-3.0-flash"}}
+	anthropicModels := []Model{{ID: "agnes-3.0-flash", DisplayName: "agnes-3.0-flash"}}
+	geminiModels := []Model{{ID: "gemini-2.5-pro"}}
+	agnesOpenAI := []byte(`{"object":"list","data":[{"id":"agnes-3.0-flash","object":"model","supported_endpoint_types":["openai"]}]}`)
+	protocol, alts, models := SelectAutoProtocol(map[string][]Model{"openai": openaiModels, "anthropic": anthropicModels}, agnesOpenAI)
+	if protocol != "openai" || len(alts) != 1 || alts[0] != "anthropic" || models[0].ID != "agnes-3.0-flash" {
+		t.Fatalf("dual gateway: protocol=%s alts=%v models=%v", protocol, alts, models)
+	}
+	protocol, alts, models = SelectAutoProtocol(map[string][]Model{"anthropic": anthropicModels}, nil)
+	if protocol != "anthropic" || alts != nil || models[0].DisplayName == "" {
+		t.Fatalf("anthropic only: protocol=%s alts=%v", protocol, alts)
+	}
+	hintBody := []byte(`{"object":"list","data":[{"id":"only-claude","object":"model","supported_endpoint_types":["anthropic"]}]}`)
+	protocol, alts, models = SelectAutoProtocol(map[string][]Model{"openai": {{ID: "only-claude"}}}, hintBody)
+	if protocol != "anthropic" || models[0].ID != "only-claude" {
+		t.Fatalf("hint: protocol=%s alts=%v models=%v", protocol, alts, models)
+	}
+	protocol, alts, models = SelectAutoProtocol(map[string][]Model{"openai": openaiModels, "anthropic": anthropicModels, "gemini": geminiModels}, nil)
+	if protocol != "openai" || len(alts) != 2 || alts[0] != "anthropic" || alts[1] != "gemini" {
+		t.Fatalf("all: protocol=%s alts=%v", protocol, alts)
+	}
+	protocol, alts, models = SelectAutoProtocol(nil, nil)
+	if protocol != "" || alts != nil || models != nil {
+		t.Fatalf("empty: protocol=%s", protocol)
+	}
+}
+
 func TestNormalizeBaseURL(t *testing.T) {
 	for _, tc := range []struct {
 		url string

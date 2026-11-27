@@ -19,9 +19,10 @@ type Model struct {
 	Thinking    string `json:"thinking,omitempty"`
 }
 type Detection struct {
-	Protocol  string    `json:"protocol"`
-	Models    []Model   `json:"models"`
-	FetchedAt time.Time `json:"fetched_at"`
+	Protocol     string    `json:"protocol"`
+	Models       []Model   `json:"models"`
+	FetchedAt    time.Time `json:"fetched_at"`
+	Alternatives []string  `json:"alternatives,omitempty"`
 }
 type CatalogError struct {
 	Message        string
@@ -30,6 +31,17 @@ type CatalogError struct {
 
 func (e *CatalogError) Error() string { return e.Message }
 func ValidProtocol(p string) bool     { return p == "openai" || p == "anthropic" || p == "gemini" }
+
+// OfficialProtocol maps well-known hosts before any catalog probe.
+func OfficialProtocol(host string) string {
+	switch strings.ToLower(host) {
+	case "generativelanguage.googleapis.com":
+		return "gemini"
+	case "api.anthropic.com":
+		return "anthropic"
+	}
+	return ""
+}
 
 // NormalizeBaseURL is shared by save and discovery. No credentials in URLs.
 func NormalizeBaseURL(base string) (string, error) {
@@ -193,4 +205,144 @@ func DetectProtocol(raw []byte) (string, []Model, error) {
 	}
 	models, err := ParseOpenAIModels(raw)
 	return "openai", models, err
+}
+
+// LooksLikeOpenAI reports whether raw is an OpenAI-compatible model catalog.
+func LooksLikeOpenAI(raw []byte) bool {
+	obj, err := parseObject(raw)
+	if err != nil {
+		return false
+	}
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(obj["data"], &rows) != nil || string(obj["data"]) == "null" || obj["data"] == nil {
+		return false
+	}
+	if string(obj["object"]) == `"list"` {
+		return true
+	}
+	for _, row := range rows {
+		if string(row["object"]) == `"model"` {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksLikeAnthropic reports whether raw uses the Anthropic models shape.
+func LooksLikeAnthropic(raw []byte) bool {
+	obj, err := parseObject(raw)
+	if err != nil {
+		return false
+	}
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(obj["data"], &rows) != nil || string(obj["data"]) == "null" || obj["data"] == nil {
+		return false
+	}
+	if _, ok := obj["has_more"]; ok {
+		return true
+	}
+	for _, row := range rows {
+		if string(row["type"]) == `"model"` || row["display_name"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksLikeGemini reports whether raw uses the Gemini models list shape.
+func LooksLikeGemini(raw []byte) bool {
+	obj, err := parseObject(raw)
+	if err != nil {
+		return false
+	}
+	var rows []struct{ Name string }
+	if json.Unmarshal(obj["models"], &rows) != nil || string(obj["models"]) == "null" || obj["models"] == nil {
+		return false
+	}
+	if len(rows) == 0 {
+		return true
+	}
+	for _, row := range rows {
+		if strings.HasPrefix(row.Name, "models/") {
+			return true
+		}
+	}
+	return false
+}
+
+// OpenAIEndpointHint reads supported_endpoint_types from an OpenAI-shaped catalog.
+// It only overrides auto-detection when every declared type excludes openai
+// and a single known alternative (anthropic or gemini) is present.
+func OpenAIEndpointHint(raw []byte) string {
+	obj, err := parseObject(raw)
+	if err != nil {
+		return ""
+	}
+	var rows []struct {
+		Types []string `json:"supported_endpoint_types"`
+	}
+	if json.Unmarshal(obj["data"], &rows) != nil {
+		return ""
+	}
+	declared := false
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if len(row.Types) == 0 {
+			continue
+		}
+		declared = true
+		for _, item := range row.Types {
+			seen[strings.ToLower(item)] = true
+		}
+	}
+	if !declared || seen["openai"] {
+		return ""
+	}
+	if seen["anthropic"] && !seen["gemini"] {
+		return "anthropic"
+	}
+	if seen["gemini"] && !seen["anthropic"] {
+		return "gemini"
+	}
+	return ""
+}
+
+var protocolPreference = []string{"openai", "anthropic", "gemini"}
+
+// SelectAutoProtocol prefers a valid OpenAI-compatible catalog, then Anthropic, then Gemini.
+// hint comes from OpenAIEndpointHint on the OpenAI probe body.
+func SelectAutoProtocol(successful map[string][]Model, openAIRaw []byte) (string, []string, []Model) {
+	if successful == nil {
+		successful = map[string][]Model{}
+	}
+	hint := OpenAIEndpointHint(openAIRaw)
+	pick := ""
+	_, hinted := successful[hint]
+	_, openaiOK := successful["openai"]
+	if hint != "" && (hinted || openaiOK) {
+		pick = hint
+	} else {
+		for _, protocol := range protocolPreference {
+			if _, ok := successful[protocol]; ok {
+				pick = protocol
+				break
+			}
+		}
+	}
+	if pick == "" {
+		return "", nil, nil
+	}
+	models := successful[pick]
+	if models == nil {
+		models = successful["openai"]
+	}
+	var alternatives []string
+	for _, protocol := range protocolPreference {
+		if protocol != pick {
+			if _, ok := successful[protocol]; ok {
+				alternatives = append(alternatives, protocol)
+			}
+		}
+	}
+	return pick, alternatives, models
 }

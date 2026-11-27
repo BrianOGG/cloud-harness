@@ -25,19 +25,16 @@ func FetchModelCatalog(ctx context.Context, base, key, protocol string) (modelco
 	}
 	u, _ := url.Parse(base)
 	if protocol == "" {
-		switch strings.ToLower(u.Hostname()) {
-		case "generativelanguage.googleapis.com":
-			protocol = "gemini"
-		case "api.anthropic.com":
-			protocol = "anthropic"
-		}
+		protocol = modelconfig.OfficialProtocol(u.Hostname())
 	}
+	auto := protocol == ""
 	protocols := []string{protocol}
-	if protocol == "" {
+	if auto {
 		protocols = []string{"openai", "anthropic", "gemini"}
 	}
 	type result struct {
 		detection modelconfig.Detection
+		raw       []byte
 		status    int
 		err       error
 	}
@@ -85,19 +82,21 @@ func FetchModelCatalog(ctx context.Context, base, key, protocol string) (modelco
 				results[i].err = errors.New("服务未返回有效的模型列表（最大 1MB）")
 				return
 			}
-			selected := candidate
 			var models []modelconfig.Model
-			if protocol == "" {
-				selected, models, err = modelconfig.DetectProtocol(raw)
-			} else {
-				switch candidate {
-				case "openai":
-					models, err = modelconfig.ParseOpenAIModels(raw)
-				case "anthropic":
-					models, err = modelconfig.ParseAnthropicModels(raw)
-				case "gemini":
-					models, err = modelconfig.ParseGeminiModels(raw)
-				}
+			ok := !auto
+			switch candidate {
+			case "openai":
+				ok = ok || modelconfig.LooksLikeOpenAI(raw)
+				models, err = modelconfig.ParseOpenAIModels(raw)
+			case "anthropic":
+				ok = ok || modelconfig.LooksLikeAnthropic(raw)
+				models, err = modelconfig.ParseAnthropicModels(raw)
+			case "gemini":
+				ok = ok || modelconfig.LooksLikeGemini(raw)
+				models, err = modelconfig.ParseGeminiModels(raw)
+			}
+			if err == nil && !ok {
+				err = errors.New("服务未返回有效的模型列表")
 			}
 			if err == nil && key != "" {
 				for _, model := range models {
@@ -107,24 +106,43 @@ func FetchModelCatalog(ctx context.Context, base, key, protocol string) (modelco
 					}
 				}
 			}
-			results[i].detection = modelconfig.Detection{Protocol: selected, Models: models, FetchedAt: time.Now().UTC()}
+			results[i].raw = raw
+			results[i].detection = modelconfig.Detection{Protocol: candidate, Models: models, FetchedAt: time.Now().UTC()}
 			results[i].err = err
 		}()
 	}
 	wg.Wait()
-	rank := map[string]int{"openai": 1, "anthropic": 2, "gemini": 3}
-	var best modelconfig.Detection
+	successful := map[string][]modelconfig.Model{}
+	var openAIRaw []byte
+	var fetchedAt time.Time
 	status := 0
-	for _, result := range results {
-		if result.err == nil && rank[result.detection.Protocol] > rank[best.Protocol] {
-			best = result.detection
+	for i, result := range results {
+		if result.err == nil {
+			successful[result.detection.Protocol] = result.detection.Models
+			if fetchedAt.IsZero() || result.detection.FetchedAt.After(fetchedAt) {
+				fetchedAt = result.detection.FetchedAt
+			}
 		}
-		if status == 0 || result.status == 401 {
+		if protocols[i] == "openai" {
+			openAIRaw = result.raw
+		}
+		if status == 0 || result.status == http.StatusUnauthorized {
 			status = result.status
 		}
 	}
-	if best.Protocol != "" {
-		return best, nil
+	if auto {
+		protocol, alternatives, models := modelconfig.SelectAutoProtocol(successful, openAIRaw)
+		if protocol != "" {
+			if fetchedAt.IsZero() {
+				fetchedAt = time.Now().UTC()
+			}
+			return modelconfig.Detection{Protocol: protocol, Models: models, FetchedAt: fetchedAt, Alternatives: alternatives}, nil
+		}
+	} else if models, ok := successful[protocol]; ok {
+		if fetchedAt.IsZero() {
+			fetchedAt = time.Now().UTC()
+		}
+		return modelconfig.Detection{Protocol: protocol, Models: models, FetchedAt: fetchedAt}, nil
 	}
 	return modelconfig.Detection{}, &modelconfig.CatalogError{Message: "模型列表获取失败；请检查地址、凭据和协议，也可手动填写模型 ID", UpstreamStatus: status}
 }
