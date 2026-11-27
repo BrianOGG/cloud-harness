@@ -127,7 +127,7 @@ try {
     assert.deepEqual(inspected, [base.id]); assert.deepEqual(cancelled, [base.id]);
     await render(history([running], [input], { approvalMode: 'safe', acting: { [base.id]: true } }));
     const indicator = container.querySelector<HTMLElement>('.mode-difference')!;
-    assert.match(indicator.title, /本轮使用「工作区文件编辑自动.*下一轮为「文件读取与 Git 查看自动」/);
+    assert.match(indicator.title, /本轮使用「工作区自动」，下一轮为「读取自动」/);
     indicator.focus(); assert.equal(document.activeElement, indicator);
     assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="取消运行"]')!.disabled, true);
     await render(history([{ ...running, approval_mode: undefined }], [input], { approvalMode: 'safe' }));
@@ -285,13 +285,13 @@ try {
     try {
       localStorage.setItem('cloud-harness.web-session', base.session_id);
       await render(<App />);
-      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区文件编辑自动/);
+      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区自动」/);
       assert.equal(container.querySelector('.run-snapshot'), null);
-      assert.match(container.querySelector('.composer [aria-label="审批模式"]')!.textContent!, /下一轮 · 文件读取与 Git 查看自动/);
+      assert.match(container.querySelector('.composer [aria-label="审批模式"]')!.textContent!, /下一轮 · 读取自动/);
       await click('.composer [aria-label="审批模式"]');
       await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[0].click(); });
       assert.equal(submits, 0, 'preference changes must not approve current command');
-      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区文件编辑自动/);
+      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区自动」/);
       assert.equal(container.querySelector('.run-snapshot'), null);
       held = new Promise<void>((resolve) => { release = resolve; });
       await act(async () => { const button = container.querySelector<HTMLButtonElement>('.wait-actions .primary')!; button.click(); button.click(); });

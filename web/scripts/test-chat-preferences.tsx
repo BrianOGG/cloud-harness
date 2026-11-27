@@ -116,7 +116,7 @@ async function submitProvider() {
 try {
   await test('session preferences load, save, and stay separate across conversations', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
-    assert.equal(container.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 文件读取与 Git 查看自动');
+    assert.equal(container.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 读取自动');
     assert.equal(container.querySelector<HTMLButtonElement>('.reasoning-trigger')!.dataset.modelId, 'profile:fast');
     assert.equal([...container.querySelectorAll('.sidebar-nav button')].some((b) => b.textContent === '审批'), false);
     assert.ok(container.textContent?.includes('观测'));
@@ -181,7 +181,7 @@ try {
     await act(async () => { composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
     assert.equal(composer.querySelector('.approval-mode-popover') !== null, true);
     assert.deepEqual(Array.from(composer.querySelectorAll('.mode-option strong'), (node) => node.textContent), [
-      '按策略确认', '文件读取与 Git 查看自动', '工作区文件编辑自动 · 命令另行确认', '完全自主',
+      '按策略确认', '读取自动', '工作区自动', '完全自主',
     ]);
     assert.equal(composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
     await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
