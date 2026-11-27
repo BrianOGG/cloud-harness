@@ -179,7 +179,7 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 	if opts.ApprovalMode == "" {
 		opts.ApprovalMode = "ask"
 	}
-	if opts.ApprovalMode != "ask" && opts.ApprovalMode != "safe" && opts.ApprovalMode != "workspace-write" {
+	if opts.ApprovalMode != "ask" && opts.ApprovalMode != "safe" && opts.ApprovalMode != "workspace-write" && opts.ApprovalMode != "full-auto" {
 		return storage.Run{}, domain.E(domain.CodeInvalidArgument, "invalid approval mode")
 	}
 	images := opts.Images

@@ -126,7 +126,7 @@ func TestDoctorReportsSchemaAndForeignKeyFailuresReadOnly(t *testing.T) {
 		mutate string
 		want   string
 	}{
-		{name: "schema", mutate: `UPDATE schema_migrations SET version=999 WHERE version=(SELECT MAX(version) FROM schema_migrations)`, want: "expected 11"},
+		{name: "schema", mutate: `UPDATE schema_migrations SET version=999 WHERE version=(SELECT MAX(version) FROM schema_migrations)`, want: "expected 12"},
 		{name: "foreign-key", mutate: `INSERT INTO turns(id,session_id,user_input,status,created_at) VALUES('orphan','missing','x','completed','2026-11-19T00:00:00.000000000Z')`, want: "foreign_key_check found 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

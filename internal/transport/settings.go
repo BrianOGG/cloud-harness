@@ -48,7 +48,7 @@ func (s *Server) sessionSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if body.ApprovalMode != "ask" && body.ApprovalMode != "safe" && body.ApprovalMode != "workspace-write" {
+	if body.ApprovalMode != "ask" && body.ApprovalMode != "safe" && body.ApprovalMode != "workspace-write" && body.ApprovalMode != "full-auto" {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid approval mode"))
 		return
 	}

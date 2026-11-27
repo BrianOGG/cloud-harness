@@ -82,6 +82,14 @@ func TestSettingsAPIPersistenceModelsAndCustomRun(t *testing.T) {
 	if err != nil || prefs.ModelID != "profile:fast" || prefs.ApprovalMode != "safe" {
 		t.Fatal("preferences were not persisted")
 	}
+	rec = request("PUT", path, map[string]string{"approval_mode": "full-auto", "model_id": "profile:fast"}, 200)
+	if !strings.Contains(rec.Body.String(), `"approval_mode":"full-auto"`) {
+		t.Fatal("full-auto preference response missing")
+	}
+	rec = request("GET", path, nil, 200)
+	if !strings.Contains(rec.Body.String(), `"approval_mode":"full-auto"`) {
+		t.Fatal("full-auto preference did not round-trip")
+	}
 	request("PUT", path, map[string]string{"approval_mode": "unsafe", "model_id": "default"}, 400)
 	request("PUT", path, map[string]string{"approval_mode": "safe", "model_id": "not-configured"}, 400)
 	request("PUT", "/v1/sessions/missing/preferences", map[string]string{"approval_mode": "safe", "model_id": "default"}, 404)
@@ -111,6 +119,26 @@ func TestSettingsAPIPersistenceModelsAndCustomRun(t *testing.T) {
 		t.Fatal("createRun preference selection was not saved")
 	}
 	request("POST", "/v1/sessions/"+session.ID+"/runs?wait=1", map[string]string{"message": "bad", "model_id": "missing"}, 400)
+	for _, mode := range []string{"unsafe", "unknown", "FULL-AUTO"} {
+		request("PUT", path, map[string]string{"approval_mode": mode, "model_id": "default"}, 400)
+		request("POST", "/v1/sessions/"+session.ID+"/runs?wait=1", map[string]string{"message": "bad mode", "approval_mode": mode}, 400)
+	}
+	// Both explicit createRun selection and inherited preferences must accept
+	// full-auto and expose the checkpoint value in the run view.
+	for _, body := range []map[string]string{
+		{"message": "full-auto", "approval_mode": "full-auto"},
+		{"message": "inherit full-auto"},
+	} {
+		rec = request("POST", "/v1/sessions/"+session.ID+"/runs?wait=1", body, 201)
+		var run view
+		if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil || run.ApprovalMode != "full-auto" {
+			t.Fatalf("full-auto run snapshot=%q err=%v", run.ApprovalMode, err)
+		}
+	}
+	prefs, err = m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || prefs.ModelID != "custom:fixture" || prefs.ApprovalMode != "full-auto" || upstreamCalls != 4 {
+		t.Fatalf("full-auto run preferences=%+v calls=%d err=%v", prefs, upstreamCalls, err)
+	}
 }
 
 func TestSettingsEndpointsRemainGuarded(t *testing.T) {

@@ -443,6 +443,13 @@ code, pre, .mono { font-family: var(--mono); }
 .mode-option:hover, .mode-option[aria-pressed='true'] { background: var(--accent-soft); }
 .mode-option strong { font-size: 12.5px; }
 .mode-option span { color: var(--text-secondary); font-size: 12px; }
+.full-auto-confirmation { width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.full-auto-confirmation::backdrop { background: rgb(0 0 0 / 45%); }
+.full-auto-confirmation h2 { margin: 0 0 12px; color: var(--red); font-size: 18px; }
+.full-auto-confirmation p { margin: 0 0 20px; font-size: 14px; line-height: 1.7; }
+.full-auto-confirmation label { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; cursor: pointer; }
+.full-auto-confirmation input { flex: none; margin: 4px 0 0; accent-color: var(--accent); }
+.full-auto-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .model-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; width: 100%; margin-bottom: 8px; color: var(--text-secondary); font-size: 13px; }
 .settings-scope { color: var(--text-secondary); font-size: 13px; }
 .settings-toolbar, .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

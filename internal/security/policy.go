@@ -65,13 +65,18 @@ type PolicyDecision struct {
 	CommandSHA256 string `json:"command_sha256,omitempty"`
 }
 
-// ApplyApprovalMode adds narrow per-session conveniences after policy evaluation.
-// Explicit deny decisions are final; the session mode can never grant commands.
+// ApplyApprovalMode applies per-session authorization after policy evaluation.
+// Deny and Allow decisions are final. Only full-auto promotes every Ask,
+// including commands; safe and workspace-write retain their narrow scopes.
 func ApplyApprovalMode(mode string, policy *Policy, req PolicyRequest, decision PolicyDecision) PolicyDecision {
-	if decision.Effect == EffectDeny || mode != "safe" && mode != "workspace-write" {
+	if decision.Effect != EffectAsk {
 		return decision
 	}
-	if decision.Effect == EffectAllow {
+	if mode == "full-auto" {
+		decision.Effect, decision.Source, decision.Rule = EffectAllow, "session_mode", "full-auto session mode"
+		return decision
+	}
+	if mode != "safe" && mode != "workspace-write" {
 		return decision
 	}
 	readonly := map[string]bool{"read_file": true, "list_dir": true, "list_files": true, "grep": true, "git_status": true, "git_diff": true, "git_log": true}

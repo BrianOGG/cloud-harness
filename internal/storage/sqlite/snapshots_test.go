@@ -111,7 +111,7 @@ func TestMigration004FromExisting001To003Database(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := db.SchemaVersion(ctx)
-	if err != nil || version != 11 {
+	if err != nil || version != 12 {
 		t.Fatalf("schema version %d, error %v", version, err)
 	}
 	if _, err := db.CreateWorkspaceSnapshot(ctx, storage.WorkspaceSnapshot{WorkspaceID: "old", TreeOID: "tree"}); err != nil {

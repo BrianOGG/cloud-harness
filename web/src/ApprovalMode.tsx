@@ -1,11 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { approvalModeLabel, approvalModes, commandScope } from './approval';
 
 export function ApprovalModeMenu({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useEffect(() => {
+    if (!confirming) return;
+    const modal = dialog.current!;
+    const trigger = button.current;
+    modal.showModal();
+    return () => { modal.close(); trigger?.focus(); };
+  }, [confirming]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
@@ -18,8 +30,25 @@ export function ApprovalModeMenu({ value, onChange, disabled }: { value: string;
     <button ref={button} type="button" className="value-chip" aria-label="审批模式" aria-expanded={open} disabled={disabled} title="下一轮审批模式；不改变正在运行或等待的回合" onClick={() => setOpen(!open)}><Icon name="shield" size={13} /><span>下一轮 · {approvalModeLabel(value)}</span><Icon name="down" size={12} /></button>
     {open && <div className="approval-mode-popover" role="group" aria-label="选择下一轮审批模式">
       <p>仅下一轮生效，不改变正在运行或等待的回合，也不会自动重放或放行当前调用。</p>
-      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" aria-pressed={value === mode.id} disabled={disabled} onClick={() => { onChange(mode.id); setOpen(false); button.current?.focus(); }}><strong>{mode.label}</strong><span>{mode.description}</span></button>)}
+      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" aria-pressed={value === mode.id} disabled={disabled} onClick={() => {
+        setOpen(false);
+        if (mode.id === value) { button.current?.focus(); return; }
+        if (mode.id === 'full-auto') { setAcknowledged(false); setConfirming(true); return; }
+        onChange(mode.id); button.current?.focus();
+      }}><strong>{mode.label}</strong><span>{mode.description}</span></button>)}
       <p>{commandScope}</p>
     </div>}
+    {confirming && <dialog ref={dialog} className="full-auto-confirmation" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={() => setConfirming(false)} onClose={() => setConfirming(false)}>
+      <h2 id={titleId}>确认启用完全自主？</h2>
+      <p id={descriptionId}>启用后，下一轮将自动执行命令和工作区（以及政策未拒绝的工作区外）写入，不再逐次询问；误操作或提示注入可能导致修改文件、执行命令或对外发送数据；既有拒绝规则仍生效，但这不是安全保障。仅在你信任当前任务和环境时使用。</p>
+      <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />我已了解风险，并愿意继续</label>
+      <div className="full-auto-actions">
+        <button type="button" className="button" autoFocus onClick={() => setConfirming(false)}>取消</button>
+        <button type="button" className="button primary" disabled={disabled || !acknowledged} onClick={() => {
+          if (!acknowledged || disabled) return;
+          onChange('full-auto'); setConfirming(false);
+        }}>启用完全自主</button>
+      </div>
+    </dialog>}
   </div>;
 }

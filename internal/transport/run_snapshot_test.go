@@ -34,7 +34,7 @@ func TestRunViewReportsFrozenModeAndTurnAcrossRestore(t *testing.T) {
 	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
 		t.Fatalf("expected command approval wait: status=%s reason=%s err=%v", run.Status, run.WaitReason, err)
 	}
-	if err := m.Store.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: "safe"}); err != nil {
+	if err := m.Store.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: "full-auto"}); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh manager and a changed default workspace simulate another serve
