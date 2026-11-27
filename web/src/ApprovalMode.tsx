@@ -2,6 +2,13 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { approvalModeLabel, approvalModes } from './approval';
 
+const modeIcons: Record<string, string> = {
+  ask: 'question',
+  safe: 'eye',
+  'workspace-write': 'folder-edit',
+  'full-auto': 'bolt',
+};
+
 export function ApprovalModeMenu({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -27,14 +34,14 @@ export function ApprovalModeMenu({ value, onChange, disabled }: { value: string;
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [open]);
   return <div className="approval-mode" ref={ref}>
-    <button ref={button} type="button" className="approval-mode-trigger" data-mode={value} aria-label="审批模式" aria-expanded={open} disabled={disabled} title="下一轮审批模式；不改变正在运行或等待的回合" onClick={() => setOpen(!open)}><span>下一轮 · {approvalModeLabel(value)}</span><Icon name="down" size={12} /></button>
+    <button ref={button} type="button" className="approval-mode-trigger" data-mode={value} aria-label="审批模式" aria-expanded={open} disabled={disabled} title={`${approvalModeLabel(value)} · 下一轮生效`} onClick={() => setOpen(!open)}><Icon name={modeIcons[value] || 'question'} size={20} /></button>
     {open && <div className="approval-mode-popover" role="group" aria-label="选择下一轮审批模式">
-      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" aria-pressed={value === mode.id} disabled={disabled} onClick={() => {
+      {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" data-mode={mode.id} aria-pressed={value === mode.id} disabled={disabled} onClick={() => {
         setOpen(false);
         if (mode.id === value) { button.current?.focus(); return; }
         if (mode.id === 'full-auto') { setAcknowledged(false); setConfirming(true); return; }
         onChange(mode.id); button.current?.focus();
-      }}><strong>{mode.label}</strong>{value === mode.id && <Icon name="check" size={13} />}</button>)}
+      }}><Icon name={modeIcons[mode.id]} /><strong>{mode.label}</strong>{value === mode.id && <Icon name="check" size={13} />}</button>)}
     </div>}
     {confirming && <dialog ref={dialog} className="full-auto-confirmation" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={() => setConfirming(false)} onClose={() => setConfirming(false)}>
       <h2 id={titleId}>确认启用完全自主？</h2>

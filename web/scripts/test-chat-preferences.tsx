@@ -113,10 +113,18 @@ async function clickText(text: string) {
 async function submitProvider() {
   await act(async () => { container.querySelector('.provider-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
 }
+function assertApprovalMode(mode: string, label: string) {
+  const button = container.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!;
+  assert.equal(button.textContent, '');
+  assert.equal(button.dataset.mode, mode);
+  assert.equal(button.title, label + ' · 下一轮生效');
+  assert.equal(button.querySelectorAll('svg').length, 1);
+}
 try {
   await test('session preferences load, save, and stay separate across conversations', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
-    assert.equal(container.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 读取自动');
+    assertApprovalMode('safe', '读取自动');
+    assert.equal(container.querySelector('textarea')?.placeholder, '发消息…');
     assert.equal(container.querySelector<HTMLButtonElement>('.reasoning-trigger')!.dataset.modelId, 'profile:fast');
     assert.equal([...container.querySelectorAll('.sidebar-nav button')].some((b) => b.textContent === '审批'), false);
     assert.ok(container.textContent?.includes('观测'));
@@ -158,8 +166,13 @@ try {
     assert.equal(scrolledTo, container.querySelector('.wait-card'));
     assert.ok(container.textContent?.includes('最终回答始终可见'));
   });
-  await test('composer owns model and reasoning controls and preserves the current approval chip', async () => {
+  await test('composer keeps the approval icon on the left, short placeholders, and no keyboard hints or product SVG marks', async () => {
     await reset(); await mount();
+    assert.equal(container.querySelector('button.brand')?.textContent, 'Cloud Harness');
+    assert.ok(container.querySelector('button.brand > span.brand-mark'));
+    assert.ok(container.querySelector('.welcome-inner > span.brand-mark.large'));
+    assert.equal(container.querySelector('svg.brand-mark'), null);
+    assert.equal(container.querySelector('.welcome h2')?.textContent, '今天想做什么？');
     assert.equal(container.querySelector('header [aria-label="会话模型"], header .header-model, header [aria-label="思考强度"], header [role="slider"]'), null);
     const composer = container.querySelector('.composer')!;
     assert.equal(composer.querySelector('select, input, form, .provider-editor'), null);
@@ -167,9 +180,13 @@ try {
     assert.ok(composer.querySelector('button[aria-label="选择思考强度"]'));
     assert.equal(composer.querySelector('.reasoning-trigger')!.getAttribute('aria-expanded'), 'false');
     assert.equal(document.querySelector('[role="slider"][aria-label="思考强度"]'), null);
-    assert.ok(composer.querySelector('.composer-hint'));
+    assert.equal(composer.querySelector('.composer-hint'), null);
+    assert.doesNotMatch(composer.innerHTML, /Enter|回车/);
+    assert.equal(composer.querySelector('textarea')?.placeholder, '发消息…');
     assert.ok(composer.querySelector('button[aria-label="发送"]'));
-    assert.equal(composer.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
+    assert.equal(composer.querySelector<HTMLButtonElement>('button[aria-label="发送"]')!.title, '发送');
+    assertApprovalMode('ask', '按策略确认');
+    assert.equal(composer.querySelector('.composer-bar')?.firstElementChild?.className, 'approval-mode');
     assert.equal(composer.querySelector('.approval-mode-popover'), null);
     await act(async () => { composer.querySelector<HTMLButtonElement>('.reasoning-trigger')!.click(); });
     assert.equal(document.querySelector('.reasoning-popover') !== null, true);
@@ -183,10 +200,16 @@ try {
     assert.deepEqual(Array.from(composer.querySelectorAll('.mode-option strong'), (node) => node.textContent), [
       '按策略确认', '读取自动', '工作区自动', '完全自主',
     ]);
-    assert.equal(composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
+    assertApprovalMode('ask', '按策略确认');
     await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
     assert.equal(composer.querySelector('.approval-mode-popover'), null);
     assert.equal(seen.some((r) => r.path === '/v1/providers'), false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="收起侧栏"]')!.click(); });
+    const topbar = container.querySelector('.topbar')!;
+    assert.deepEqual([...topbar.children].map((child) => child.tagName.toLowerCase()), ['button', 'button', 'h1']);
+    assert.deepEqual([...topbar.querySelectorAll('button')].map((button) => button.getAttribute('aria-label')), ['展开侧栏', '新对话']);
+    assert.equal(topbar.querySelector('.brand-mark'), null);
+    assert.equal(container.querySelector('svg.brand-mark'), null);
   });
   await test('settings CRUD, blank key edits and connection checks never auto-select models or lose the draft', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();

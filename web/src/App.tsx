@@ -5,7 +5,6 @@ import { Composer, PendingTurn } from './Chat';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
-import { BrandMark } from './BrandMark';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
 import { loadSessionMessages, mergeSessionMessages } from './history';
@@ -688,7 +687,7 @@ export default function App() {
       busy={Boolean(busy || (!answering && modelBlocked))}
       stopping={latestRun ? acting[latestRun.id] : false}
       placeholder={answering ? '回答问题…' : '发消息…'}
-      hint={online === false ? '未连接' : answering ? '回复后继续本轮' : 'Enter 发送 · Shift+Enter 换行'}
+      hint={online === false ? '未连接' : answering ? '回复后继续本轮' : undefined}
       autoFocus={view === 'chat'}
       models={models}
       selectedModel={selectedModel}
@@ -709,7 +708,7 @@ export default function App() {
       {sidebarOpen && <button type="button" className="scrim" aria-label="关闭侧栏" onClick={() => toggleSidebar(false)} />}
       <aside className="sidebar" aria-label="对话列表" hidden={!sidebarOpen}>
         <div className="sidebar-top">
-          <button type="button" className="brand" onClick={() => openSession(null)}><BrandMark />Cloud Harness</button>
+          <button type="button" className="brand" onClick={() => openSession(null)}><span className="brand-mark" />Cloud Harness</button>
           <button type="button" className="icon-button" aria-label="收起侧栏" title="收起侧栏" onClick={() => toggleSidebar(false)}><Icon name="sidebar" size={18} /></button>
         </div>
         <nav className="sidebar-nav">
@@ -747,7 +746,6 @@ export default function App() {
           {!sidebarOpen && <>
             <button type="button" className="icon-button" aria-label="展开侧栏" title="展开侧栏" onClick={() => toggleSidebar(true)}><Icon name="sidebar" size={18} /></button>
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
-            <BrandMark />
           </>}
           <h1>{view === 'settings' ? '设置' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
         </header>
@@ -757,7 +755,7 @@ export default function App() {
         {view === 'chat' && empty && (
           <div className="welcome">
             <div className="welcome-inner">
-              <BrandMark large />
+              <span className="brand-mark large" />
               <h2>今天想做什么？</h2>
               {composer}
               <div className="suggestions">
