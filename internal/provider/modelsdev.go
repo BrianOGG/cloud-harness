@@ -80,7 +80,7 @@ func (c *ModelsDev) load() {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var cached modelsDevCache
 	if json.NewDecoder(io.LimitReader(f, maxModelsDevBytes+1)).Decode(&cached) == nil && validModelsDevDocument(cached.Providers) {
 		c.cache = cached
@@ -149,7 +149,7 @@ func (c *ModelsDev) Refresh(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return
 	}
@@ -176,7 +176,7 @@ func (c *ModelsDev) Refresh(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	err = json.NewEncoder(f).Encode(c.cache)
 	if err == nil {
 		err = f.Sync()

@@ -124,7 +124,7 @@ func TestModelsDevCacheTTLFailuresAndNoPrivateData(t *testing.T) {
 				case "wrong-shape":
 					_, _ = io.WriteString(w, `{"error":{"message":"unavailable"}}`)
 				case "redirect":
-					http.Redirect(w, r, redirected.URL, 302)
+					http.Redirect(w, r, redirected.URL, http.StatusFound)
 				}
 			}))
 			defer upstream.Close()
