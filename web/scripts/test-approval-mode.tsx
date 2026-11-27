@@ -34,10 +34,10 @@ const confirmation = () => container.querySelector<HTMLDialogElement>('dialog')!
 const enable = () => confirmation().querySelector<HTMLButtonElement>('.primary')!;
 
 try {
-  await test('模式名称与简短说明保持既定文案', () => {
+  await test('模式短名称与说明保持既定文案', () => {
     assert.equal(approvalModeLabel('ask'), '按策略确认');
-    assert.equal(approvalModeLabel('safe'), '文件读取与 Git 查看自动');
-    assert.equal(approvalModeLabel('workspace-write'), '工作区文件编辑自动 · 命令另行确认');
+    assert.equal(approvalModeLabel('safe'), '读取自动');
+    assert.equal(approvalModeLabel('workspace-write'), '工作区自动');
     assert.equal(approvalModeLabel('full-auto'), '完全自主');
     assert.equal(approvalModeLabel(), '未记录审批模式');
     assert.equal(approvalModeDescription('ask'), '按已有规则询问或拒绝。');
@@ -47,7 +47,7 @@ try {
     assert.equal(approvalWaitReason(), '此调用需要你确认。');
     assert.doesNotMatch(approvalWaitReason(), /应自动放行|已自动执行|模式未记录/);
   });
-  await test('菜单只展示四种模式及简短说明，芯片承载下一轮提示', async () => {
+  await test('菜单只展示四种模式短名称，芯片承载下一轮提示', async () => {
     await mount();
     assert.equal(trigger().textContent, '下一轮 · 按策略确认');
     assert.equal(trigger().title, '下一轮审批模式；不改变正在运行或等待的回合');
@@ -56,16 +56,15 @@ try {
     assert.equal(trigger().getAttribute('aria-expanded'), 'true');
     assert.equal(container.querySelectorAll('.mode-option').length, 4);
     assert.deepEqual(Array.from(container.querySelectorAll('.mode-option strong'), (node) => node.textContent), [
-      '按策略确认', '文件读取与 Git 查看自动', '工作区文件编辑自动 · 命令另行确认', '完全自主',
+      '按策略确认', '读取自动', '工作区自动', '完全自主',
     ]);
-    assert.deepEqual(Array.from(container.querySelectorAll('.mode-option span'), (node) => node.textContent), [
+    assert.equal(container.querySelectorAll('.mode-option span').length, 0);
+    const menuText = container.querySelector('.approval-mode-popover')?.textContent || '';
+    for (const removed of [
       '按已有规则询问或拒绝。',
       '读文件和查看 Git 自动执行，写入和命令仍需确认。',
       '工作区内读写自动执行，命令仍需确认。',
       '自动执行本会询问的调用；拒绝规则仍生效。仅在你信任当前任务时使用。',
-    ]);
-    const menuText = container.querySelector('.approval-mode-popover')?.textContent || '';
-    for (const removed of [
       'ask', 'safe', 'workspace-write', 'ls', 'pwd', 'wc', 'read_file', 'list_dir', 'list_files', 'grep', 'git_status', 'git_diff', 'git_log',
       '底层许可', '敏感或控制路径', '仅下一轮生效，不改变正在运行或等待的回合', '不会自动重放或放行当前调用',
     ]) assert.equal(menuText.includes(removed), false, removed);
@@ -107,7 +106,7 @@ try {
       });
       assert.equal(container.querySelector('dialog'), null);
       assert.deepEqual(changed, []);
-      assert.equal(trigger().textContent, '下一轮 · 文件读取与 Git 查看自动');
+      assert.equal(trigger().textContent, '下一轮 · 读取自动');
     }
 
     changed.length = 0;

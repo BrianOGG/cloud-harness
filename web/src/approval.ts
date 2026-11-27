@@ -8,12 +8,12 @@ export const approvalModes = [
   },
   {
     id: 'safe',
-    label: '文件读取与 Git 查看自动',
+    label: '读取自动',
     description: '读文件和查看 Git 自动执行，写入和命令仍需确认。',
   },
   {
     id: 'workspace-write',
-    label: '工作区文件编辑自动 · 命令另行确认',
+    label: '工作区自动',
     description: '工作区内读写自动执行，命令仍需确认。',
   },
   {
