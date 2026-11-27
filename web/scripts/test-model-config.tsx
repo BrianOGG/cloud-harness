@@ -149,19 +149,44 @@ try {
   });
   await test('reasoning selection writes session preferences and models group by service', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
-    const select = container.querySelector<HTMLSelectElement>('header select[aria-label="思考强度"]')!;
-    assert.equal(select.title, '下一轮生效'); assert.equal(select.value, 'default');
-    await choose('select[aria-label="思考强度"]', 'high');
+    const trigger = container.querySelector<HTMLButtonElement>('header [aria-label="思考强度"]')!;
+    assert.equal(trigger.tagName, 'BUTTON'); assert.equal(trigger.title, '下一轮生效'); assert.equal(trigger.textContent, '思考：默认');
+    await act(async () => { trigger.click(); });
+    const menu = container.querySelector('header [aria-label="选择思考强度"]')!;
+    const options = [...menu.querySelectorAll<HTMLButtonElement>('button')];
+    assert.deepEqual(options.map((option) => option.textContent), ['默认', '关', '低', '中', '高']);
+    assert.equal(menu.textContent?.includes('思考：'), false);
+    assert.equal(menu.querySelector('[aria-pressed="true"]')?.textContent, '默认');
+    assert.ok(options[0].querySelector('svg'));
+    await click('默认');
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false'); assert.equal(container.querySelector('[aria-label="选择思考强度"]'), null);
+    assert.equal(seen.some((r) => r.method === 'PUT'), false);
+    await act(async () => { trigger.click(); });
+    await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    assert.equal(container.querySelector('[aria-label="选择思考强度"]'), null); assert.equal(document.activeElement, trigger);
+    await act(async () => { trigger.click(); });
+    await act(async () => { container.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true })); });
+    assert.equal(container.querySelector('[aria-label="选择思考强度"]'), null);
+    await act(async () => { trigger.click(); });
+    await click('高');
     assert.equal(prefs.reasoning_effort, 'high'); assert.equal(seen.find((r) => r.method === 'PUT')?.body?.reasoning_effort, 'high');
+    assert.equal(trigger.textContent, '思考：高'); assert.equal(container.querySelector('[aria-label="选择思考强度"]'), null);
+    await act(async () => { trigger.click(); });
+    assert.equal(container.querySelector('[aria-label="选择思考强度"] [aria-pressed="true"]')?.textContent, '高');
     assert.deepEqual([...container.querySelectorAll('header optgroup')].map((group) => group.getAttribute('label')), ['默认服务', '服务']);
   });
   await test('unsupported reasoning disables the selector while unknown models may choose', async () => {
-    await reset(); thinking = 'unsupported'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="思考强度"]')!;
-    assert.equal(select.disabled, true); assert.ok(select.textContent?.includes('不支持'));
+    await reset(); thinking = 'unsupported'; localStorage.setItem('cloud-harness.web-session', 'session');
+    const listModels = api.listModels;
+    api.listModels = async () => (await listModels()).map((model) => model.id === 'custom:provider/sonnet' ? { ...model, thinking: 'unknown' } : model);
+    try { await mount(<App />); } finally { api.listModels = listModels; }
+    const trigger = container.querySelector<HTMLButtonElement>('header [aria-label="思考强度"]')!;
+    assert.equal(trigger.disabled, true); assert.ok(trigger.textContent?.includes('思考：不支持'));
+    await act(async () => { trigger.click(); }); assert.equal(container.querySelector('[aria-label="选择思考强度"]'), null);
     await choose('select[aria-label="会话模型"]', 'custom:provider/sonnet');
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="思考强度"]')!.disabled, false);
-    await choose('select[aria-label="思考强度"]', 'low'); assert.equal(prefs.reasoning_effort, 'low');
+    assert.equal(trigger.disabled, false); assert.equal(trigger.textContent, '思考：默认');
+    await act(async () => { trigger.click(); });
+    await click('低'); assert.equal(prefs.reasoning_effort, 'low'); assert.equal(trigger.textContent, '思考：低');
   });
   await test('legacy custom selection remains available in the header', async () => {
     await reset(); prefs.model_id = 'custom:provider'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
