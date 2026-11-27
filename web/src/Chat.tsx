@@ -56,9 +56,26 @@ function WorkRow({ item }: { item: WorkItem }) {
 }
 
 function WorkBlock({ turn, events, live, acting, actions, approvalMode }: { turn: TranscriptTurn; events: Record<string, HarnessEvent[]>; live: Record<string, string>; acting: Record<string, boolean>; actions: TurnActions; approvalMode?: string }) {
-  const [open, setOpen] = useState(false);
+  const inProgress = turn.runs.some((run) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(run.status));
+  const [expansion, setExpansion] = useState({ inProgress, open: inProgress });
+  // Only a lifecycle transition resets the toggle. Live/version refreshes keep
+  // manual choices; finishing also collapses a process opened while running.
+  if (expansion.inProgress !== inProgress) {
+    setExpansion({ inProgress, open: inProgress });
+  }
+  const open = expansion.open;
   const [traces, setTraces] = useState<Record<string, { data?: TraceView; error?: string }>>({});
   const [retry, setRetry] = useState(0);
+  const eventVersions = useRef(new Map<string, number>());
+  const loadEvents = actions.loadEvents;
+  useEffect(() => {
+    if (!open) { eventVersions.current.clear(); return; }
+    for (const run of turn.runs) {
+      if (eventVersions.current.get(run.id) === run.version) continue;
+      eventVersions.current.set(run.id, run.version);
+      loadEvents(run);
+    }
+  }, [open, turn.runs, loadEvents]);
   const versions = JSON.stringify(turn.runs.map((run) => [run.id, run.version]));
   useEffect(() => {
     if (!open) return;
@@ -78,10 +95,7 @@ function WorkBlock({ turn, events, live, acting, actions, approvalMode }: { turn
   return (
     <div className={'work ' + (open ? 'open' : '')}>
       <div className="work-status-row">
-        <button type="button" className="work-toggle" aria-expanded={open} onClick={() => {
-          if (!open) turn.runs.forEach((run) => actions.loadEvents(run));
-          setOpen(!open);
-        }}>
+        <button type="button" className="work-toggle" aria-expanded={open} onClick={() => setExpansion({ inProgress, open: !open })}>
           <span className={'work-state tone-' + statusTone(status)}>
             {status === 'RUNNING' ? <span className="spinner" /> : <Icon name={status === 'COMPLETED' ? 'check' : status === 'WAITING' ? 'question' : 'alert'} size={13} />}
           </span>

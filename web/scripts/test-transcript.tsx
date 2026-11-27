@@ -36,6 +36,7 @@ const childRecord = fact('child_response', 'response', child.final_answer!, { ru
 const pending: RunView = { ...base, status: 'WAITING', wait_reason: 'APPROVAL', final_answer: '', pending_invocation: { invocation_id: 'inv_current', tool: 'run_command', arguments: { command: 'cat /proc/meminfo', cwd: 'system' }, resources: ['/fixture/system', 'cat /proc/meminfo'] } };
 const decisions: string[] = [];
 const opened: string[] = [];
+const traced: string[] = [];
 const inspected: string[] = [];
 const cancelled: string[] = [];
 const actions = { respond(id: string, body: { decision?: string }) { decisions.push(id + ':' + body.decision); }, addBudget() {}, cancel(id: string) { cancelled.push(id); }, inspect(id: string) { inspected.push(id); }, focusAnswer() {}, loadEvents(run: RunView) { opened.push(run.id); } };
@@ -45,7 +46,10 @@ const log: HarnessEvent[] = [
 ];
 // Same fields as the read-only trace contract; persistent invocation events
 // deliberately carry only status metadata, not command arguments or results.
-api.getTrace = async (id) => ({ session_id: base.session_id, run: { id, status: 'COMPLETED', steps: [{ id: 'step', action: 'EXECUTE', batches: [{ id: 'batch', status: 'COMPLETED', action: 'EXECUTE', calls: [{ id: 'inv_current', name: 'run_command', status: 'SUCCEEDED', ordinal: 0, arguments: { command: 'uname -a' }, result: { ok: true, data: { stdout: 'Linux fixture' } } }] }] }] } });
+api.getTrace = async (id) => {
+  traced.push(id);
+  return { session_id: base.session_id, run: { id, status: 'COMPLETED', steps: [{ id: 'step', action: 'EXECUTE', batches: [{ id: 'batch', status: 'COMPLETED', action: 'EXECUTE', calls: [{ id: 'inv_current', name: 'run_command', status: 'SUCCEEDED', ordinal: 0, arguments: { command: 'uname -a' }, result: { ok: true, data: { stdout: 'Linux fixture' } } }] }] }] } };
+};
 function history(runs: RunView[], messages = audit, extra: Record<string, unknown> = {}) {
   return <SessionHistory messages={messages} runs={runs} events={{ [base.id]: log }} live={{}} acting={{}} actions={actions} loading={false} error="" onRefresh={() => {}} onInspect={() => {}} {...extra} />;
 }
@@ -55,7 +59,7 @@ async function render(element: React.ReactNode) {
 }
 async function reset() {
   if (root) await act(async () => { root!.unmount(); root = undefined; });
-  decisions.length = opened.length = inspected.length = cancelled.length = 0;
+  decisions.length = opened.length = traced.length = inspected.length = cancelled.length = 0;
   localStorage.clear();
 }
 async function click(selector: string) {
@@ -91,6 +95,8 @@ try {
     assert.equal(container.textContent?.includes(intermediate.content), false);
     assert.equal(container.textContent?.includes(child.final_answer!), false);
     assert.equal(container.querySelector('.work-toggle')?.textContent, '工作已完成 · 4 次工具调用');
+    assert.equal(opened.length, 0);
+    assert.equal(traced.length, 0);
     await click('.work-toggle');
     assert.deepEqual([...container.querySelectorAll('.turn-process [data-message-id]')].map((node) => node.getAttribute('data-message-id')), [...audit.slice(1), childRecord].map((row) => row.id));
     assert.match(container.textContent!, /policy.decided/);
@@ -98,6 +104,122 @@ try {
     assert.ok(opened.includes(child.id) && opened.includes(base.id));
     await render(history([{ ...base, version: 2 }, child], [...audit, childRecord]));
     assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true', 'refresh must retain manual expansion');
+  });
+
+  await test('running process, events and live drafts are visible without a click and load their details automatically', async () => {
+    await reset();
+    const running = { ...base, status: 'RUNNING', final_answer: '' };
+    await render(history([running], [input, intermediate], { events: {}, live: { [base.id]: '第一段直播草稿' } }));
+    const turn = container.querySelector('.turn');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(container.querySelector('.turn-process')?.textContent?.includes(intermediate.content));
+    assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('第一段直播草稿'));
+    assert.equal(container.querySelector('.turn-final'), null);
+    assert.ok(opened.includes(base.id), 'automatic expansion must load events');
+    assert.ok(traced.includes(base.id), 'automatic expansion must load tool traces');
+    assert.match(container.querySelector('.turn-process')!.textContent!, /Linux fixture/);
+    assert.doesNotMatch(container.textContent!, /正在加载工具参数与结果/);
+    const eventLoads = opened.length;
+    await render(history([{ ...running }], [input, intermediate], { events: {}, live: { [base.id]: '同一版本的新草稿' } }));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('同一版本的新草稿'));
+    assert.equal(opened.length, eventLoads, 'polling/live refreshes must not reload unchanged event logs');
+    const next = fact('next_response', 'response', '目录已检查，正在生成页面');
+    await render(history([{ ...running, version: 2 }], [input, intermediate, next], { live: { [base.id]: '更新后的直播草稿' } }));
+    assert.equal(container.querySelector('.turn'), turn, 'message/event updates must retain turn identity');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(container.querySelector('.turn-process')?.textContent?.includes(next.content));
+    assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('更新后的直播草稿'));
+    assert.equal(container.textContent?.includes('第一段直播草稿'), false);
+    assert.match(container.querySelector('.turn-process .work-list')!.textContent!, /run_command/);
+    assert.ok(opened.length > eventLoads, 'a newer version refreshes the process details');
+  });
+
+  for (const sourceStatus of ['RUNNING', 'WAITING']) {
+    for (const status of ['COMPLETED', 'FAILED', 'CANCELLED']) {
+      await test(`${sourceStatus} automatically collapses on ${status} and preserves the outer outcome`, async () => {
+        await reset();
+        const running = sourceStatus === 'WAITING' ? pending : { ...base, status: sourceStatus, final_answer: '' };
+        await render(history([running], [input, intermediate]));
+        const turn = container.querySelector('.turn');
+        assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+        assert.ok(container.textContent?.includes(intermediate.content));
+        const finished = { ...base, status, version: 2, ...(status === 'FAILED' ? { error: { message: 'fixture provider failed' } } : {}) };
+        await render(history([finished]));
+        assert.equal(container.querySelector('.turn'), turn);
+        assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+        assert.equal(container.querySelectorAll('.turn-process, .live-draft, .history-fact, .wait-card').length, 0);
+        assert.equal(container.textContent?.includes(intermediate.content), false);
+        if (status === 'COMPLETED') assert.ok(container.querySelector('.turn-final')?.textContent?.includes(base.final_answer!));
+        else {
+          assert.equal(container.querySelector('.turn-final'), null);
+          if (status === 'FAILED') {
+            const error = container.querySelector('.run-error')!;
+            assert.match(error.textContent!, /fixture provider failed/);
+            assert.equal(error.closest('.work'), null);
+          } else {
+            const summary = container.querySelector('.work-summary')!;
+            assert.match(summary.textContent!, /运行已取消/);
+            assert.equal(summary.closest('.turn-process'), null);
+          }
+        }
+      });
+    }
+  }
+
+  await test('manual collapse survives live/version updates, waiting and completion; a fresh active mount opens', async () => {
+    await reset();
+    const running = { ...base, status: 'RUNNING', final_answer: '' };
+    await render(history([running], [input, intermediate], { live: { [base.id]: '初始草稿' } }));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    await click('.work-toggle');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+    await render(history([{ ...running, version: 2 }], [input, intermediate], { live: { [base.id]: '收起后的更新' } }));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+    assert.equal(container.querySelector('.turn-process'), null);
+    assert.equal(container.textContent?.includes('收起后的更新'), false);
+    await render(history([{ ...pending, version: 3 }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+    assert.ok(container.querySelector('.wait-card'));
+    await render(history([{ ...base, version: 4 }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+    assert.ok(container.querySelector('.turn-final'));
+    await reset(); await render(history([running], [input, intermediate]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true', 'a fresh active mount resets manual collapse');
+  });
+
+  await test('even a manual reopening while running collapses at completion; completed manual choices survive refresh', async () => {
+    await reset();
+    await render(history([{ ...base, status: 'RUNNING', final_answer: '' }]));
+    await click('.work-toggle');
+    await click('.work-toggle');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    await render(history([base]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+    await click('.work-toggle');
+    await render(history([{ ...base, version: 2 }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    await click('.work-toggle');
+    await render(history([{ ...base, version: 3 }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+  });
+
+  await test('a terminal root stays open until every child is terminal, including other nonterminal states', async () => {
+    for (const status of ['RUNNING', 'WAITING', 'PENDING']) {
+      await reset();
+      const activeChild = { ...child, status, wait_reason: status === 'WAITING' ? 'CHILD' : '', final_answer: '' };
+      await render(history([base, activeChild], [...audit, childRecord], { live: { [child.id]: '子任务实时草稿' } }));
+      const turn = container.querySelector('.turn');
+      assert.equal(container.querySelectorAll('.turn').length, 1);
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true', status);
+      assert.equal(container.querySelector('.turn-final .markdown')?.textContent, base.final_answer);
+      assert.ok(opened.includes(base.id) && opened.includes(child.id));
+      if (status === 'RUNNING') assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('子任务实时草稿'));
+      await render(history([{ ...base, version: 2 }, { ...child, version: 2 }], [...audit, childRecord]));
+      assert.equal(container.querySelector('.turn'), turn);
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
+      assert.equal(container.textContent?.includes(child.final_answer!), false);
+    }
   });
 
   await test('running turn has one compact row, focusable timestamp and icon actions; only changed active modes get an indicator', async () => {
@@ -166,7 +288,12 @@ try {
     assert.deepEqual(JSON.parse(card.querySelector('.wait-args')!.textContent!), pending.pending_invocation!.arguments);
     assert.equal(card.querySelector('.wait-context'), null);
     assert.equal(container.querySelector('.work-toggle')?.textContent, '等待批准 · 2 次工具调用 · 1 项待批准');
-    assert.equal(container.querySelector('.history-fact'), null);
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(container.querySelector('.turn-process')?.textContent?.includes(intermediate.content));
+    const facts = [...container.querySelectorAll('.history-fact')];
+    assert.equal(facts.length, 2);
+    assert.ok(facts.every((node) => node.closest('.turn-process')), 'approval history belongs only inside process');
+    assert.equal(container.querySelectorAll('.wait-card').length, 1, 'only the current request creates an outer card');
     const buttons = [...card.querySelectorAll<HTMLButtonElement>('button')];
     assert.equal(buttons.length, 2);
     for (const button of buttons) { assert.equal(button.type, 'button'); assert.equal(button.tabIndex, 0); button.focus(); assert.equal(document.activeElement, button); }
@@ -180,6 +307,7 @@ try {
 
   await test('approval resolution returns to same collapsed turn; new refresh/remount uses identical projection', async () => {
     await reset(); await render(history([pending], audit.slice(0, 3)));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     const turn = container.querySelector('.turn');
     await render(history([base]));
     assert.equal(container.querySelector('.turn'), turn, 'same invocation updates its existing turn');
@@ -194,21 +322,26 @@ try {
     assert.equal(container.querySelectorAll('.turn-process [data-kind="approval_decision"]').length, 1);
   });
 
-  await test('manual expansion survives live updates and a denial while drafts stay inside process', async () => {
+  await test('automatic expansion follows live updates, collapses after denial and allows manual audit reopening', async () => {
     await reset();
     const running = { ...pending, status: 'RUNNING', wait_reason: '' };
     await render(history([running], audit.slice(0, 3), { live: { [base.id]: '尚未提交的流式草稿' } }));
-    assert.equal(container.textContent?.includes('尚未提交的流式草稿'), false);
-    await click('.work-toggle');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('尚未提交的流式草稿'));
     await render(history([{ ...running, version: 2 }], audit.slice(0, 3), { live: { [base.id]: '更新中的草稿' } }));
     assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.ok(container.querySelector('.turn-process .live-draft')?.textContent?.includes('更新中的草稿'));
     const denied = { ...decision, content: 'deny' };
     await render(history([base], [input, request, denied, finalRecord]));
-    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'false');
     assert.equal(container.querySelector('.wait-card'), null);
+    assert.equal(container.querySelector('.turn-process'), null);
+    assert.ok(container.querySelector('.turn-final'));
+    await click('.work-toggle');
     assert.equal(container.querySelectorAll('[data-kind="approval_decision"]').length, 1);
     assert.ok(container.querySelector('.turn-process')?.textContent?.includes('已拒绝'));
+    await render(history([{ ...base, version: 3 }], [input, request, denied, finalRecord]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     await click('.work-toggle');
     assert.equal(container.querySelector('.history-fact'), null);
   });
@@ -220,13 +353,19 @@ try {
     const childPending = { ...pending, id: child.id, parent_id: base.id, turn_id: child.turn_id };
     await render(history([{ ...base, status: 'WAITING', wait_reason: 'CHILD' }, childPending], [...audit, question, answer]));
     assert.equal(container.querySelectorAll('.turn').length, 1);
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     assert.ok(container.querySelector('[data-kind="question"]') && container.querySelector('[data-kind="answer"]'));
     assert.equal(container.querySelector('.wait-card')?.closest('.work'), null);
     await render(history([{ ...pending, wait_reason: 'BUDGET' }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+    assert.equal(container.querySelector('[aria-label="等待补充预算"]')?.closest('.work'), null);
     assert.ok(container.querySelector('[aria-label="等待补充预算"]'));
     await render(history([{ ...pending, wait_reason: 'RECONCILIATION' }]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     assert.ok(container.querySelector('[aria-label="等待确认工具结果"]'));
+    assert.equal(container.querySelector('[aria-label="等待确认工具结果"]')?.closest('.work'), null);
     await render(history([{ ...pending, wait_reason: 'USER', question: '当前新问题' }], [input]));
+    assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
     assert.ok(container.querySelector('.current-question')?.textContent?.includes('当前新问题'));
     assert.equal(container.querySelector('.current-question')?.closest('.work'), null);
   });
@@ -285,6 +424,14 @@ try {
     try {
       localStorage.setItem('cloud-harness.web-session', base.session_id);
       await render(<App />);
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+      const turn = container.querySelector('.turn');
+      await click('[aria-label="刷新会话历史"]');
+      assert.equal(container.querySelector('.turn'), turn);
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
+      await act(async () => { root!.unmount(); root = undefined; });
+      await render(<App />);
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true', 'restored waiting turns expand automatically');
       assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区自动」/);
       assert.equal(container.querySelector('.run-snapshot'), null);
       assert.match(container.querySelector('.composer [aria-label="审批模式"]')!.textContent!, /下一轮 · 读取自动/);
@@ -300,6 +447,7 @@ try {
       await act(async () => { release!(); });
       assert.match(container.querySelector('.flash[role="alert"]')!.textContent!, /fixture submit failed/);
       assert.ok(container.querySelector('.wait-card'));
+      assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true');
       assert.equal(container.querySelector('.turn-final'), null);
       fail = false; held = undefined;
       await click('.wait-actions .primary');
