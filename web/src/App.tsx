@@ -10,6 +10,7 @@ import { RunBudget } from './RunBudget';
 import { loadSessionMessages, mergeSessionMessages } from './history';
 import { SessionHistory } from './SessionHistory';
 import { Settings } from './Settings';
+import { approvalModeLabel } from './approval';
 import { liveText, mergeEvents } from './timeline';
 
 type View = 'chat' | 'observability' | 'settings';
@@ -138,7 +139,6 @@ export default function App() {
   const [inspected, setInspected] = useState<string | null>(null);
   const [trace, setTrace] = useState<{ runId: string; data: TraceView } | null>(null);
   const [panel, setPanel] = useState<'trace' | 'events'>('trace');
-  const [provider, setProvider] = useState('');
   const [online, setOnline] = useState<boolean | null>(null);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
@@ -351,10 +351,9 @@ export default function App() {
   useEffect(() => {
     let stopped = false;
     const check = () => {
-      api.health().then((health) => {
+      api.health().then(() => {
         if (stopped) return;
         setOnline(true);
-        setProvider(health.provider);
       }).catch(() => {
         if (!stopped) setOnline(false);
       });
@@ -659,7 +658,7 @@ export default function App() {
     return out;
   }, [sessions]);
 
-  const titleOf = (sessionId: string) => titles[sessionId] || `对话 ${shortId(sessionId)}`;
+  const titleOf = (sessionId: string) => titles[sessionId] || '未命名对话';
   const refreshHistory = () => {
     history.refresh();
     if (activeSession) void refreshRuns(activeSession).catch(() => undefined);
@@ -686,8 +685,8 @@ export default function App() {
       onStop={latestRun && isActive(latestRun) ? () => void stop() : undefined}
       busy={Boolean(busy || (!answering && modelBlocked))}
       stopping={latestRun ? acting[latestRun.id] : false}
-      placeholder={answering ? '回答 agent 的问题…' : '给 Cloud Harness 发消息…'}
-      hint={online === false ? '未连接到 serve' : answering ? `回答运行 ${shortId(answering.id)} 的问题` : 'Enter 发送 · Shift+Enter 换行'}
+      placeholder={answering ? '回答问题…' : '给 Cloud Harness 发消息…'}
+      hint={online === false ? '未连接' : answering ? '回复后继续本轮' : 'Enter 发送 · Shift+Enter 换行'}
       autoFocus={view === 'chat'}
       approvalMode={preferences.approval_mode}
       onApprovalModeChange={(approval_mode) => { void changePreferences({ ...preferences, approval_mode }).catch(() => undefined); }}
@@ -726,9 +725,9 @@ export default function App() {
         </div>
         <nav className="sidebar-settings" aria-label="应用设置"><button type="button" className={'nav-item ' + (view === 'settings' ? 'current' : '')} onClick={() => showPage('settings')}><Icon name="settings" />设置</button></nav>
         <div className="sidebar-foot">
-          <span className="connection" title={online === false ? '无法连接 serve' : '已连接 serve'}>
+          <span className="connection" title={online === false ? '无法连接' : '连接状态'}>
             <span className={`dot ${online === false ? 'tone-fail' : online ? 'tone-ok' : 'tone-idle'}`} />
-            {online === false ? '未连接' : provider || '连接中…'}
+            {online === false ? '未连接' : online ? '已连接' : '连接中…'}
           </span>
           <button type="button" className="icon-button theme-toggle" aria-label={theme === 'dark' ? '切换到浅色' : '切换到深色'} title={theme === 'dark' ? '切换到浅色' : '切换到深色'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} /></button>
         </div>
@@ -741,14 +740,10 @@ export default function App() {
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
           </>}
           <h1>{view === 'settings' ? '设置' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
-          {view === 'chat' && <select className="value-chip header-model" aria-label="会话模型" title="当前会话 / 下一次运行的模型" disabled={preferencesBusy || modelsLoading || Boolean(modelsError)} value={preferences.model_id} onChange={(event) => { void changePreferences({ ...preferences, model_id: event.target.value }).catch(() => undefined); }}>
+          {view === 'chat' && <select className="value-chip header-model" aria-label="会话模型" title="下一轮模型" disabled={preferencesBusy || modelsLoading || Boolean(modelsError)} value={preferences.model_id} onChange={(event) => { void changePreferences({ ...preferences, model_id: event.target.value }).catch(() => undefined); }}>
             {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
             {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
           </select>}
-          {view === 'chat' && latestRun && <>
-            <span className={`chip tone-${statusTone(latestRun.status)}`}>{latestRun.status === 'WAITING' ? waitLabels[latestRun.wait_reason || ''] || statusName(latestRun.status) : statusName(latestRun.status)}</span>
-            <button type="button" className={`icon-button ${inspectedRun ? 'current' : ''}`} aria-label="运行详情" title="运行详情" onClick={() => (inspectedRun ? setInspected(null) : actions.inspect(latestRun.id))}><Icon name="panel" size={18} /></button>
-          </>}
         </header>
 
         {error && <div className="flash" role="alert"><Icon name="alert" /><span>{error}</span><button type="button" className="icon-button" aria-label="关闭提示" onClick={() => setError('')}><Icon name="close" size={14} /></button></div>}
@@ -757,7 +752,7 @@ export default function App() {
           <div className="welcome">
             <div className="welcome-inner">
               <span className="brand-mark large" />
-              <h2>今天想让 agent 做什么？</h2>
+              <h2>今天想做什么？</h2>
               {composer}
               <div className="suggestions">
                 {suggestions.map((text) => <button type="button" key={text} onClick={() => setDraft(text)}>{text}</button>)}
@@ -772,11 +767,11 @@ export default function App() {
             stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
           }}>
             <div className="thread-inner">
-              <SessionHistory messages={history.messages} runs={activeRuns} events={events} live={live} acting={acting} actions={actions} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
+              <SessionHistory messages={history.messages} runs={activeRuns} events={events} live={live} acting={acting} actions={actions} approvalMode={preferencesBusy ? undefined : preferences.approval_mode} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
               {optimistic && <PendingTurn text={optimistic.text} />}
             </div>
           </div>
-          <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">agent 的工具调用受策略和审批约束；回答可能有误，请核对关键结果。</p></div></div>
+          <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">请核对关键结果。</p></div></div>
         </>}
 
         {view === 'observability' && <div className="page-scroll"><Observability onOpenRun={(runId) => void openRun(runId)} /></div>}
@@ -794,6 +789,10 @@ export default function App() {
               <span className={`chip tone-${statusTone(inspectedRun.status)}`}>{statusName(inspectedRun.status)}</span>
               {inspectedRun.wait_reason?.trim() && <span className="chip tone-wait">{waitLabels[inspectedRun.wait_reason] || inspectedRun.wait_reason}</span>}
             </div>
+            <dl className="inspector-context">
+              <dt>审批模式</dt><dd>{approvalModeLabel(inspectedRun.approval_mode)}</dd>
+              {inspectedRun.workspace && <><dt>工作区</dt><dd>{inspectedRun.workspace}</dd></>}
+            </dl>
             <RunBudget budget={inspectedRun.budget} />
             <div className="tabs" role="tablist">
               <button type="button" role="tab" aria-selected={panel === 'trace'} onClick={() => setPanel('trace')}>执行步骤</button>
