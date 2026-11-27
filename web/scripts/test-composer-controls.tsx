@@ -17,6 +17,7 @@ dom.window.HTMLElement.prototype.setPointerCapture = function (id) { captures.se
 dom.window.HTMLElement.prototype.releasePointerCapture = function (id) { if (captures.get(this) === id) captures.delete(this); };
 const { createRoot } = await import('react-dom/client');
 const { ReasoningEffortSlider } = await import('../src/ReasoningEffort');
+const { ReasoningEffortPicker } = await import('../src/ReasoningEffort');
 const { ModelPicker } = await import('../src/ModelPicker');
 const container = document.getElementById('root')!;
 const base: ModelOption = { id: 'default', name: 'Default', model: 'base', provider: 'fixture', thinking: 'supported' };
@@ -30,6 +31,11 @@ function SliderFixture({ model = base, initial = 'default', disabled = false }: 
 function ModelFixture({ models, initial = models[0], loading = false, disabled = false }: { models: ModelOption[]; initial?: ModelOption; loading?: boolean; disabled?: boolean }) {
   const [selected, setSelected] = useState(initial);
   return <ModelPicker models={models} selectedModel={selected} loading={loading} disabled={disabled} onChange={(id) => { modelChanges.push(id); setSelected(models.find((model) => model.id === id)); }} />;
+}
+function EffortPickerFixture({ models, initialModel = models[0], initial = 'default', selectionDisabled = false }: { models: ModelOption[]; initialModel?: ModelOption; initial?: ReasoningEffort; selectionDisabled?: boolean }) {
+  const [selected, setSelected] = useState(initialModel);
+  const [value, setValue] = useState(initial);
+  return <ReasoningEffortPicker models={models} selectedModel={selected} value={value} modelSelectionDisabled={selectionDisabled} onModelChange={(id) => { modelChanges.push(id); setSelected(models.find((model) => model.id === id)); }} onChange={(next) => { changes.push(next); setValue(next); }} />;
 }
 async function mount(element: React.ReactNode) {
   if (root) await act(async () => { root!.unmount(); });
@@ -51,8 +57,18 @@ async function pointer(type: string, at: number, id = 7) {
 }
 async function tap(at: number) { await pointer('pointerdown', at); await pointer('pointerup', at); }
 const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label="会话模型"]')!;
+const effortTrigger = () => document.querySelector<HTMLButtonElement>('.reasoning-trigger')!;
+const effortSlider = () => document.querySelector<HTMLElement>('.reasoning-popover [role="slider"]')!;
 const options = () => [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
 async function open() { await act(async () => { trigger().click(); }); }
+async function openEffort() { await act(async () => { effortTrigger().click(); }); }
+async function searchGlobal(value: string) {
+  const input = document.querySelector<HTMLInputElement>('[aria-label="搜索会话模型"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
 async function search(value: string) {
   const input = container.querySelector<HTMLInputElement>('[aria-label="搜索会话模型"]')!;
   await act(async () => {
@@ -69,10 +85,10 @@ try {
     await tap(1); assert.equal(text(), '默认'); assert.deepEqual(changes, []);
     await tap(1.1); assert.equal(text(), '低'); assert.deepEqual(changes, ['low']);
     await pointer('pointerdown', 2); await pointer('pointermove', 3);
-    assert.equal(text(), '低'); assert.equal(slider().getAttribute('aria-valuenow'), '2');
+    assert.equal(text(), '高'); assert.equal(slider().getAttribute('data-dragging'), 'true'); assert.equal(container.querySelector<HTMLElement>('.reasoning-thumb')!.style.left, '300px');
     await pointer('pointermove', 3.6); assert.equal(text(), '高'); assert.deepEqual(changes, ['low']);
     await pointer('pointerup', 3.6); assert.equal(text(), '高'); assert.deepEqual(changes, ['low', 'high']);
-    await tap(3); assert.equal(text(), '低'); assert.equal(slider().querySelector('[data-current="true"]')!.getAttribute('data-available'), 'true');
+    await tap(2.93); assert.equal(text(), '低'); assert.equal(slider().querySelector('[data-current="true"]')!.getAttribute('data-available'), 'true');
     await tap(-5); assert.equal(text(), '默认'); await tap(9); assert.equal(text(), '高');
     assert.equal(captures.size, 0);
   });
@@ -96,7 +112,7 @@ try {
   });
   await test('toggle has exactly off/on, normalizes legacy efforts visually, and stores off/default', async () => {
     await mount(<SliderFixture model={{ ...base, reasoning_type: 'toggle' }} initial="high" />);
-    assert.deepEqual([...container.querySelectorAll('.reasoning-notch-label')].map((item) => item.textContent), ['关', '开']);
+    assert.deepEqual([...container.querySelectorAll('.reasoning-notch')].map((item) => item.getAttribute('data-effort')), ['off', 'default']);
     assert.equal(text(), '开'); assert.equal(slider().getAttribute('aria-valuemax'), '1'); assert.deepEqual(changes, []);
     await tap(0); assert.equal(text(), '关'); await key('ArrowRight'); assert.equal(text(), '开');
     assert.deepEqual(changes, ['off', 'default']);
@@ -172,6 +188,86 @@ try {
     await act(async () => { root!.render(<StrictMode><ModelFixture models={[base]} disabled /></StrictMode>); });
     assert.equal(trigger().disabled, true); assert.equal(trigger().getAttribute('aria-expanded'), 'false');
     assert.equal(container.querySelector('[role="listbox"]'), null);
+  });
+
+  await test('the effort pill starts closed, opens on toggle, and closes on Escape or outside pointer', async () => {
+    await mount(<EffortPickerFixture models={[base]} />);
+    assert.equal(effortTrigger().textContent, '选择思考强度');
+    assert.equal(effortTrigger().getAttribute('aria-expanded'), 'false');
+    assert.equal(document.querySelector('.reasoning-popover'), null);
+    await openEffort();
+    assert.equal(effortTrigger().textContent, '选择思考强度');
+    assert.equal(effortTrigger().getAttribute('aria-expanded'), 'true');
+    assert.ok(document.querySelector('.reasoning-popover'));
+    await openEffort(); assert.equal(document.querySelector('.reasoning-popover'), null);
+    await openEffort();
+    await key('Escape', document.activeElement!);
+    assert.equal(document.querySelector('.reasoning-popover'), null);
+    await openEffort();
+    await act(async () => { document.getElementById('outside')!.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+    assert.equal(document.querySelector('.reasoning-popover'), null);
+  });
+
+  await test('a changed effort appears in the closed pill, while an open pill stays generic; reset returns to default', async () => {
+    await mount(<EffortPickerFixture models={[base]} />);
+    await openEffort(); await key('ArrowRight', effortSlider());
+    assert.equal(effortSlider().getAttribute('aria-valuetext'), '关');
+    await openEffort();
+    assert.equal(effortTrigger().textContent, 'Default · 关');
+    await openEffort(); assert.equal(effortTrigger().textContent, '选择思考强度');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="重置思考强度"]')!.click(); });
+    assert.equal(effortSlider().getAttribute('aria-valuetext'), '默认');
+    await openEffort(); assert.equal(effortTrigger().textContent, 'Default · 默认');
+  });
+
+  await test('Agnes uses off/on, treats legacy levels as on, and reset stores the official on default', async () => {
+    const agnes = { ...base, id: 'agnes', name: 'Agnes', reasoning_type: 'toggle' as const };
+    for (const old of ['low', 'medium', 'high'] as const) {
+      await mount(<EffortPickerFixture models={[agnes]} initial={old} />);
+      await openEffort();
+      assert.equal(effortSlider().getAttribute('aria-valuetext'), '开');
+      assert.deepEqual([...document.querySelectorAll('.reasoning-notch')].map((item) => item.getAttribute('data-effort')), ['off', 'default']);
+      await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="重置思考强度"]')!.click(); });
+      assert.deepEqual(changes, ['default']);
+      assert.equal(effortSlider().getAttribute('aria-valuetext'), '开');
+      await openEffort(); assert.equal(effortTrigger().textContent, 'Agnes · 开');
+    }
+  });
+
+  await test('the model sub-view groups and searches enabled models, then refreshes slider capability', async () => {
+    const models = Array.from({ length: 8 }, (_, i) => ({
+      ...base,
+      id: 'custom:p/model-' + i,
+      name: 'Model ' + i,
+      provider_id: i < 4 ? 'p' : 'q',
+      provider_name: i < 4 ? '提供方 P' : '提供方 Q',
+      ...(i === 7 ? { reasoning_type: 'toggle' as const } : {}),
+    }));
+    await mount(<EffortPickerFixture models={models} />);
+    await openEffort();
+    await act(async () => { document.querySelector<HTMLButtonElement>('.reasoning-model-link')!.click(); });
+    assert.equal(document.querySelector('.reasoning-model-heading strong')?.textContent, '选择模型');
+    assert.deepEqual([...document.querySelectorAll('.reasoning-popover .model-group-label')].map((item) => item.textContent), ['提供方 P', '提供方 Q']);
+    await searchGlobal('MODEL 7');
+    assert.deepEqual([...document.querySelectorAll('.reasoning-popover [role="option"]')].map((option) => option.textContent?.trim()), ['Model 7']);
+    assert.equal(document.querySelector<HTMLInputElement>('.reasoning-popover [role="option"]')?.getAttribute('aria-selected'), 'false');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.reasoning-popover [role="option"]')!.click(); });
+    assert.deepEqual(modelChanges, ['custom:p/model-7']);
+    assert.equal(effortSlider().getAttribute('aria-valuemax'), '1');
+    assert.equal(effortSlider().getAttribute('aria-valuetext'), '开');
+    assert.equal(document.activeElement, document.querySelector('.reasoning-model-link'));
+    await openEffort(); assert.equal(effortTrigger().textContent, 'Model 7 · 开');
+  });
+
+  await test('Escape and outside clicks from the model sub-view close the whole popover', async () => {
+    await mount(<EffortPickerFixture models={[base]} />);
+    await openEffort();
+    await act(async () => { document.querySelector<HTMLButtonElement>('.reasoning-model-link')!.click(); });
+    await key('Escape', document.activeElement!);
+    assert.equal(document.querySelector('.reasoning-popover'), null);
+    await openEffort(); await act(async () => { document.querySelector<HTMLButtonElement>('.reasoning-model-link')!.click(); });
+    await act(async () => { document.getElementById('outside')!.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+    assert.equal(document.querySelector('.reasoning-popover'), null);
   });
 } finally {
   if (root) await act(async () => { root!.unmount(); });

@@ -3,8 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { api } from './api';
 import type { BudgetExtension, HarnessEvent, ModelOption, ReasoningEffort, RunView, TraceView } from './api';
 import { ApprovalModeMenu } from './ApprovalMode';
-import { ModelPicker } from './ModelPicker';
-import { ReasoningEffortSlider } from './ReasoningEffort';
+import { ReasoningEffortPicker } from './ReasoningEffort';
 import { approvalModeLabel, approvalOperation, approvalWaitReason, approvalWorkingDirectory } from './approval';
 import { MessageList } from './MessageList';
 import { turnSummary } from './transcript';
@@ -258,15 +257,14 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
     <div className="composer">
       <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
       <div className="composer-bar">
-        <div className="composer-preferences">
-          <ModelPicker models={models} selectedModel={selectedModel} loading={modelsLoading} disabled={modelSelectionDisabled} onChange={onModelChange} />
-          <ReasoningEffortSlider model={selectedModel} value={reasoningEffort} disabled={preferencesBusy} onChange={onReasoningChange} />
-        </div>
         <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} disabled={preferencesBusy} />
         <span className="composer-hint">{hint}</span>
-        {busy && onStop
-          ? <button type="button" className="send stop" onClick={onStop} disabled={stopping} aria-label="停止运行" title="停止运行"><Icon name="stop" /></button>
-          : <button type="button" className="send" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="发送" title="发送（Enter）"><Icon name="up" /></button>}
+        <div className="composer-controls-right">
+          <ReasoningEffortPicker models={models} selectedModel={selectedModel} modelsLoading={modelsLoading} modelSelectionDisabled={modelSelectionDisabled} value={reasoningEffort} onModelChange={onModelChange} onChange={onReasoningChange} disabled={preferencesBusy} />
+          {busy && onStop
+            ? <button type="button" className="send stop" onClick={onStop} disabled={stopping} aria-label="停止运行" title="停止运行"><Icon name="stop" /></button>
+            : <button type="button" className="send" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="发送" title="发送（Enter）"><Icon name="up" /></button>}
+        </div>
       </div>
     </div>
   );
