@@ -72,7 +72,7 @@ func TestPromptAuditSystemBytes(t *testing.T) {
 			if count != 2 {
 				t.Fatalf("got %d system messages, want two", count)
 			}
-			t.Log(fmt.Sprintf("mode=%s system_messages=%d system_bytes=%d", mode, count, bytes))
+			t.Logf("mode=%s system_messages=%d system_bytes=%d", mode, count, bytes)
 		})
 	}
 }
