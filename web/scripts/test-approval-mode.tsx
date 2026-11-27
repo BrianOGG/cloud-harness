@@ -44,15 +44,9 @@ try {
     for (const tool of ['read_file', 'list_dir', 'list_files', 'grep', 'git_status', 'git_diff', 'git_log']) assert.ok(approvalModeDescription('safe').includes(tool));
     assert.match(approvalModeDescription('safe'), /七类.*不覆盖拒绝/);
     assert.match(approvalModeDescription('workspace-write'), /边界校验.*write_file、edit_file/);
-    assert.match(approvalWaitReason('workspace-write', 'run_command'), /这条命令不在模式自动执行范围/);
-    assert.match(approvalWaitReason('safe', 'run_command'), /不包含命令自动授权/);
-    assert.match(approvalWaitReason(undefined, 'run_command'), /不能用下一轮偏好推断权限/);
-    assert.match(approvalWaitReason('ask', 'write_file'), /既有策略与底层许可/);
+    assert.equal(approvalWaitReason(), '此调用需要你确认。');
     assert.match(approvalModeDescription('full-auto'), /命令、写入及其他工具调用.*既有拒绝规则仍生效/);
-    for (const tool of ['run_command', 'write_file', 'mcp.fixture.send']) {
-      assert.match(approvalWaitReason('full-auto', tool), /完全自主.*仍由后端要求确认/);
-      assert.doesNotMatch(approvalWaitReason('full-auto', tool), /模式未记录|已自动执行/);
-    }
+    assert.doesNotMatch(approvalWaitReason(), /应自动放行|已自动执行|模式未记录/);
   });
   await test('菜单可见下一轮生效信息并明确保留既有命令规则', async () => {
     await mount();

@@ -1,15 +1,13 @@
 import type { SessionMessage } from './api';
-import { shortId } from './format';
-import { Icon } from './Icon';
 import { CopyButton, Markdown } from './Markdown';
 
 const kindLabels: Record<SessionMessage['kind'], string> = {
   input: '你的消息',
   response: '助手回复',
-  question: '助手提问 · 历史记录',
+  question: '助手提问',
   answer: '你的回答',
-  approval_requested: '审批请求 · 历史记录',
-  approval_decision: '审批决定 · 历史记录',
+  approval_requested: '审批请求',
+  approval_decision: '审批决定',
   run_status: '运行结果',
 };
 
@@ -31,7 +29,7 @@ function factLabel(message: SessionMessage) {
 }
 
 // Human dialogue, or the original audit inside a collapsed turn.
-export function MessageList({ messages, onInspect }: { messages: readonly SessionMessage[]; onInspect: (runId: string) => void }) {
+export function MessageList({ messages }: { messages: readonly SessionMessage[] }) {
   return (
       <ol className="history-list">
         {messages.map((message) => {
@@ -40,21 +38,20 @@ export function MessageList({ messages, onInspect }: { messages: readonly Sessio
           const mappedApprovalDecision = message.kind === 'approval_decision'
             && (message.content === 'approve' || message.content === 'deny');
           const time = new Date(message.created_at);
+          const validTime = Number.isFinite(time.getTime());
+          const displayedTime = validTime ? timeFormat.format(time) : '';
           return (
             <li key={message.id} className={`history-message history-${message.role}`} data-message-id={message.id} data-run-id={message.run_id ?? undefined} data-kind={message.kind} data-status={message.status}>
-              <div className="history-meta">
-                <span>{kindLabels[message.kind]}</span>
-                {Number.isFinite(time.getTime()) && <time dateTime={message.created_at} title={`${message.created_at}（显示为上海时间）`}>{timeFormat.format(time)}</time>}
-              </div>
+              {!user && <div className="history-meta">
+                {!system && <span>{kindLabels[message.kind]}</span>}
+                {validTime && <time dateTime={message.created_at} title={displayedTime + '（上海时间）'}>{displayedTime}</time>}
+              </div>}
               {user
-                ? <div className="user-row"><div className="user-bubble">{message.content || '（空消息）'}</div></div>
+                ? <div className="user-row"><div className="user-bubble">{message.content || '（空消息）'}{validTime && <time className="user-message-time" dateTime={message.created_at} title={displayedTime + '（上海时间）'} aria-label={'消息时间：' + displayedTime + '（上海时间）'} tabIndex={0}>{displayedTime}</time>}</div></div>
                 : system
                   ? <div className={`history-fact ${message.status === 'failed' ? 'history-failed' : ''}`}><strong>{factLabel(message)}</strong>{!mappedApprovalDecision && <p>{message.content || '（空消息）'}</p>}</div>
                   : <div className="history-response"><Markdown text={message.content || '（空消息）'} /></div>}
-              <div className="history-actions">
-                {message.role === 'assistant' && <CopyButton text={message.content} />}
-                {message.run_id && <button type="button" className="ghost-button" onClick={() => { if (message.run_id) onInspect(message.run_id); }} aria-label={`查看运行 ${message.run_id} 的详情`}><Icon name="panel" size={13} /><span>运行 {shortId(message.run_id)}</span></button>}
-              </div>
+              {message.role === 'assistant' && <div className="history-actions"><CopyButton text={message.content} /></div>}
             </li>
           );
         })}

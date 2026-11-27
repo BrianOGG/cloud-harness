@@ -36,7 +36,9 @@ const childRecord = fact('child_response', 'response', child.final_answer!, { ru
 const pending: RunView = { ...base, status: 'WAITING', wait_reason: 'APPROVAL', final_answer: '', pending_invocation: { invocation_id: 'inv_current', tool: 'run_command', arguments: { command: 'cat /proc/meminfo', cwd: 'system' }, resources: ['/fixture/system', 'cat /proc/meminfo'] } };
 const decisions: string[] = [];
 const opened: string[] = [];
-const actions = { respond(id: string, body: { decision?: string }) { decisions.push(id + ':' + body.decision); }, addBudget() {}, cancel() {}, inspect() {}, focusAnswer() {}, loadEvents(run: RunView) { opened.push(run.id); } };
+const inspected: string[] = [];
+const cancelled: string[] = [];
+const actions = { respond(id: string, body: { decision?: string }) { decisions.push(id + ':' + body.decision); }, addBudget() {}, cancel(id: string) { cancelled.push(id); }, inspect(id: string) { inspected.push(id); }, focusAnswer() {}, loadEvents(run: RunView) { opened.push(run.id); } };
 const log: HarnessEvent[] = [
   { seq: 1, type: 'policy.decided', data: '{"tool":"run_command","effect":"ask","source":"default","rule":"default"}' },
   { seq: 2, type: 'invocation.SUCCEEDED', data: '{"status":"SUCCEEDED","tool":"run_command","provider_call_id":"diagnostic"}' },
@@ -53,7 +55,7 @@ async function render(element: React.ReactNode) {
 }
 async function reset() {
   if (root) await act(async () => { root!.unmount(); root = undefined; });
-  decisions.length = opened.length = 0;
+  decisions.length = opened.length = inspected.length = cancelled.length = 0;
   localStorage.clear();
 }
 async function click(selector: string) {
@@ -88,7 +90,7 @@ try {
     assert.equal(container.querySelectorAll('.history-fact, .turn-process, .wait-card, .past-runs').length, 0);
     assert.equal(container.textContent?.includes(intermediate.content), false);
     assert.equal(container.textContent?.includes(child.final_answer!), false);
-    assert.match(container.textContent!, /4 次工具调用 · 1 次审批/);
+    assert.equal(container.querySelector('.work-toggle')?.textContent, '工作已完成 · 4 次工具调用');
     await click('.work-toggle');
     assert.deepEqual([...container.querySelectorAll('.turn-process [data-message-id]')].map((node) => node.getAttribute('data-message-id')), [...audit.slice(1), childRecord].map((row) => row.id));
     assert.match(container.textContent!, /policy.decided/);
@@ -98,13 +100,72 @@ try {
     assert.equal(container.querySelector('.work-toggle')?.getAttribute('aria-expanded'), 'true', 'refresh must retain manual expansion');
   });
 
+  await test('running turn has one compact row, focusable timestamp and icon actions; only changed active modes get an indicator', async () => {
+    await reset();
+    const running = { ...base, status: 'RUNNING', final_answer: '' };
+    await render(history([running], [input], { approvalMode: 'workspace-write' }));
+    assert.equal(container.querySelector('.work-toggle')?.textContent, '正在运行 · 2 次工具调用');
+    assert.equal(container.querySelectorAll('.work-status-row').length, 1);
+    assert.equal(container.querySelector('.current-run'), null);
+    assert.equal(container.querySelector('.mode-difference'), null);
+    assert.equal(container.querySelector('.history-user .history-meta'), null);
+    assert.equal(container.querySelector('.history-user .history-actions'), null);
+    const time = container.querySelector<HTMLTimeElement>('.user-message-time')!;
+    assert.equal(time.tabIndex, 0);
+    assert.ok(time.title.includes('11月27日') && time.title.includes('04:00') && time.title.includes('上海时间'));
+    time.focus(); assert.equal(document.activeElement, time);
+    assert.equal(time.dateTime, input.created_at);
+    assert.doesNotMatch(container.textContent!, /最终答复尚未生成|实际生效|运行快照|run_root|0 次审批/);
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('.work-status-row .turn-actions button')];
+    assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['运行详情', '取消运行']);
+    for (const button of buttons) {
+      assert.equal(button.textContent, ''); assert.equal(button.tabIndex, 0);
+      button.focus(); assert.equal(document.activeElement, button);
+    }
+    await click('.turn-actions [aria-label="运行详情"]');
+    await click('.turn-actions [aria-label="取消运行"]');
+    assert.deepEqual(inspected, [base.id]); assert.deepEqual(cancelled, [base.id]);
+    await render(history([running], [input], { approvalMode: 'safe', acting: { [base.id]: true } }));
+    const indicator = container.querySelector<HTMLElement>('.mode-difference')!;
+    assert.match(indicator.title, /本轮使用「工作区文件编辑自动.*下一轮为「文件读取与 Git 查看自动」/);
+    indicator.focus(); assert.equal(document.activeElement, indicator);
+    assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="取消运行"]')!.disabled, true);
+    await render(history([{ ...running, approval_mode: undefined }], [input], { approvalMode: 'safe' }));
+    assert.equal(container.querySelector('.mode-difference'), null, 'missing modes must not be inferred');
+    await render(history([base], audit, { approvalMode: 'safe' }));
+    assert.equal(container.querySelector('.mode-difference'), null, 'completed turns need no next-turn hint');
+  });
+
+  await test('approval summary hides matching cwd and keeps raw arguments collapsed; file tools identify the primary path', async () => {
+    await reset();
+    for (const cwd of [undefined, '.', '/fixture/', 'sub/..', '/fixture/sub/..']) {
+      const args = { command: 'pwd', ...(cwd === undefined ? {} : { cwd }) };
+      await render(history([{ ...pending, pending_invocation: { tool: 'run_command', arguments: args } }]));
+      assert.equal(container.querySelector('.wait-cwd'), null, String(cwd));
+      assert.equal(container.querySelector('.wait-operation')?.textContent, 'pwd');
+      assert.equal(container.querySelector<HTMLDetailsElement>('.wait-details')?.open, false);
+    }
+    await render(history([{ ...pending, approval_mode: 'full-auto', pending_invocation: { tool: 'write_file', arguments: { path: '.agents/rules.md', content: 'fixture content' }, warnings: ['修改行为文件将影响后续运行。'] } }]));
+    assert.equal(container.querySelector('.wait-operation')?.textContent, 'write_file · .agents/rules.md');
+    assert.equal(container.querySelector('.wait-text')?.textContent, '此调用需要你确认。');
+    assert.equal(container.querySelector('.wait-warning')?.getAttribute('role'), 'alert');
+    assert.ok(container.querySelector('.wait-warning')?.textContent?.includes('后续运行'));
+    assert.equal(container.querySelector('.wait-details > summary')?.textContent, '详情');
+    assert.doesNotMatch(container.querySelector('.wait-card')!.textContent!, /应自动放行|本轮工作区|资源范围|工作目录参数/);
+  });
+
   await test('only authoritative current invocation creates outer keyboard-operable wait actions; acting disables both', async () => {
     await reset(); await render(history([pending]));
     const card = container.querySelector('.wait-card')!;
     assert.ok(card && !card.closest('.work'));
     assert.ok(card.textContent?.includes('cat /proc/meminfo'));
-    assert.ok(card.textContent?.includes('system') && card.textContent?.includes('/fixture'));
-    assert.ok(card.textContent?.includes('命令不在模式自动执行范围'));
+    assert.equal(card.querySelector('.wait-cwd')?.textContent, '工作目录 /fixture/system');
+    assert.equal(card.querySelector('.wait-operation')?.textContent, 'cat /proc/meminfo');
+    assert.equal(card.querySelector('.wait-text')?.textContent, '此调用需要你确认。');
+    assert.equal(card.querySelector<HTMLDetailsElement>('.wait-details')?.open, false);
+    assert.deepEqual(JSON.parse(card.querySelector('.wait-args')!.textContent!), pending.pending_invocation!.arguments);
+    assert.equal(card.querySelector('.wait-context'), null);
+    assert.equal(container.querySelector('.work-toggle')?.textContent, '等待批准 · 2 次工具调用 · 1 项待批准');
     assert.equal(container.querySelector('.history-fact'), null);
     const buttons = [...card.querySelectorAll<HTMLButtonElement>('button')];
     assert.equal(buttons.length, 2);
@@ -175,6 +236,9 @@ try {
     await render(history([{ ...base, status: 'FAILED', error: { message: 'fixture provider unavailable' } }], audit));
     assert.equal(container.querySelector('.turn-final'), null);
     assert.match(container.querySelector('[role="alert"]')!.textContent!, /fixture provider unavailable/);
+    assert.equal(container.textContent?.match(/运行失败/g)?.length, 1);
+    assert.equal(container.querySelector('.error-card'), null);
+    assert.equal(container.querySelector('.work-toggle')?.textContent, '运行失败 · 2 次工具调用');
     await render(history([{ ...base, status: 'CANCELLED' }], audit));
     assert.equal(container.querySelector('.turn-final'), null);
     assert.match(container.textContent!, /已取消/);
@@ -221,12 +285,14 @@ try {
     try {
       localStorage.setItem('cloud-harness.web-session', base.session_id);
       await render(<App />);
-      assert.match(container.querySelector('.run-snapshot')!.textContent!, /工作区文件编辑自动/);
+      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区文件编辑自动/);
+      assert.equal(container.querySelector('.run-snapshot'), null);
       assert.match(container.querySelector('.composer [aria-label="审批模式"]')!.textContent!, /下一轮 · 文件读取与 Git 查看自动/);
       await click('.composer [aria-label="审批模式"]');
       await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[0].click(); });
       assert.equal(submits, 0, 'preference changes must not approve current command');
-      assert.match(container.querySelector('.run-snapshot')!.textContent!, /工作区文件编辑自动/);
+      assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区文件编辑自动/);
+      assert.equal(container.querySelector('.run-snapshot'), null);
       held = new Promise<void>((resolve) => { release = resolve; });
       await act(async () => { const button = container.querySelector<HTMLButtonElement>('.wait-actions .primary')!; button.click(); button.click(); });
       assert.equal(submits, 1);
