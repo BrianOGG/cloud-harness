@@ -1,18 +1,21 @@
 package transport
 
 import (
-	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 type ModelOption struct {
+	ProviderName  string `json:"provider_name,omitempty"`
+	LegacyID      string `json:"legacy_id,omitempty"`
+	Thinking      string `json:"thinking,omitempty"`
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Model         string `json:"model"`
@@ -37,12 +40,13 @@ func (s *Server) sessionSettings(w http.ResponseWriter, r *http.Request) {
 		if p.ModelID == "" {
 			p.ModelID = "default"
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"approval_mode": p.ApprovalMode, "model_id": p.ModelID})
+		writeJSON(w, http.StatusOK, map[string]string{"approval_mode": p.ApprovalMode, "model_id": p.ModelID, "reasoning_effort": p.ReasoningEffort})
 		return
 	}
 	var body struct {
-		ApprovalMode string `json:"approval_mode"`
-		ModelID      string `json:"model_id"`
+		ApprovalMode    string `json:"approval_mode"`
+		ModelID         string `json:"model_id"`
+		ReasoningEffort string `json:"reasoning_effort"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, err)
@@ -52,6 +56,13 @@ func (s *Server) sessionSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid approval mode"))
 		return
 	}
+	if !provider.ValidReasoningEffort(body.ReasoningEffort) {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "无效的思考强度"))
+		return
+	}
+	if body.ReasoningEffort == "" {
+		body.ReasoningEffort = "default"
+	}
 	if body.ModelID == "" {
 		body.ModelID = "default"
 	}
@@ -59,17 +70,26 @@ func (s *Server) sessionSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "selected model is not configured"))
 		return
 	}
-	p := storage.SessionPreferences{SessionID: id, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID}
+	p := storage.SessionPreferences{SessionID: id, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort}
 	if err := store.SaveSessionPreferences(r.Context(), p); err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"approval_mode": p.ApprovalMode, "model_id": p.ModelID})
+	writeJSON(w, http.StatusOK, map[string]string{"approval_mode": p.ApprovalMode, "model_id": p.ModelID, "reasoning_effort": p.ReasoningEffort})
 }
 
 func (s *Server) configuredModels() []ModelOption {
 	if len(s.Models) > 0 {
-		return append([]ModelOption(nil), s.Models...)
+		items := append([]ModelOption(nil), s.Models...)
+		for i := range items {
+			if items[i].Thinking == "" {
+				items[i].Thinking = modelconfig.ThinkingSupport(items[i].Provider, items[i].Model)
+				if s.Manager != nil {
+					items[i].Thinking = provider.ModelReasoningSupport(s.Manager.Provider, items[i].Model)
+				}
+			}
+		}
+		return items
 	}
 	return []ModelOption{{ID: "default", Name: "默认模型"}}
 }
@@ -83,7 +103,9 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			return
 		}
 		for _, p := range providers {
-			items = append(items, ModelOption{ID: "custom:" + p.ID, Name: p.Name + " · " + p.Model, Model: p.Model, Provider: "openai", ProviderID: p.ID})
+			for _, model := range p.Models {
+				items = append(items, customModelOption(p, model))
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -96,9 +118,11 @@ func (s *Server) modelOption(id string) (ModelOption, bool) {
 		}
 	}
 	if strings.HasPrefix(id, "custom:") && s.ProviderSettings.Directory != "" {
-		custom, err := s.ProviderSettings.Get(strings.TrimPrefix(id, "custom:"))
+		custom, model, err := s.ProviderSettings.ResolveModelID(id)
 		if err == nil {
-			return ModelOption{ID: id, Name: custom.Name + " · " + custom.Model, Model: custom.Model, Provider: "openai", ProviderID: custom.ID}, true
+			option := customModelOption(customProviderInfo(custom), model)
+			option.ID = id
+			return option, true
 		}
 	}
 	return ModelOption{}, false
@@ -143,8 +167,97 @@ func (s *Server) deleteCustomProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Test the saved connection with a read-only model catalog request. Never run
-// inference or forward an upstream body/error that may contain credentials.
+func customProviderInfo(p config.CustomProvider) config.CustomProviderInfo {
+	return config.CustomProviderInfo{ID: p.ID, Name: p.Name, Model: p.Model, Protocol: p.Protocol, Catalog: p.Catalog, BaseURL: p.BaseURL}
+}
+func customModelOption(p config.CustomProviderInfo, model string) ModelOption {
+	declared := "unknown"
+	for _, entry := range p.Catalog {
+		if entry.ID == model {
+			declared = entry.Thinking
+			break
+		}
+	}
+	option := ModelOption{ID: "custom:" + p.ID + "/" + model, Name: p.Name + " · " + model, Model: model, Provider: p.Protocol, ProviderID: p.ID, ProviderName: p.Name, Thinking: provider.ReasoningSupport(p.Protocol, "custom:"+p.ID, model, declared)}
+	if model == p.Model {
+		option.LegacyID = "custom:" + p.ID
+	}
+	return option
+}
+
+// detectCustomProvider never writes settings or sends an inference request.
+func (s *Server) detectCustomProvider(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		BaseURL    string `json:"base_url"`
+		APIKey     string `json:"api_key"`
+		ProviderID string `json:"provider_id"`
+		Protocol   string `json:"protocol"`
+	}
+	if err := decode(r, &input); err != nil {
+		writeErr(w, err)
+		return
+	}
+	base, err := modelconfig.NormalizeBaseURL(input.BaseURL)
+	if err != nil {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, err.Error()))
+		return
+	}
+	if input.Protocol != "" && !modelconfig.ValidProtocol(input.Protocol) {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "无效的模型服务协议"))
+		return
+	}
+	if input.APIKey == "" && input.ProviderID != "" {
+		if s.ProviderSettings.Directory == "" {
+			writeErr(w, domain.E("internal", "custom provider settings are unavailable"))
+			return
+		}
+		p, err := s.ProviderSettings.Get(input.ProviderID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		input.APIKey = p.APIKey
+	}
+	result, err := provider.FetchModelCatalog(r.Context(), base, input.APIKey, input.Protocol)
+	if err != nil {
+		writeCatalogError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+func writeCatalogError(w http.ResponseWriter, err error) {
+	status := 0
+	var catalogError *modelconfig.CatalogError
+	if errors.As(err, &catalogError) {
+		status = catalogError.UpstreamStatus
+	}
+	// Fixed text only: never forward upstream bodies, URLs or error messages.
+	writeJSON(w, http.StatusBadGateway, map[string]any{"error": "模型列表获取失败；请检查地址、凭据和协议，也可手动填写模型 ID", "upstream_status": status})
+}
+func (s *Server) refreshCustomProviderModels(w http.ResponseWriter, r *http.Request) {
+	if s.ProviderSettings.Directory == "" {
+		writeErr(w, domain.E("internal", "custom provider settings are unavailable"))
+		return
+	}
+	p, err := s.ProviderSettings.Get(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := provider.FetchModelCatalog(r.Context(), p.BaseURL, p.APIKey, p.Protocol)
+	if err != nil {
+		writeCatalogError(w, err)
+		return
+	}
+	info, err := s.ProviderSettings.UpdateCatalog(p, result)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// Retain the existing read-only connection check for older clients.
 func (s *Server) testCustomProvider(w http.ResponseWriter, r *http.Request) {
 	if s.ProviderSettings.Directory == "" {
 		writeErr(w, domain.E("internal", "custom provider settings are unavailable"))
@@ -155,43 +268,15 @@ func (s *Server) testCustomProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, p.BaseURL+"/models", nil)
+	result, err := provider.FetchModelCatalog(r.Context(), p.BaseURL, p.APIKey, p.Protocol)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "连接检测失败，请检查服务地址"})
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+p.APIKey)
-	req.Header.Set("Accept", "application/json")
-	client := &http.Client{
-		Timeout:       10 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	response, err := client.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "连接检测失败，请检查服务地址、网络与凭据"})
-		return
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "模型列表请求失败，请检查服务地址、凭据或服务是否支持 /models", "upstream_status": response.StatusCode})
-		return
-	}
-	var catalog struct {
-		Data *[]struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	const maxCatalogBytes = 1 << 20
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxCatalogBytes+1))
-	if err != nil || len(raw) > maxCatalogBytes || json.Unmarshal(raw, &catalog) != nil || catalog.Data == nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "服务未返回有效的模型列表；可继续使用手动模型 ID"})
+		writeCatalogError(w, err)
 		return
 	}
 	found := false
-	for _, model := range *catalog.Data {
+	for _, model := range result.Models {
 		if model.ID == p.Model {
 			found = true
-			break
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_available": found})

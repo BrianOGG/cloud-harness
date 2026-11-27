@@ -18,6 +18,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/agent"
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 	"github.com/BrianOGG/cloud-harness/internal/trace"
 )
@@ -162,6 +163,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/providers", s.customProviders)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.deleteCustomProvider)
 	mux.HandleFunc("POST /v1/providers/{id}/test", s.testCustomProvider)
+	mux.HandleFunc("POST /v1/providers/detect", s.detectCustomProvider)
+	mux.HandleFunc("POST /v1/providers/{id}/refresh-models", s.refreshCustomProviderModels)
+	mux.HandleFunc("GET /v1/sessions/{id}/settings", s.sessionSettings)
+	mux.HandleFunc("PUT /v1/sessions/{id}/settings", s.sessionSettings)
 	mux.HandleFunc("GET /approval", serveApprovalPage)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -297,9 +302,10 @@ func (s *Server) listSessionRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Message      string `json:"message"`
-		ModelID      string `json:"model_id"`
-		ApprovalMode string `json:"approval_mode"`
+		Message         string `json:"message"`
+		ModelID         string `json:"model_id"`
+		ReasoningEffort string `json:"reasoning_effort"`
+		ApprovalMode    string `json:"approval_mode"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, err)
@@ -333,17 +339,27 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid approval mode"))
 		return
 	}
+	if body.ReasoningEffort == "" {
+		body.ReasoningEffort = prefs.ReasoningEffort
+	}
+	if body.ReasoningEffort == "" {
+		body.ReasoningEffort = "default"
+	}
+	if !provider.ValidReasoningEffort(body.ReasoningEffort) {
+		writeErr(w, domain.E(domain.CodeInvalidArgument, "无效的思考强度"))
+		return
+	}
 	selected, ok := s.modelOption(body.ModelID)
 	if !ok {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "selected model is not configured"))
 		return
 	}
-	if err := settings.SaveSessionPreferences(r.Context(), storage.SessionPreferences{SessionID: sessionID, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID}); err != nil {
+	if err := settings.SaveSessionPreferences(r.Context(), storage.SessionPreferences{SessionID: sessionID, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort}); err != nil {
 		writeErr(w, err)
 		return
 	}
 	s.execute(w, r, http.StatusCreated, func(ctx context.Context) (*agent.Execution, error) {
-		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode})
+		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort})
 	})
 }
 
@@ -786,6 +802,7 @@ type view struct {
 	TurnID            string                   `json:"turn_id,omitempty"`
 	ParentID          string                   `json:"parent_id,omitempty"`
 	ApprovalMode      string                   `json:"approval_mode,omitempty"`
+	ReasoningEffort   string                   `json:"reasoning_effort,omitempty"`
 	Workspace         string                   `json:"workspace,omitempty"`
 	Status            domain.RunStatus         `json:"status"`
 	WaitReason        domain.WaitReason        `json:"wait_reason,omitempty"`
@@ -809,8 +826,9 @@ func (s *Server) runView(ctx context.Context, run storage.Run) view {
 	// run's snapshot, including after a restart or while approval is pending.
 	if s.Manager != nil && s.Manager.Store != nil {
 		var snapshot struct {
-			ApprovalMode string `json:"approval_mode"`
-			Policy       *struct {
+			ApprovalMode    string `json:"approval_mode"`
+			ReasoningEffort string `json:"reasoning_effort"`
+			Policy          *struct {
 				Workspace string `json:"workspace"`
 			} `json:"policy"`
 		}
@@ -818,6 +836,7 @@ func (s *Server) runView(ctx context.Context, run storage.Run) view {
 			switch snapshot.ApprovalMode {
 			case "ask", "safe", "workspace-write", "full-auto":
 				v.ApprovalMode = snapshot.ApprovalMode
+				v.ReasoningEffort = snapshot.ReasoningEffort
 			}
 			if snapshot.Policy != nil {
 				v.Workspace = snapshot.Policy.Workspace

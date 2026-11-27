@@ -283,7 +283,7 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		if err != nil {
 			return nil, domain.E(domain.CodeProviderConfig, "selected custom provider is unavailable")
 		}
-		return &provider.OpenAICompatible{BaseURL: custom.BaseURL, APIKey: custom.APIKey, Model: custom.Model}, nil
+		return customModelProvider(custom), nil
 	}
 	return &agent.Manager{Store: db, Provider: prov, ProviderResolver: providerResolver, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots,
 		MaxRunTokens: cfg.MaxRunTokens, MaxRunCostUSD: cfg.MaxRunCostUSD, ModelPrices: prices}, db, nil
@@ -1340,4 +1340,20 @@ func writeJSON(w io.Writer, v any) int {
 		return 1
 	}
 	return 0
+}
+
+// customModelProvider adapts the saved protocol; req.Model supplies each selection.
+func customModelProvider(custom config.CustomProvider) provider.Provider {
+	thinking := map[string]string{}
+	for _, model := range custom.Catalog {
+		thinking[model.ID] = model.Thinking
+	}
+	base := strings.TrimRight(custom.BaseURL, "/")
+	if custom.Protocol == "anthropic" {
+		return &provider.Anthropic{BaseURL: strings.TrimSuffix(base, "/v1"), APIKey: custom.APIKey, Model: custom.Model, CapabilityID: "custom:" + custom.ID, Thinking: thinking}
+	}
+	if custom.Protocol == "gemini" {
+		base += "/openai"
+	}
+	return &provider.OpenAICompatible{BaseURL: base, APIKey: custom.APIKey, Model: custom.Model, Protocol: custom.Protocol, CapabilityID: "custom:" + custom.ID, Thinking: thinking}
 }

@@ -54,6 +54,7 @@ export interface RunView {
   parent_id?: string;
   // Frozen runtime choices from this run's checkpoint, never session preferences.
   approval_mode?: string;
+  reasoning_effort?: ReasoningEffort;
   workspace?: string;
   status: 'RUNNING' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | string;
   wait_reason?: 'USER' | 'APPROVAL' | 'CHILD' | 'BUDGET' | 'RECONCILIATION' | string;
@@ -77,9 +78,13 @@ export interface SessionView {
   latest_run_at?: string;
 }
 
-export interface SessionPreferences { approval_mode: string; model_id: string; }
-export interface ModelOption { id: string; name: string; model: string; fallback_model?: string; provider: string; provider_id?: string; }
-export interface CustomProvider { id: string; name: string; base_url: string; model: string; has_api_key: boolean; }
+export type ReasoningEffort = 'default' | 'off' | 'low' | 'medium' | 'high';
+export type ProviderProtocol = 'openai' | 'anthropic' | 'gemini';
+export interface CatalogModel { id: string; display_name?: string; thinking?: 'supported' | 'unsupported' | 'unknown'; }
+export interface ModelDetection { protocol: ProviderProtocol; models: CatalogModel[]; fetched_at: string; }
+export interface SessionPreferences { approval_mode: string; model_id: string; reasoning_effort?: ReasoningEffort; }
+export interface ModelOption { id: string; name: string; model: string; fallback_model?: string; provider: string; provider_id?: string; provider_name?: string; legacy_id?: string; thinking?: CatalogModel['thinking']; }
+export interface CustomProvider { id: string; name: string; base_url: string; model: string; has_api_key: boolean; protocol?: ProviderProtocol; protocol_source?: 'auto' | 'manual'; models?: string[]; catalog?: CatalogModel[]; catalog_fetched_at?: string; }
 
 export interface SessionMessage {
   id: string;
@@ -228,8 +233,10 @@ export const api = {
   savePreferences: (sessionId: string, value: SessionPreferences) => req<SessionPreferences>('/v1/sessions/' + encodeURIComponent(sessionId) + '/preferences', { method: 'PUT', body: JSON.stringify(value) }),
   listModels: () => req<ModelOption[]>('/v1/models'),
   listProviders: () => req<CustomProvider[]>('/v1/providers'),
-  saveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string }) => req<CustomProvider>('/v1/providers', { method: 'PUT', body: JSON.stringify(value) }),
+  saveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string; protocol?: ProviderProtocol; protocol_source?: 'auto' | 'manual'; models?: string[]; catalog?: CatalogModel[]; catalog_fetched_at?: string }) => req<CustomProvider>('/v1/providers', { method: 'PUT', body: JSON.stringify(value) }),
   deleteProvider: (id: string) => req<void>('/v1/providers/' + encodeURIComponent(id), { method: 'DELETE' }),
+  detectProvider: (value: { base_url: string; api_key?: string; provider_id?: string; protocol?: ProviderProtocol }) => req<ModelDetection>('/v1/providers/detect', { method: 'POST', body: JSON.stringify(value) }),
+  refreshProviderModels: (id: string) => req<CustomProvider>('/v1/providers/' + encodeURIComponent(id) + '/refresh-models', { method: 'POST' }),
   testProvider: (id: string) => req<{ ok: boolean; model_available: boolean }>('/v1/providers/' + encodeURIComponent(id) + '/test', { method: 'POST' }),
   listMessages: (sessionId: string, options?: { limit?: number; cursor?: string; signal?: AbortSignal }): Promise<SessionMessagesPage> => {
     const params = new URLSearchParams();
@@ -239,7 +246,7 @@ export const api = {
     return req<SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { signal: options?.signal });
   },
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
-  createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string }) =>
+  createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string; reasoning_effort?: ReasoningEffort }) =>
     req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ message, ...options }),
