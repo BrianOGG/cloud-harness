@@ -21,11 +21,15 @@ type Budget struct {
 	UsedChildRuns   int `json:"used_child_runs"`
 
 	// MaxTokens limits input plus output tokens across every model call of
-	// the run. Cached input tokens are part of the input count.
-	MaxTokens             int64 `json:"max_tokens"`
-	UsedInputTokens       int64 `json:"used_input_tokens"`
-	UsedOutputTokens      int64 `json:"used_output_tokens"`
-	UsedCachedInputTokens int64 `json:"used_cached_input_tokens"`
+	// the run. Cached input and cache creation tokens are part of the input.
+	MaxTokens                    int64 `json:"max_tokens"`
+	UsedInputTokens              int64 `json:"used_input_tokens"`
+	UsedOutputTokens             int64 `json:"used_output_tokens"`
+	UsedCachedInputTokens        int64 `json:"used_cached_input_tokens"`
+	UsedCacheCreationInputTokens int64 `json:"used_cache_creation_input_tokens"`
+	UsedReasoningTokens          int64 `json:"used_reasoning_tokens"`
+	CacheReported                bool  `json:"cache_reported"`
+	ReasoningReported            bool  `json:"reasoning_reported"`
 	// MaxCostUSD limits the estimated cost from configured model prices.
 	// Calls to a model without a price add tokens but no cost.
 	MaxCostUSD  float64 `json:"max_cost_usd"`
@@ -34,10 +38,14 @@ type Budget struct {
 
 // UsageCharge is what one model call spent.
 type UsageCharge struct {
-	InputTokens       int
-	OutputTokens      int
-	CachedInputTokens int
-	CostUSD           float64
+	InputTokens              int
+	OutputTokens             int
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+	ReasoningTokens          int
+	CacheReported            bool
+	ReasoningReported        bool
+	CostUSD                  float64
 }
 
 // BudgetExtension raises limits on a run that waits for budget.
@@ -157,6 +165,10 @@ func (b Budget) AddUsage(u UsageCharge) Budget {
 	b.UsedInputTokens += int64(max(u.InputTokens, 0))
 	b.UsedOutputTokens += int64(max(u.OutputTokens, 0))
 	b.UsedCachedInputTokens += int64(max(u.CachedInputTokens, 0))
+	b.UsedCacheCreationInputTokens += int64(max(u.CacheCreationInputTokens, 0))
+	b.UsedReasoningTokens += int64(max(u.ReasoningTokens, 0))
+	b.CacheReported = b.CacheReported || u.CacheReported
+	b.ReasoningReported = b.ReasoningReported || u.ReasoningReported
 	if u.CostUSD > 0 && !math.IsNaN(u.CostUSD) && !math.IsInf(u.CostUSD, 0) {
 		b.UsedCostUSD += u.CostUSD
 	}

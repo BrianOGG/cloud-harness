@@ -306,7 +306,10 @@ be called until the budget is extended.
 and the `ask_oracle` cost limit for estimates. Keys are model names and each value
 contains `input`, `output`, and `cached` prices per one million tokens. Prices
 must be finite and non-negative. The cached price applies to the cached subset
-of input tokens; the estimate charges the remaining input tokens at `input`.
+of input tokens; the estimate charges the remaining input tokens at `input`,
+including cache creation tokens. Reasoning tokens are already part of output
+and are not priced a second time. No separate cache-write or reasoning price
+is configured.
 No default prices are supplied, so an unpriced model is reported with cost
 `—` rather than an invented amount. The current database schema does not store
 the model id on each response; stats therefore maps OpenAI rows to the current
@@ -350,10 +353,23 @@ CLI flags `--addr`, `--db`, `--provider`, and `--http-token` override the enviro
 Every run counts the tokens its model calls report and their estimated cost,
 next to its model, tool, script, and child-run counters. The run's `budget`
 object carries `used_input_tokens`, `used_output_tokens`,
-`used_cached_input_tokens` (the cached part of the input, not added to the
-total), and `used_cost_usd`. The executor, the planner, turn summaries,
-compaction summaries, and `ask_oracle` are all counted. A child run's usage is
+`used_cached_input_tokens`, `used_cache_creation_input_tokens`,
+`used_reasoning_tokens`, and `used_cost_usd`. Input includes both cache reads
+and cache creation; reasoning is included in output. The token total is always
+input plus output, without adding these subsets again. The executor, the
+planner, turn summaries, compaction summaries, and `ask_oracle` are all counted. A child run's usage is
 counted on the child and on its parent.
+
+`cache_reported` and `reasoning_reported` become true once any call reports
+the corresponding optional fields, including an explicit zero. Missing or
+false markers in old JSON mean the provider did not report those fields;
+clients can still show a positive legacy cached-input counter. The run detail
+shows zero only when reported, and hides unavailable cache/reasoning details.
+These counters and markers use the existing budget/usage JSON columns, with
+no database migration. OpenAI Chat and Responses retain the provider's total
+output (including reasoning); Anthropic input sums input, cache creation, and
+cache reads. The standalone Gemini usage parser adds thoughts to candidates
+for output; no Gemini request transport is introduced.
 
 `max_run_tokens` (`CLOUD_HARNESS_MAX_RUN_TOKENS`) limits input plus output
 tokens for a root run, and `max_run_cost_usd`

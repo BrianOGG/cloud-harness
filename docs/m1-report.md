@@ -120,6 +120,6 @@ The command creates `alpha.txt`, `beta.txt`, and `gamma.txt`, runs the loop, and
 
 - `cloud-harness runs resume` still returns `not_implemented` and does not create a new run. A `WAITING` run stays that run.
 - Repeat detection, checkpoint restore, and unknown-result reconciliation are not implemented. A batch that reaches `UNKNOWN` is marked `WAITING(RECONCILIATION)` and is not replayed.
-- `write_file` without a pre-issued scoped grant waits for approval and cannot finish in M1.
-- `run_command` does not invoke a shell. Pipes, redirects, and commands outside `ls` / `pwd` / `wc` wait for approval.
+- In M1, `write_file` without a pre-issued scoped grant waited for approval and could not finish. Current versions use the session approval mode.
+- `run_command` does not invoke a shell: pipes, redirects, and shell operators are unsupported. Only `ls` / `pwd` / `wc` with workspace-contained path arguments are safe. Current versions apply the session approval mode to dangerous commands; the M1 milestone paused them for approval.
 - The real Agnes tool-calling eval has not been run here.

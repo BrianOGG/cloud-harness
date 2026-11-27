@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { api, parseEventStream } from '../src/api';
 import type { HarnessEvent } from '../src/api';
-import { budgetExtension, getBudgetCounters } from '../src/budget';
+import { budgetExtension, getBudgetCounters, getTokenBreakdown } from '../src/budget';
 
 const parsed = parseEventStream('id: 7\r\nevent: run.created\r\ndata: {"source":"test"}\r\n\r\nid: 8\nevent: tool.batch\ndata: line one\ndata: line two\n\n');
 assert.deepEqual(parsed, [
@@ -53,6 +53,14 @@ const calls = {
 assert.deepEqual(getBudgetCounters(calls).map((counter) => `${counter.usedText} / ${counter.maxText}`), ['3 / 10', '8 / 20', '1 / 4', '1 / 2', '0 / 不限', '$0.00 / 不限']);
 const limited = { ...calls, max_tokens: 1000, used_input_tokens: 900, used_output_tokens: 300, used_cached_input_tokens: 500, max_cost_usd: 2, used_cost_usd: 0.004 };
 assert.deepEqual(getBudgetCounters(limited).slice(4).map((counter) => `${counter.usedText} / ${counter.maxText}`), ['1,200 / 1,000', '$0.0040 / $2.00']);
+assert.deepEqual(getTokenBreakdown(calls), ['输入 0 · 输出 0']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_input_tokens: 1234, used_output_tokens: 5678 }), ['输入 1,234 · 输出 5,678']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_input_tokens: 1000, used_output_tokens: 200, used_cached_input_tokens: 250 }), ['输入 1,000 · 输出 200', '缓存命中 250（25%）']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_input_tokens: 1000, used_cache_creation_input_tokens: 150 }), ['输入 1,000 · 输出 0', '缓存写入 150']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_output_tokens: 300, used_reasoning_tokens: 100 }), ['输入 0 · 输出 300', '其中推理 100']);
+assert.deepEqual(getTokenBreakdown({ ...calls, cache_reported: true, reasoning_reported: true }), ['输入 0 · 输出 0', '缓存命中 0', '其中推理 0']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_input_tokens: 100, cache_reported: true }), ['输入 100 · 输出 0', '缓存命中 0（0%）']);
+assert.deepEqual(getTokenBreakdown({ ...calls, used_cached_input_tokens: 8 }), ['输入 0 · 输出 0', '缓存命中 8']);
 
 // The budget wait raises every limit the run has reached, and only those.
 assert.deepEqual(budgetExtension({ ...calls, used_model_calls: 10 }), { title: '模型调用预算已用完', label: '增加 10 次模型调用', extension: { extra_model_calls: 10 } });

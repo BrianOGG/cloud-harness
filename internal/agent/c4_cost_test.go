@@ -75,7 +75,7 @@ func TestC4FailedCallUsageIsPersistedWithoutPartialContent(t *testing.T) {
 	manager.ModelPrices = map[string]config.ModelPrice{"call-model": {Input: 2, Output: 4}}
 	failure := domain.E(domain.CodeProviderHTTP, "upstream failed after usage")
 	manager.Provider = providerFunc(func(context.Context, provider.Request) (domain.ModelResponse, error) {
-		return withUsage(textOnly("partial response must not be stored"), 3, 2, 0), failure
+		return withUsageBreakdown(textOnly("partial response must not be stored"), 3, 2, 0, 1, 1, true, true), failure
 	})
 	run, err := manager.RunMessage(t.Context(), routingSession(t, manager), "exercise partial usage")
 	if err != nil || run.Status != domain.RunFailed || run.Budget.UsedInputTokens != 3 || run.Budget.UsedOutputTokens != 2 {
@@ -88,7 +88,8 @@ func TestC4FailedCallUsageIsPersistedWithoutPartialContent(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("failed usage rows=%+v error=%v", rows, err)
 	}
-	if rows[0].Complete || rows[0].Usage.Model != "call-model" || !rows[0].Usage.CostKnown || rows[0].Usage.CostUSD != 0.000014 || len(rows[0].Items) != 0 {
+	if rows[0].Complete || rows[0].Usage.Model != "call-model" || !rows[0].Usage.CostKnown || rows[0].Usage.CostUSD != 0.000014 || len(rows[0].Items) != 0 ||
+		rows[0].Usage.CacheCreationInputTokens != 1 || rows[0].Usage.ReasoningTokens != 1 || !rows[0].Usage.CacheReported || !rows[0].Usage.ReasoningReported {
 		t.Fatalf("failed usage metadata=%+v", rows[0])
 	}
 }

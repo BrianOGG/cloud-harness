@@ -302,6 +302,8 @@ code, pre, .mono { font-family: var(--mono); }
 .budget-value strong { color: var(--text); font-size: 16px; font-weight: 600; }
 .budget-track { height: 3px; overflow: hidden; border-radius: 3px; background: var(--line); }
 .budget-track span { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .25s ease; }
+.budget-details { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 6px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.budget-details span:first-child { flex-basis: 100%; }
 .tabs { display: flex; gap: 4px; margin: 18px 0 10px; padding: 3px; border-radius: 10px; background: var(--surface-muted); }
 .tabs button { flex: 1; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
 .tabs button[aria-selected='true'] { background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 8%); color: var(--text); font-weight: 550; }

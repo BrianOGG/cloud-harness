@@ -59,7 +59,7 @@ func ParseAnthropicMessage(raw []byte) (domain.ModelResponse, error) {
 		resp.Items = append(resp.Items, item)
 	}
 	if env.Usage != nil {
-		if u := env.Usage.domain(); u.InputTokens > 0 || u.OutputTokens > 0 || u.CachedInputTokens > 0 {
+		if u := env.Usage.domain(); hasUsage(u) {
 			resp.Items = append(resp.Items, domain.ResponseItem{Ordinal: len(resp.Items), Kind: domain.ItemUsage, Usage: &u})
 		}
 	}
@@ -79,17 +79,26 @@ func anthropicResponseComplete(stopReason string) bool {
 }
 
 type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	InputTokens              int  `json:"input_tokens"`
+	OutputTokens             int  `json:"output_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 }
 
 func (u anthropicUsage) domain() domain.Usage {
+	cacheCreation, cacheRead := 0, 0
+	if u.CacheCreationInputTokens != nil {
+		cacheCreation = *u.CacheCreationInputTokens
+	}
+	if u.CacheReadInputTokens != nil {
+		cacheRead = *u.CacheReadInputTokens
+	}
 	return domain.Usage{
-		InputTokens:       u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
-		OutputTokens:      u.OutputTokens,
-		CachedInputTokens: u.CacheReadInputTokens,
+		InputTokens:              u.InputTokens + cacheCreation + cacheRead,
+		OutputTokens:             u.OutputTokens,
+		CachedInputTokens:        cacheRead,
+		CacheCreationInputTokens: cacheCreation,
+		CacheReported:            u.CacheCreationInputTokens != nil || u.CacheReadInputTokens != nil,
 	}
 }
 
@@ -159,7 +168,7 @@ func ParseOpenAIResponses(raw []byte) (domain.ModelResponse, error) {
 		resp.Items = append(resp.Items, item)
 	}
 	if env.Usage != nil {
-		if u := env.Usage.domain(); u.InputTokens > 0 || u.OutputTokens > 0 || u.CachedInputTokens > 0 {
+		if u := env.Usage.domain(); hasUsage(u) {
 			resp.Items = append(resp.Items, domain.ResponseItem{Ordinal: len(resp.Items), Kind: domain.ItemUsage, Usage: &u})
 		}
 	}
@@ -173,14 +182,32 @@ type openAIResponsesUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	InputDetails struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens *int `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
+	OutputDetails struct {
+		ReasoningTokens *int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 func (u openAIResponsesUsage) domain() domain.Usage {
+	cached, reasoning := 0, 0
+	if u.InputDetails.CachedTokens != nil {
+		cached = *u.InputDetails.CachedTokens
+	}
+	if u.OutputDetails.ReasoningTokens != nil {
+		reasoning = *u.OutputDetails.ReasoningTokens
+	}
 	return domain.Usage{
 		InputTokens:       u.InputTokens,
 		OutputTokens:      u.OutputTokens,
-		CachedInputTokens: u.InputDetails.CachedTokens,
+		CachedInputTokens: cached,
+		ReasoningTokens:   reasoning,
+		CacheReported:     u.InputDetails.CachedTokens != nil,
+		ReasoningReported: u.OutputDetails.ReasoningTokens != nil,
 	}
+}
+
+func hasUsage(u domain.Usage) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CachedInputTokens > 0 ||
+		u.CacheCreationInputTokens > 0 || u.ReasoningTokens > 0 || u.CacheReported || u.ReasoningReported
 }
