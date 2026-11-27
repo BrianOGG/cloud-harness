@@ -908,11 +908,17 @@ no inference is performed. URL validation is identical to save.
 Official Gemini/Anthropic hosts select their protocol directly; other hosts
 are probed concurrently using Bearer, `x-api-key` + `anthropic-version`, or
 `x-goog-api-key` headers. Keys are never added to query strings. A manual
-`protocol` probes only that protocol. Protocol-specific response shapes win
-over generic OpenAI shapes; ties prefer OpenAI.
+`protocol` probes only that protocol. Each probe is accepted only when its
+own response matches that protocol. When more than one probe succeeds,
+auto-detection prefers OpenAI compatible, then Anthropic, then Gemini, and
+returns the other valid protocols in `alternatives`. An OpenAI catalog whose
+`supported_endpoint_types` all exclude `openai` but name exactly one of
+`anthropic` or `gemini` follows that hint. The settings protocol menu keeps
+this in its title (for example, “该服务也兼容 Anthropic”) and can still
+override the choice.
 
 Each request times out after 10 seconds, reads at most 1 MiB and refuses
-redirects. Returns `{protocol, models:[{id, display_name?, thinking?}], fetched_at}`.
+redirects. Returns `{protocol, models:[{id, display_name?, thinking?}], fetched_at, alternatives?}`.
 Gemini lists exclude models without `generateContent` and strip the
 `models/` prefix. HTTP, invalid/oversized catalog and network errors return
 502 with a fixed Chinese `error` and numeric `upstream_status` (0 when no

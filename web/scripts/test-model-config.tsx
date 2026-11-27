@@ -29,6 +29,7 @@ let thinking: 'supported' | 'unsupported' | 'unknown' = 'unknown';
 let deferred: ((value: Response) => void) | undefined;
 let holdDetection = false;
 let customProviderID = 'provider';
+let detectionOverride: ModelDetection | undefined;
 
 globalThis.fetch = async (input, init) => {
   const path = String(input), method = init?.method || 'GET';
@@ -38,7 +39,7 @@ globalThis.fetch = async (input, init) => {
   if (path === '/v1/providers/detect') {
     if (holdDetection) return await new Promise<Response>((resolve) => { deferred = resolve; });
     if (failDetection) return new Response(JSON.stringify({ error: '模型列表获取失败' }), { status: 502 });
-    result = body?.protocol ? { ...detection, protocol: body.protocol } : detection;
+    result = detectionOverride || (body?.protocol ? { ...detection, protocol: body.protocol } : detection);
   } else if (path === '/v1/providers') {
     if (method === 'PUT') {
       const value = body!;
@@ -63,7 +64,7 @@ async function reset() {
   if (root) await act(async () => { root!.unmount(); root = undefined; });
   localStorage.clear(); window.history.replaceState(null, '', '/ui/');
   providers = []; prefs = { approval_mode: 'ask', model_id: 'default', reasoning_effort: 'default' };
-  seen = []; failDetection = false; thinking = 'unknown'; holdDetection = false; deferred = undefined; customProviderID = 'provider';
+  seen = []; failDetection = false; thinking = 'unknown'; holdDetection = false; deferred = undefined; customProviderID = 'provider'; detectionOverride = undefined;
 }
 async function mount(element: React.ReactNode) { root = createRoot(container); await act(async () => { root!.render(<StrictMode>{element}</StrictMode>); }); }
 async function click(text: string) {
@@ -105,6 +106,17 @@ try {
     assert.equal(container.innerHTML.includes('form-only-fixture-key'), false);
     assert.equal(seen.some((r) => r.path.includes('/preferences')), false);
   });
+  await test('dual-protocol detection prefers OpenAI and mentions the alternative in the title', async () => {
+    detectionOverride = { protocol: 'openai', models: [{ id: 'agnes-3.0-flash' }], fetched_at: fetchedAt, alternatives: ['anthropic'] };
+    await add();
+    await type('#provider-url', 'https://example.invalid/v1');
+    await type('#provider-key', 'secret-key');
+    await blur('#provider-key');
+    const select = container.querySelector<HTMLSelectElement>('#provider-protocol')!;
+    assert.equal(select.value, 'openai');
+    assert.equal(select.title, '该服务也兼容 Anthropic；可手动更改');
+  });
+
   await test('manual protocol override only fetches that protocol and survives save', async () => {
     await reset(); await add(); await click('识别');
     await choose('#provider-protocol', 'gemini'); await click('识别');

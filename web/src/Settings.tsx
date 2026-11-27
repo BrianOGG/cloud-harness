@@ -105,6 +105,7 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
   const [detecting, setDetecting] = useState(false);
   const [detected, setDetected] = useState(false);
   const [detectError, setDetectError] = useState('');
+  const [alternatives, setAlternatives] = useState<ProviderProtocol[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const generation = useRef({ version: 0 });
@@ -113,7 +114,7 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
     form.current?.scrollIntoView({ block: 'nearest' }); form.current?.querySelector('input')?.focus({ preventScroll: true });
     return () => { requests.version++; };
   }, []);
-  const invalidate = () => { generation.current.version++; setDetected(false); setDetecting(false); setDetectError(''); };
+  const invalidate = () => { generation.current.version++; setDetected(false); setDetecting(false); setDetectError(''); setAlternatives([]); };
   const detect = async () => {
     if (!baseURL.trim() || (!key && !provider?.has_api_key) || saving) return;
     const identity = ++generation.current.version;
@@ -121,7 +122,7 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
     try {
       const result = await api.detectProvider({ base_url: baseURL, ...(key ? { api_key: key } : {}), ...(provider ? { provider_id: provider.id } : {}), ...(source === 'manual' ? { protocol } : {}) });
       if (identity !== generation.current.version) return;
-      setProtocol(result.protocol); setCatalog(result.models); setFetchedAt(result.fetched_at); setDetected(true);
+      setProtocol(result.protocol); setCatalog(result.models); setFetchedAt(result.fetched_at); setDetected(true); setAlternatives(result.alternatives || []);
       if (!model && result.models[0]) { setModel(result.models[0].id); setEnabled((previous) => [...new Set([...previous, result.models[0].id])]); }
     } catch { if (identity === generation.current.version) setDetectError('获取模型列表失败，可手填模型名并保存。'); }
     finally { if (identity === generation.current.version) setDetecting(false); }
@@ -140,7 +141,7 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
       <label htmlFor="provider-name">显示名称<input id="provider-name" value={name} maxLength={100} required onChange={(event) => setName(event.target.value)} /></label>
       <label htmlFor="provider-url">Base URL<input id="provider-url" type="url" title="仅支持 HTTPS 或本机回环 HTTP" value={baseURL} required placeholder="https://api.example.com/v1" onChange={(event) => { invalidate(); setBaseURL(event.target.value); setCatalog([]); setFetchedAt(undefined); }} onBlur={() => void detect()} /></label>
       <label htmlFor="provider-key">API key<input id="provider-key" type="password" autoComplete="new-password" value={key} required={!provider} placeholder={provider?.has_api_key ? '已保存；留空保留原值' : '输入 API key'} onChange={(event) => { invalidate(); setKey(event.target.value); }} onBlur={() => void detect()} /></label>
-      <div className="settings-actions provider-protocol"><label htmlFor="provider-protocol">协议<select id="provider-protocol" title="可手动更改自动识别结果" value={protocol} onChange={(event) => { invalidate(); setProtocol(event.target.value as ProviderProtocol); setSource('manual'); setCatalog([]); setFetchedAt(undefined); }}>{Object.entries(protocolNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className="button" title="识别协议并读取模型目录" disabled={detecting || saving || !baseURL || (!key && !provider?.has_api_key)} onClick={() => void detect()}>{detecting ? '识别中…' : '识别'}</button>{detected && <span role="status">{source === 'auto' ? '已识别' : '已选择'}：{protocolNames[protocol]}</span>}</div>
+      <div className="settings-actions provider-protocol"><label htmlFor="provider-protocol">协议<select id="provider-protocol" title={alternatives.length ? `该服务也兼容 ${alternatives.map((item) => protocolNames[item]).join('、')}；可手动更改` : '可手动更改自动识别结果'} value={protocol} onChange={(event) => { invalidate(); setProtocol(event.target.value as ProviderProtocol); setSource('manual'); setCatalog([]); setFetchedAt(undefined); }}>{Object.entries(protocolNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className="button" title="识别协议并读取模型目录" disabled={detecting || saving || !baseURL || (!key && !provider?.has_api_key)} onClick={() => void detect()}>{detecting ? '识别中…' : '识别'}</button>{detected && <span role="status">{source === 'auto' ? '已识别' : '已选择'}：{protocolNames[protocol]}</span>}</div>
       <label htmlFor="provider-model">默认模型<input id="provider-model" title="可搜索目录或输入模型名" placeholder="搜索或输入模型名" list="provider-model-catalog" value={model} maxLength={200} required onChange={(event) => { generation.current.version++; setDetecting(false); setModel(event.target.value); }} /><datalist id="provider-model-catalog">{catalog.map((item) => <option key={item.id} value={item.id}>{item.display_name || item.id}</option>)}</datalist></label>
       {choices.length > 0 && <fieldset className="provider-models"><legend>会话模型</legend>{choices.map((item) => <label key={item.id} title={item.id}><input type="checkbox" checked={item.id === model || enabled.includes(item.id)} disabled={item.id === model} onChange={(event) => setEnabled((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id))} />{item.display_name || item.id}{item.id === model && <small>默认</small>}</label>)}</fieldset>}
     </div>

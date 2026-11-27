@@ -81,7 +81,7 @@ export interface SessionView {
 export type ReasoningEffort = 'default' | 'off' | 'low' | 'medium' | 'high';
 export type ProviderProtocol = 'openai' | 'anthropic' | 'gemini';
 export interface CatalogModel { id: string; display_name?: string; thinking?: 'supported' | 'unsupported' | 'unknown'; }
-export interface ModelDetection { protocol: ProviderProtocol; models: CatalogModel[]; fetched_at: string; }
+export interface ModelDetection { protocol: ProviderProtocol; models: CatalogModel[]; fetched_at: string; alternatives?: ProviderProtocol[]; }
 export interface SessionPreferences { approval_mode: string; model_id: string; reasoning_effort?: ReasoningEffort; }
 export interface ModelOption { id: string; name: string; model: string; fallback_model?: string; provider: string; provider_id?: string; provider_name?: string; legacy_id?: string; thinking?: CatalogModel['thinking']; }
 export interface CustomProvider { id: string; name: string; base_url: string; model: string; has_api_key: boolean; protocol?: ProviderProtocol; protocol_source?: 'auto' | 'manual'; models?: string[]; catalog?: CatalogModel[]; catalog_fetched_at?: string; }
