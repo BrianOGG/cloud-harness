@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { api } from './api';
-import type { BudgetExtension, HarnessEvent, RunView, TraceView } from './api';
+import type { BudgetExtension, HarnessEvent, ModelOption, ReasoningEffort, RunView, TraceView } from './api';
 import { ApprovalModeMenu } from './ApprovalMode';
+import { ModelPicker } from './ModelPicker';
+import { ReasoningEffortSlider } from './ReasoningEffort';
 import { approvalModeLabel, approvalOperation, approvalWaitReason, approvalWorkingDirectory } from './approval';
 import { MessageList } from './MessageList';
 import { turnSummary } from './transcript';
@@ -214,7 +216,7 @@ export function PendingTurn({ text }: { text: string }) {
   );
 }
 
-export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, approvalMode, onApprovalModeChange, preferencesBusy }: {
+export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, approvalMode, onApprovalModeChange, preferencesBusy, models, selectedModel, modelsLoading, modelSelectionDisabled, onModelChange, reasoningEffort, onReasoningChange }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -227,6 +229,13 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   approvalMode: string;
   onApprovalModeChange: (value: string) => void;
   preferencesBusy?: boolean;
+  models: ModelOption[];
+  selectedModel?: ModelOption;
+  modelsLoading?: boolean;
+  modelSelectionDisabled?: boolean;
+  onModelChange: (id: string) => void;
+  reasoningEffort?: ReasoningEffort;
+  onReasoningChange: (value: ReasoningEffort) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -249,6 +258,10 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
     <div className="composer">
       <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
       <div className="composer-bar">
+        <div className="composer-preferences">
+          <ModelPicker models={models} selectedModel={selectedModel} loading={modelsLoading} disabled={modelSelectionDisabled} onChange={onModelChange} />
+          <ReasoningEffortSlider model={selectedModel} value={reasoningEffort} disabled={preferencesBusy} onChange={onReasoningChange} />
+        </div>
         <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} disabled={preferencesBusy} />
         <span className="composer-hint">{hint}</span>
         {busy && onStop

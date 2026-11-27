@@ -88,9 +88,12 @@ async function choose(label: string, value: string) {
     }
     return;
   }
-  const select = container.querySelector<HTMLSelectElement>('select[aria-label="' + label + '"]')!;
-  assert.ok(select && !select.disabled);
-  await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="' + label + '"]')!;
+  assert.ok(trigger && !trigger.disabled);
+  await act(async () => { trigger.click(); });
+  const option = [...container.querySelectorAll<HTMLButtonElement>('.composer-model-list [role="option"]')].find((item) => item.dataset.modelId === value)!;
+  assert.ok(option, 'Missing enabled model: ' + value);
+  await act(async () => { option.click(); });
 }
 async function type(selector: string, value: string) {
   const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
@@ -112,13 +115,13 @@ try {
   await test('session preferences load, save, and stay separate across conversations', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
     assert.equal(container.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 文件读取与 Git 查看自动');
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="会话模型"]')!.value, 'profile:fast');
+    assert.equal(container.querySelector<HTMLButtonElement>('button[aria-label="会话模型"]')!.dataset.modelId, 'profile:fast');
     assert.equal([...container.querySelectorAll('.sidebar-nav button')].some((b) => b.textContent === '审批'), false);
     assert.ok(container.textContent?.includes('观测'));
     await choose('审批模式', 'workspace-write');
     assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'workspace-write' });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-id="ses_b"]')!.click(); });
-    assert.equal(container.querySelector<HTMLSelectElement>('select[aria-label="会话模型"]')!.value, 'default');
+    assert.equal(container.querySelector<HTMLButtonElement>('button[aria-label="会话模型"]')!.dataset.modelId, 'default');
     await choose('会话模型', 'profile:fast');
     assert.deepEqual(preferences.ses_b, { model_id: 'profile:fast', approval_mode: 'ask' });
   });
@@ -153,13 +156,16 @@ try {
     assert.equal(scrolledTo, container.querySelector('.wait-card'));
     assert.ok(container.textContent?.includes('最终回答始终可见'));
   });
-  await test('chat header owns model selection and composer only offers the current approval chip', async () => {
+  await test('composer owns model and reasoning controls and preserves the current approval chip', async () => {
     await reset(); await mount();
-    assert.ok(container.querySelector('header select[aria-label="会话模型"]'));
-    assert.equal(container.querySelector('header label'), null);
+    assert.equal(container.querySelector('header [aria-label="会话模型"], header .header-model, header [aria-label="思考强度"], header [role="slider"]'), null);
     const composer = container.querySelector('.composer')!;
     assert.equal(composer.querySelector('select, input, form, .provider-editor'), null);
     assert.equal(composer.querySelectorAll('textarea').length, 1);
+    assert.ok(composer.querySelector('button[aria-label="会话模型"]'));
+    assert.ok(composer.querySelector('[role="slider"][aria-label="思考强度"]'));
+    assert.ok(composer.querySelector('.composer-hint'));
+    assert.ok(composer.querySelector('button[aria-label="发送"]'));
     assert.equal(composer.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
     assert.equal(composer.querySelector('.approval-mode-popover'), null);
     await act(async () => { composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
@@ -199,7 +205,7 @@ try {
     assert.equal(saves.length, 2); assert.equal(saves[1].body?.api_key, undefined); assert.equal(saves[1].body?.id, id);
     await clickText('返回会话');
     assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '保留我的草稿');
-    assert.equal(container.querySelector<HTMLSelectElement>('.header-model')!.value, 'profile:fast');
+    assert.equal(container.querySelector<HTMLButtonElement>('button[aria-label="会话模型"]')!.dataset.modelId, 'profile:fast');
     await choose('会话模型', 'custom:' + id);
     await clickText('设置'); await clickText('删除');
     assert.ok(container.textContent?.includes('当前模型可能不可用'));
@@ -208,9 +214,10 @@ try {
     await clickText('删除'); await clickText('确认删除'); assert.equal(providers.length, 0);
     assert.equal(preferences.ses_a.model_id, 'custom:' + id);
     await clickText('返回会话');
-    assert.ok(container.querySelector('.header-model')?.textContent?.includes('模型不可用'));
+    assert.ok(container.querySelector('button[aria-label="会话模型"]')?.textContent?.includes('模型不可用'));
     assert.ok(container.textContent?.includes('当前模型不可用，请重新选择'));
     assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, true);
+    assert.equal(container.querySelector('.composer [aria-label="思考强度"]')!.getAttribute('aria-disabled'), 'true');
     assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '保留我的草稿');
     await choose('会话模型', 'default');
     assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, false);
@@ -219,6 +226,7 @@ try {
     await reset(); models = []; await mount(); await type('textarea', '尚未发送');
     assert.ok(container.textContent?.includes('还没有已配置模型'));
     assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, true);
+    assert.equal(container.querySelector('.composer [aria-label="思考强度"]')!.getAttribute('aria-disabled'), 'true');
     await clickText('去配置模型服务'); await clickText('返回会话');
     assert.equal(container.querySelector<HTMLTextAreaElement>('textarea')!.value, '尚未发送');
     assert.equal(seen.some((r) => r.path.endsWith('/runs?wait=0')), false);

@@ -448,8 +448,8 @@ code, pre, .mono { font-family: var(--mono); }
 .value-chip:disabled { cursor: wait; opacity: .6; }
 .value-chip:focus-visible, .mode-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .value-chip > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.header-model { flex: 0 1 auto; max-width: min(38vw, 260px); text-overflow: ellipsis; }
-.composer-bar { gap: 8px; }
+.composer-bar { flex-wrap: wrap; gap: 8px; }
+.composer-preferences { display: flex; align-items: center; flex: 1 1 300px; gap: 8px; min-width: 0; }
 .composer-bar > .composer-hint { flex: 1; text-align: right; }
 .approval-mode { position: relative; min-width: 0; max-width: calc(100% - 50px); }
 .approval-mode > .value-chip { max-width: 100%; }
@@ -489,28 +489,70 @@ code, pre, .mono { font-family: var(--mono); }
   .composer-bar > .composer-hint { display: none; }
   .composer-bar > .send { margin-left: auto; }
   .topbar h1 { font-size: 13px; }
-  .header-model { max-width: 42vw; }
   .settings-page .page-head { align-items: flex-start; flex-direction: column; }
   .value-chip { position: relative; }
   .value-chip::before { position: absolute; inset: -7px 0; content: ''; }
 }
 
-/* Model-service form and the compact next-turn reasoning choice. */
-.header-reasoning { flex: 0 0 auto; max-width: 125px; }
-.reasoning-effort { position: relative; flex: 0 0 auto; min-width: 0; }
-.reasoning-effort-popover { position: absolute; z-index: 12; top: calc(100% + 8px); right: 0; width: 120px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
-.reasoning-effort-option { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 30px; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; text-align: left; }
-.reasoning-effort-option:hover, .reasoning-effort-option[aria-pressed='true'] { background: var(--accent-soft); }
-.reasoning-effort-option:disabled { opacity: .45; cursor: not-allowed; }
-.reasoning-effort-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Custom next-turn model list and discrete reasoning slider. */
+.composer-model { position: relative; flex: 1 1 110px; min-width: 0; max-width: 220px; }
+.composer-model-button { justify-content: space-between; width: 100%; }
+.composer-model-button[aria-expanded='true'] { background: var(--accent-soft); }
+.composer-model-popover { position: absolute; z-index: 12; bottom: calc(100% + 8px); left: 0; display: flex; flex-direction: column; width: min(340px, calc(100vw - 64px)); max-height: min(360px, 40dvh); padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.composer-model-popover > input { flex: none; width: 100%; min-width: 0; margin-bottom: 4px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 12px; }
+.composer-model-popover > input:focus-visible, .composer-model-option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.composer-model-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.model-group-label { padding: 5px 8px; color: var(--text-tertiary); font-size: 11px; }
+.composer-model-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; text-align: left; }
+.composer-model-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-option:hover, .composer-model-option[aria-selected='true'] { background: var(--accent-soft); }
+.model-search-empty { margin: 8px; color: var(--text-secondary); font-size: 12px; }
+.reasoning-effort { flex: 0 0 192px; gap: 12px; padding-inline: 18px 8px; cursor: pointer; user-select: none; }
+.reasoning-effort[aria-disabled='true'] { opacity: .5; cursor: not-allowed; background: var(--surface); }
+.reasoning-effort[data-dragging='true'] { background: var(--accent-soft); cursor: grabbing; }
+.reasoning-track { position: relative; flex: 1; height: 28px; min-width: 0; touch-action: none; }
+.reasoning-rail, .reasoning-fill { position: absolute; top: 7px; left: 0; height: 2px; border-radius: 2px; pointer-events: none; }
+.reasoning-rail { width: 100%; background: var(--line-strong); }
+.reasoning-fill { background: var(--accent); }
+.reasoning-notch { position: absolute; top: 0; width: 24px; height: 28px; transform: translateX(-50%); text-align: center; }
+.reasoning-dot { position: absolute; top: 5px; left: 10px; width: 6px; height: 6px; border: 1px solid var(--text-tertiary); border-radius: 50%; background: var(--surface); }
+.reasoning-notch-label { position: absolute; top: 12px; left: 0; width: 100%; color: var(--text-secondary); font-size: 10px; line-height: 14px; }
+.reasoning-notch[data-available='false'] { opacity: .3; }
+.reasoning-notch[data-current='true'] .reasoning-notch-label { color: var(--accent); }
+.reasoning-thumb { position: absolute; top: 2px; width: 12px; height: 12px; transform: translateX(-50%); border: 2px solid var(--surface); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent); pointer-events: none; transition: left .1s ease; }
+.reasoning-current { flex: 0 0 36px; color: var(--text-secondary); font-size: 12px; text-align: right; }
+@media (max-width: 340px) {
+  .composer-preferences { flex-wrap: wrap; }
+  .composer-model { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-thumb { transition: none; }
+}
+
+/* Keep the single model catalog and semantic inputs, with custom controls. */
 .provider-protocol { align-items: flex-end; }
 .provider-model-search { display: flex; align-items: end; gap: 8px; }
 .provider-model-search > label { flex: 1; min-width: 0; }
-.provider-model-list { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-top: 8px; }
-.provider-model-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; }
+.provider-model-list { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 6px; margin-top: 8px; }
+.provider-model-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 8px; border-radius: 8px; }
+.provider-model-row:hover, .provider-model-row:has(input[type="radio"]:checked) { background: var(--accent-soft); }
 .provider-form .provider-model-row label { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .provider-model-row label:first-child { flex: 1; }
 .provider-model-row small { display: block; }
 .provider-model-row input { flex: 0 0 auto; }
 .provider-model-default { flex-shrink: 0; white-space: nowrap; }
 .provider-other-models > summary { cursor: pointer; padding: 8px 0; color: var(--text-secondary); font-size: 13px; }
+
+.settings-page .provider-model-row .model-choice { appearance: none; display: grid; place-content: center; flex: 0 0 auto; width: 16px; height: 16px; margin: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); cursor: pointer; }
+.settings-page .model-choice::before { content: ''; width: 8px; height: 8px; transform: scale(0); }
+.settings-page .model-choice:checked { border-color: var(--accent); background: var(--accent); }
+.settings-page .model-choice[type='checkbox']::before { width: 4px; height: 8px; margin-top: -2px; border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg) scale(0); }
+.settings-page .model-choice[type='checkbox']:checked::before { transform: rotate(45deg) scale(1); }
+.settings-page .model-choice[type='radio'] { border-radius: 50%; }
+.settings-page .model-choice[type='radio']::before { width: 6px; height: 6px; border-radius: 50%; background: var(--surface); }
+.settings-page .model-choice[type='radio']:checked::before { transform: scale(1); }
+.settings-page .model-choice:hover:not(:disabled) { border-color: var(--accent); }
+.settings-page .model-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-page .model-choice:disabled { opacity: .55; cursor: not-allowed; }
+.provider-model-row label { cursor: pointer; }
+.provider-model-row label:has(input:disabled) { cursor: default; }
