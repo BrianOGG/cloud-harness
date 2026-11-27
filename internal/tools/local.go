@@ -243,7 +243,7 @@ func readFileSpec(abs string) Spec {
 func writeFileSpec(abs string) Spec {
 	return Spec{
 		Name:            "write_file",
-		Description:     "Write a UTF-8 text file inside the workspace. Requires a scoped grant or approval.",
+		Description:     "Write a UTF-8 text file inside the workspace. Subject to the session's approval mode.",
 		Required:        []string{"path", "content"},
 		Readonly:        false,
 		Idempotent:      true,
@@ -297,7 +297,7 @@ func writeFileSpec(abs string) Spec {
 func editFileSpec(abs string) Spec {
 	return Spec{
 		Name:            "edit_file",
-		Description:     "Replace a unique string occurrence in a UTF-8 text file inside the workspace. Requires a scoped grant or approval.",
+		Description:     "Replace a unique string occurrence in a UTF-8 text file inside the workspace. Subject to the session's approval mode.",
 		Required:        []string{"path", "old_string", "new_string"},
 		Readonly:        false,
 		Idempotent:      true,
@@ -949,7 +949,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single allowlisted command in the workspace without a shell. On Linux with user namespaces and on macOS, harness control files are hidden from the command; approved dangerous commands are not started when that sandbox is unavailable. Dangerous commands require approval.",
+		Description:     "Run a single command without a shell, with cwd inside the workspace (default: workspace root). Whether dangerous commands need approval depends on the session's approval mode.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,
