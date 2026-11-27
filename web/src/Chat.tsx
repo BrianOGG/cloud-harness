@@ -258,12 +258,12 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
       <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
       <div className="composer-bar">
         <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} disabled={preferencesBusy} />
-        <span className="composer-hint">{hint}</span>
+        {hint && <span className="composer-hint">{hint}</span>}
         <div className="composer-controls-right">
           <ReasoningEffortPicker models={models} selectedModel={selectedModel} modelsLoading={modelsLoading} modelSelectionDisabled={modelSelectionDisabled} value={reasoningEffort} onModelChange={onModelChange} onChange={onReasoningChange} disabled={preferencesBusy} />
           {busy && onStop
             ? <button type="button" className="send stop" onClick={onStop} disabled={stopping} aria-label="停止运行" title="停止运行"><Icon name="stop" /></button>
-            : <button type="button" className="send" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="发送" title="发送（Enter）"><Icon name="up" /></button>}
+            : <button type="button" className="send" onClick={onSubmit} disabled={busy || !value.trim()} aria-label="发送" title="发送"><Icon name="up" /></button>}
         </div>
       </div>
     </div>

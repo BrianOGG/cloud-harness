@@ -19,6 +19,7 @@ const { createRoot } = await import('react-dom/client');
 const { ReasoningEffortSlider } = await import('../src/ReasoningEffort');
 const { ReasoningEffortPicker } = await import('../src/ReasoningEffort');
 const { ModelPicker } = await import('../src/ModelPicker');
+const { Composer } = await import('../src/Chat');
 const container = document.getElementById('root')!;
 const base: ModelOption = { id: 'default', name: 'Default', model: 'base', provider: 'fixture', thinking: 'supported' };
 let root: Root | undefined;
@@ -78,6 +79,43 @@ async function search(value: string) {
 }
 
 try {
+  const composer = (overrides: Partial<React.ComponentProps<typeof Composer>> = {}) => <Composer value="hello" onChange={() => {}} onSubmit={() => {}} busy={false} placeholder="发消息…" approvalMode="ask" onApprovalModeChange={() => {}} models={[base]} selectedModel={base} onModelChange={() => {}} onReasoningChange={() => {}} {...overrides} />;
+  await test('composer omits empty hints and keyboard tips while retaining useful status text', async () => {
+    for (const hint of [undefined, '']) {
+      await mount(composer({ hint }));
+      assert.equal(container.querySelector('.composer-hint'), null);
+      assert.equal(container.querySelector('textarea')?.placeholder, '发消息…');
+      const send = container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!;
+      assert.equal(send.title, '发送');
+      assert.doesNotMatch(container.innerHTML, /Enter|回车/);
+    }
+    for (const hint of ['未连接', '回复后继续本轮']) {
+      await mount(composer({ hint }));
+      assert.equal(container.querySelector('.composer-hint')?.textContent, hint);
+    }
+  });
+  await test('Enter sends, Shift+Enter and IME Enter do not; busy or blank drafts cannot send', async () => {
+    let submits = 0;
+    const onSubmit = () => { submits++; };
+    const enter = async (options: KeyboardEventInit = {}) => {
+      const event = new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
+      await act(async () => { container.querySelector('textarea')!.dispatchEvent(event); });
+      return event.defaultPrevented;
+    };
+    await mount(composer({ onSubmit }));
+    assert.equal(await enter({ shiftKey: true }), false);
+    assert.equal(submits, 0);
+    assert.equal(await enter({ isComposing: true }), false);
+    assert.equal(submits, 0);
+    assert.equal(await enter(), true);
+    assert.equal(submits, 1);
+    for (const state of [{ busy: true }, { value: '   ' }]) {
+      await mount(composer({ ...state, onSubmit }));
+      await enter();
+      assert.equal(submits, 1);
+      assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.disabled, true);
+    }
+  });
   await test('clicks and drags snap only to available notches, and save once on release', async () => {
     await mount(<SliderFixture model={{ ...base, reasoning_type: 'effort', reasoning_values: ['low', 'high'] }} />);
     assert.equal(slider().title, '下一轮生效'); assert.equal(slider().getAttribute('aria-label'), '思考强度');

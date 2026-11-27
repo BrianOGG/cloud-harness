@@ -32,6 +32,28 @@ async function selectFullAuto() {
 }
 const confirmation = () => container.querySelector<HTMLDialogElement>('dialog')!;
 const enable = () => confirmation().querySelector<HTMLButtonElement>('.primary')!;
+const expectedModes = [
+  { id: 'ask', label: '按策略确认', path: 'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01' },
+  { id: 'safe', label: '读取自动', path: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z' },
+  { id: 'workspace-write', label: '工作区自动', path: 'M13.4 14.6 17 11l1.6 1.6-3.6 3.6H13.4z' },
+  { id: 'full-auto', label: '完全自主', path: 'M13 2 3 14h9l-1 8 10-12h-9l1-8z' },
+];
+function assertTrigger(mode: string) {
+  const expected = expectedModes.find((item) => item.id === mode)!;
+  assert.equal(trigger().textContent, '');
+  assert.equal(trigger().dataset.mode, mode);
+  assert.equal(trigger().title, expected.label + ' · 下一轮生效');
+  assert.equal(trigger().children.length, 1);
+  const icon = trigger().querySelector('svg')!;
+  assert.ok(icon);
+  assert.equal(icon.getAttribute('aria-hidden'), 'true');
+  assert.equal(icon.getAttribute('viewBox'), '0 0 24 24');
+  assert.equal(icon.getAttribute('stroke'), 'currentColor');
+  assert.equal(icon.getAttribute('stroke-width'), '2');
+  assert.equal(icon.getAttribute('stroke-linecap'), 'round');
+  assert.equal(icon.getAttribute('stroke-linejoin'), 'round');
+  assert.ok([...icon.querySelectorAll('path')].some((path) => path.getAttribute('d') === expected.path));
+}
 
 try {
   await test('模式短名称与说明保持既定文案', () => {
@@ -47,10 +69,18 @@ try {
     assert.equal(approvalWaitReason(), '此调用需要你确认。');
     assert.doesNotMatch(approvalWaitReason(), /应自动放行|已自动执行|模式未记录/);
   });
-  await test('菜单只展示四种模式短名称，芯片承载下一轮提示', async () => {
+  await test('四种模式使用可区分的纯图标按钮，title 承载短名称和下一轮提示', async () => {
+    const icons = new Set<string>();
+    for (const mode of expectedModes) {
+      await mount(mode.id);
+      assertTrigger(mode.id);
+      icons.add(trigger().querySelector('svg')!.innerHTML);
+    }
+    assert.equal(icons.size, 4);
+  });
+  await test('菜单横排展示模式图标、四种短名称和当前选中勾', async () => {
     await mount();
-    assert.equal(trigger().textContent, '下一轮 · 按策略确认');
-    assert.equal(trigger().title, '下一轮审批模式；不改变正在运行或等待的回合');
+    assertTrigger('ask');
     assert.equal(trigger().getAttribute('aria-expanded'), 'false');
     await open();
     assert.equal(trigger().getAttribute('aria-expanded'), 'true');
@@ -59,6 +89,14 @@ try {
       '按策略确认', '读取自动', '工作区自动', '完全自主',
     ]);
     assert.equal(container.querySelectorAll('.mode-option span').length, 0);
+    for (const [index, option] of [...container.querySelectorAll<HTMLButtonElement>('.mode-option')].entries()) {
+      const expected = expectedModes[index];
+      assert.equal(option.dataset.mode, expected.id);
+      assert.equal(option.firstElementChild?.tagName.toLowerCase(), 'svg');
+      assert.ok([...option.firstElementChild!.querySelectorAll('path')].some((path) => path.getAttribute('d') === expected.path));
+      assert.equal(option.getAttribute('aria-pressed'), String(index === 0));
+      assert.equal(option.querySelectorAll('svg').length, index === 0 ? 2 : 1);
+    }
     const menuText = container.querySelector('.approval-mode-popover')?.textContent || '';
     for (const removed of [
       '按已有规则询问或拒绝。',
@@ -85,7 +123,7 @@ try {
       assert.equal(enable().disabled, true);
       await act(async () => { enable().click(); });
       assert.deepEqual(changed, []);
-      assert.equal(trigger().textContent, '下一轮 · ' + approvalModeLabel(mode));
+      assertTrigger(mode);
       await act(async () => { dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
       assert.equal(enable().disabled, false);
       await act(async () => { enable().click(); });
@@ -106,7 +144,7 @@ try {
       });
       assert.equal(container.querySelector('dialog'), null);
       assert.deepEqual(changed, []);
-      assert.equal(trigger().textContent, '下一轮 · 读取自动');
+      assertTrigger('safe');
     }
 
     changed.length = 0;

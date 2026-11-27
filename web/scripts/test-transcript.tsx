@@ -287,7 +287,11 @@ try {
       await render(<App />);
       assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区自动」/);
       assert.equal(container.querySelector('.run-snapshot'), null);
-      assert.match(container.querySelector('.composer [aria-label="审批模式"]')!.textContent!, /下一轮 · 读取自动/);
+      const modeButton = container.querySelector<HTMLButtonElement>('.composer [aria-label="审批模式"]')!;
+      assert.equal(modeButton.textContent, '');
+      assert.equal(modeButton.dataset.mode, 'safe');
+      assert.equal(modeButton.title, '读取自动 · 下一轮生效');
+      assert.ok(modeButton.querySelector('svg'));
       await click('.composer [aria-label="审批模式"]');
       await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[0].click(); });
       assert.equal(submits, 0, 'preference changes must not approve current command');
