@@ -11,10 +11,13 @@ A spec carries the name, description, JSON schema, whether it is readonly, idemp
 ## Model instructions and approval modes
 
 The default system instructions describe Cloud Harness, workspace boundaries,
-command parsing, and honest identity reporting. They do not name or inject a
-provider or model. When no identity has been supplied in the conversation, the
-assistant should say it runs in Cloud Harness and does not know the underlying
-model. The tool catalog is supplied separately in the request's tool definitions.
+command parsing, and fact-based identity reporting. On that path, each new run
+includes its configured model name when available, the process hostname when
+available, and the operating system. The instructions tell the assistant to use
+those facts or tool observations and not invent unverified details. If no model
+is configured, no model name is added. Resume requests keep the system message
+frozen with the run. The tool catalog is supplied separately in the request's
+tool definitions.
 
 The second system message is generated from the run's approval mode. Explicit
 policy decisions and existing grants still apply; these are the mode defaults:

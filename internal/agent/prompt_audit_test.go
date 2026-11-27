@@ -30,23 +30,29 @@ func assertPromptAuditNeutral(t *testing.T, label, text string) {
 	}
 }
 
-func promptAuditRequest(t *testing.T, mode string, plan bool) provider.Request {
+func promptAuditRequestWithConfig(t *testing.T, mode string, plan bool, opts RunOptions, managerModel string, routing config.ModelRouting) provider.Request {
 	t.Helper()
 	isolateRuleConfig(t)
 	mock := &provider.Mock{Responses: []domain.ModelResponse{textOnly("done")}}
 	m, _, _ := testManager(t, mock)
 	m.SkipPlanner, m.DisableRepoMap, m.DisableSnapshots = true, true, true
-	m.ModelRouting = &config.ModelRouting{}
+	m.Model, m.ModelRouting = managerModel, &routing
 	session, err := m.CreateSession(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A selected model belongs in routing metadata, never the system text.
-	run, err := m.RunMessageWithOptions(t.Context(), session.ID, "Audit the system instructions.", RunOptions{ApprovalMode: mode, Plan: plan, Model: "gpt-prompt-audit-fixture"})
+	opts.ApprovalMode, opts.Plan = mode, plan
+	run, err := m.RunMessageWithOptions(t.Context(), session.ID, "Audit the system instructions.", opts)
 	if err != nil || run.Status != domain.RunCompleted || len(mock.Requests) != 1 {
 		t.Fatalf("run=%+v error=%v requests=%d", run, err, len(mock.Requests))
 	}
 	req := mock.Requests[0]
+	return req
+}
+
+func promptAuditRequest(t *testing.T, mode string, plan bool) provider.Request {
+	t.Helper()
+	req := promptAuditRequestWithConfig(t, mode, plan, RunOptions{Model: "gpt-prompt-audit-fixture"}, "", config.ModelRouting{})
 	if req.Model != "gpt-prompt-audit-fixture" {
 		t.Fatalf("selected model was not routed: %q", req.Model)
 	}
@@ -112,10 +118,9 @@ func TestPromptAuditRequestMatchesApprovalMode(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			req := promptAuditRequest(t, mode, false)
 			text, _, count := promptAuditSystemText(req)
-			if count != 2 || req.Messages[0].Content != defaultSystemForMode(mode) || req.Messages[1].Content != toolDigest(mode) {
+			if count != 2 || req.Messages[0].Content != sessionSystem(mode, "gpt-prompt-audit-fixture") || req.Messages[1].Content != toolDigest(mode) {
 				t.Fatalf("incorrect system instructions: %+v", req.Messages)
 			}
-			assertPromptAuditNeutral(t, mode, text)
 			assertPromptAuditToolReferences(t, text, req.Tools)
 			modePhrase := map[string]string{
 				"ask":             "Read-only tools and safe commands run directly; write_file, edit_file, and other commands wait",
@@ -143,12 +148,67 @@ func TestPromptAuditRequestMatchesApprovalMode(t *testing.T) {
 				t.Fatal("approval mode lost its waiting instructions")
 			}
 			assertPromptAuditCommandRules(t, mode, text)
-			for _, phrase := range []string{"text-only response ends the turn", "only tool call in its response", "do not know the underlying model"} {
+			for _, phrase := range []string{"text-only response ends the turn", "only tool call in its response", "Do not invent facts that were not provided in this context or observed through tools."} {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("missing instruction %q", phrase)
 				}
 			}
+			for _, forbidden := range []string{"do not know the underlying model", "do not claim a provider or model identity", "documentation", "go to the docs", "check docs"} {
+				if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+					t.Errorf("system text contains obsolete refusal %q", forbidden)
+				}
+			}
 		})
+	}
+}
+
+func TestPromptAuditConfiguredModelFacts(t *testing.T) {
+	cases := []struct {
+		name         string
+		options      RunOptions
+		manager      string
+		routing      config.ModelRouting
+		wantModel    string
+		requestModel string
+	}{
+		{name: "selected run model wins", options: RunOptions{Model: "selected-fixture"}, manager: "manager-fixture", routing: config.ModelRouting{ModelProfiles: map[string]config.ModelProfile{"work": {Model: "profile-fixture"}}, ModelRoles: config.ModelRoles{Executor: "work"}}, wantModel: "selected-fixture", requestModel: "selected-fixture"},
+		{name: "executor profile fallback", routing: config.ModelRouting{ModelProfiles: map[string]config.ModelProfile{"work": {Model: "profile-fixture"}}, ModelRoles: config.ModelRoles{Executor: "work"}}, manager: "manager-fixture", wantModel: "profile-fixture", requestModel: "profile-fixture"},
+		{name: "manager model fallback", manager: "manager-fixture", wantModel: "manager-fixture", requestModel: "manager-fixture"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := promptAuditRequestWithConfig(t, "ask", false, tc.options, tc.manager, tc.routing)
+			if req.Messages[0].Content != sessionSystem("ask", tc.wantModel) {
+				t.Fatalf("system model fact mismatch: %q", req.Messages[0].Content)
+			}
+			if !strings.Contains(req.Messages[0].Content, "This run is configured to use model "+tc.wantModel+".") {
+				t.Fatalf("system text does not state configured model %q: %q", tc.wantModel, req.Messages[0].Content)
+			}
+			if req.Model != tc.requestModel {
+				t.Fatalf("provider request model=%q, want %q", req.Model, tc.requestModel)
+			}
+		})
+	}
+}
+
+func TestPromptAuditOmitsUnknownModelAndIncludesRuntimeFacts(t *testing.T) {
+	req := promptAuditRequestWithConfig(t, "ask", false, RunOptions{}, "", config.ModelRouting{})
+	text, _, count := promptAuditSystemText(req)
+	if count != 2 || req.Messages[0].Content != sessionSystem("ask", "") {
+		t.Fatalf("system messages do not match generated facts: %+v", req.Messages)
+	}
+	if strings.Contains(text, "configured to use model") {
+		t.Fatalf("system text invented a model: %q", text)
+	}
+	for _, phrase := range []string{runtimeContext(), "Do not invent facts that were not provided in this context or observed through tools.", "Do not invent unverified hardware, location, or filesystem details."} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("system text missing %q", phrase)
+		}
+	}
+	for _, forbidden := range []string{"do not know the underlying model", "do not claim a provider or model identity", "documentation", "go to the docs", "check docs"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Errorf("system text contains obsolete refusal %q", forbidden)
+		}
 	}
 }
 
@@ -187,10 +247,12 @@ func TestPromptAuditResumeKeepsFrozenCommandRules(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run, err := m.RunMessageWithOptions(t.Context(), session.ID, "inspect command rules", RunOptions{ApprovalMode: mode})
+			initialModel := "resume-fixture-" + mode
+			run, err := m.RunMessageWithOptions(t.Context(), session.ID, "inspect command rules", RunOptions{ApprovalMode: mode, Model: initialModel})
 			if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
 				t.Fatalf("initial run=%+v err=%v", run, err)
 			}
+			initialSystem := mock.Requests[0].Messages[0].Content
 			nextMode := "full-auto"
 			if mode == "full-auto" {
 				nextMode = "ask"
@@ -205,7 +267,7 @@ func TestPromptAuditResumeKeepsFrozenCommandRules(t *testing.T) {
 			}
 			req := mock.Requests[1]
 			text, _, count := promptAuditSystemText(req)
-			if count != 2 || req.Messages[0].Content != defaultSystemForMode(mode) || req.Messages[1].Content != toolDigest(mode) {
+			if count != 2 || req.Messages[0].Content != initialSystem || req.Messages[0].Content != sessionSystem(mode, initialModel) || req.Messages[1].Content != toolDigest(mode) {
 				t.Fatalf("resumed prompt used new preferences: %+v", req.Messages)
 			}
 			assertPromptAuditCommandRules(t, mode, text)
@@ -329,7 +391,9 @@ func TestPromptAuditPlanUsesItsRegistry(t *testing.T) {
 			if req.Messages[1].Content != planToolDigest || !strings.Contains(text, "read-only plan mode") {
 				t.Fatal("plan instructions were replaced by the session mode")
 			}
-			assertPromptAuditNeutral(t, "plan request", text)
+			if req.Messages[0].Content != sessionSystem(mode, "gpt-prompt-audit-fixture") {
+				t.Fatal("plan request omitted its configured model or runtime facts")
+			}
 			assertPromptAuditToolReferences(t, text, req.Tools)
 			for _, name := range []string{"write_file", "edit_file", "run_command", "execute_program", "delegate_task", "update_plan"} {
 				if offeredTool(req, name) {
@@ -369,6 +433,9 @@ func TestPromptAuditChildUsesItsRegistry(t *testing.T) {
 	assertPromptAuditToolReferences(t, text, req.Tools)
 	if req.Messages[1].Content != childToolDigest || offeredTool(req, "ask_user") || offeredTool(req, "delegate_task") {
 		t.Fatal("child instructions contradict its tool registry")
+	}
+	if req.Messages[0].Content != m.System {
+		t.Fatal("custom system text was rewritten")
 	}
 }
 
@@ -417,9 +484,9 @@ func TestPromptAuditAuxiliaryRequestsNeutral(t *testing.T) {
 	}
 }
 
-// Cover inline system templates too, without copying production strings into
+// Cover inline system prompts too, without copying production strings into
 // fixtures. Runtime request tests above exercise each memory/planner path.
-func TestPromptAuditInlineSystemTemplatesNeutral(t *testing.T) {
+func TestPromptAuditInlineSystemPromptsNeutral(t *testing.T) {
 	for _, file := range []string{"memory.go", "../context/summarize.go", "../provider/oracle.go"} {
 		t.Run(file, func(t *testing.T) {
 			source, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
@@ -441,7 +508,7 @@ func TestPromptAuditInlineSystemTemplatesNeutral(t *testing.T) {
 				return true
 			})
 			if count == 0 {
-				t.Fatal("no templates inspected")
+				t.Fatal("no prompts inspected")
 			}
 		})
 	}

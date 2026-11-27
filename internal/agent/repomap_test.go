@@ -99,6 +99,7 @@ func TestRepoMapPreservesImagesInDynamicMessages(t *testing.T) {
 }
 
 func TestRepoMapDisabledAndEmptyWorkspace(t *testing.T) {
+	isolateRuleConfig(t)
 	for _, tc := range []struct {
 		name       string
 		disable    bool
@@ -134,7 +135,7 @@ func TestRepoMapDisabledAndEmptyWorkspace(t *testing.T) {
 			}
 			if tc.disable {
 				want := []provider.Message{
-					{Role: "system", Content: defaultSystem},
+					{Role: "system", Content: sessionSystem("ask", "")},
 					{Role: "system", Content: toolDigest("ask")},
 					{Role: "user", Content: "hello"},
 				}
