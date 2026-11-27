@@ -34,7 +34,7 @@ export function ApprovalModeMenu({ value, onChange, disabled }: { value: string;
         if (mode.id === value) { button.current?.focus(); return; }
         if (mode.id === 'full-auto') { setAcknowledged(false); setConfirming(true); return; }
         onChange(mode.id); button.current?.focus();
-      }}><strong>{mode.label}</strong><span>{mode.description}</span>{value === mode.id && <Icon name="check" size={13} />}</button>)}
+      }}><strong>{mode.label}</strong>{value === mode.id && <Icon name="check" size={13} />}</button>)}
     </div>}
     {confirming && <dialog ref={dialog} className="full-auto-confirmation" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={() => setConfirming(false)} onClose={() => setConfirming(false)}>
       <h2 id={titleId}>确认启用完全自主？</h2>
