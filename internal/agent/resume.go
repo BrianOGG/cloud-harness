@@ -470,17 +470,31 @@ func (m *Manager) resumeApproval(ctx context.Context, run storage.Run, leaseVers
 		}
 		st.planTools.markUnknownTools(&batch)
 	} else {
-		if err := m.grantApprovedInvocation(ctx, run, *waiting); err != nil {
+		denial, err := m.grantApprovedInvocation(ctx, run, *waiting, st.approvalMode)
+		if err != nil {
 			return storage.Run{}, err
 		}
-		if err := batch.Approve(waiting.ID); err != nil {
-			return storage.Run{}, err
-		}
-		stopHookHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
-		driveErr := m.driveBatch(m.withOracle(ctx, run.ID, leaseVersion, nil), run, &batch, st)
-		stopHookHeartbeat()
-		if err := driveErr; err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
-			return storage.Run{}, err
+		if denial != nil {
+			// Approval cannot resolve an invalid/control-file resource scope. Pair
+			// a tool-level denial and let the model replan instead of failing the run.
+			if err := batch.Deny(waiting.ID); err != nil {
+				return storage.Run{}, err
+			}
+			for i := range batch.Invocations {
+				if batch.Invocations[i].ID == waiting.ID {
+					batch.Invocations[i].Result = &domain.CallResult{Error: denial.WithRef(waiting.ProviderCallID)}
+				}
+			}
+		} else {
+			if err := batch.Approve(waiting.ID); err != nil {
+				return storage.Run{}, err
+			}
+			stopHookHeartbeat := m.startLeaseHeartbeat(ctx, run.ID, leaseVersion)
+			driveErr := m.driveBatch(m.withOracle(ctx, run.ID, leaseVersion, nil), run, &batch, st)
+			stopHookHeartbeat()
+			if err := driveErr; err != nil && !errors.Is(err, domain.ErrUnknownOutcome) {
+				return storage.Run{}, err
+			}
 		}
 	}
 	if err := m.Store.UpdateBatch(ctx, storage.StoredBatch{
@@ -533,19 +547,16 @@ func (m *Manager) recordPendingApproval(ctx context.Context, run storage.Run, ba
 	})
 }
 
-func (m *Manager) grantApprovedInvocation(ctx context.Context, run storage.Run, inv domain.Invocation) error {
+func (m *Manager) grantApprovedInvocation(ctx context.Context, run storage.Run, inv domain.Invocation, mode string) (*domain.Error, error) {
 	if m.Store == nil {
-		return nil
+		return nil, nil
 	}
 	now := m.now()
-	resources, err := m.approvalResources(inv)
-	if err != nil {
-		return err
-	}
+	resources, resourceErr := m.approvalResources(inv, mode)
 	scope := strings.Join(resources, ",")
 	approvals, err := m.Store.ListApprovals(ctx, run.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	found := false
 	for _, a := range approvals {
@@ -556,7 +567,7 @@ func (m *Manager) grantApprovedInvocation(ctx context.Context, run storage.Run, 
 	}
 	if found {
 		if err := m.Store.UpdateApprovalState(ctx, run.ID, inv.ID, "approved"); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		if err := m.Store.SaveApproval(ctx, domain.Approval{
@@ -568,8 +579,11 @@ func (m *Manager) grantApprovedInvocation(ctx context.Context, run storage.Run, 
 			State:         "approved",
 			CreatedAt:     now,
 		}); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	if resourceErr != nil {
+		return domain.E(domain.CodeAuthDenied, resourceErr.Error()), nil
 	}
 	if len(resources) == 0 {
 		resources = []string{""}
@@ -587,17 +601,21 @@ func (m *Manager) grantApprovedInvocation(ctx context.Context, run storage.Run, 
 			State:         "active",
 		}
 		if err := m.Store.SaveGrant(ctx, g, now); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func (m *Manager) approvalResources(inv domain.Invocation) ([]string, error) {
+func (m *Manager) approvalResources(inv domain.Invocation, mode ...string) ([]string, error) {
 	if m.Broker == nil {
 		return nil, nil
 	}
-	return m.Broker.ExtractResources(inv.Name, inv.Arguments)
+	req := tools.Request{Tool: inv.Name, Args: inv.Arguments}
+	if len(mode) > 0 {
+		req.ApprovalMode = mode[0]
+	}
+	return m.Broker.ExtractRequestResources(req)
 }
 
 func (m *Manager) resumeReconcile(ctx context.Context, run storage.Run, leaseVersion int64, snap snapshot, st *loopState, success bool) (storage.Run, error) {

@@ -96,15 +96,23 @@ func (m *Manager) askOracle(ctx context.Context, runID string, leaseVersion int6
 	persist := context.WithoutCancel(ctx)
 	if lastModel != "" {
 		usage := m.usageForModel(lastModel, resp)
-		hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CachedInputTokens > 0
+		hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CachedInputTokens > 0 ||
+			usage.CacheCreationInputTokens > 0 || usage.ReasoningTokens > 0 || usage.CacheReported || usage.ReasoningReported
 		m.chargeUsage(persist, runID, usage)
 		elapsed := time.Since(started).Milliseconds()
-		if eventErr := m.event(persist, runID, "oracle.asked", map[string]any{
+		event := map[string]any{
 			"question_length": input.QuestionLength, "code_bytes": input.CodeBytes, "model": usage.Model,
 			"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 			"cached_input_tokens": usage.CachedInputTokens, "latency_ms": elapsed,
 			"cost_usd": usage.CostUSD, "cost_known": usage.CostKnown,
-		}); eventErr != nil {
+		}
+		if usage.CacheReported {
+			event["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+		}
+		if usage.ReasoningReported {
+			event["reasoning_tokens"] = usage.ReasoningTokens
+		}
+		if eventErr := m.event(persist, runID, "oracle.asked", event); eventErr != nil {
 			return "", eventErr
 		}
 		if err == nil || hasUsage {

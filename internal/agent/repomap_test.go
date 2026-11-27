@@ -135,7 +135,7 @@ func TestRepoMapDisabledAndEmptyWorkspace(t *testing.T) {
 			if tc.disable {
 				want := []provider.Message{
 					{Role: "system", Content: defaultSystem},
-					{Role: "system", Content: defaultTools},
+					{Role: "system", Content: toolDigest("ask")},
 					{Role: "user", Content: "hello"},
 				}
 				if !reflect.DeepEqual(mock.Requests[0].Messages, want) {

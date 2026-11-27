@@ -436,13 +436,17 @@ func scrubDoctor(s string) string {
 }
 
 type statsRow struct {
-	Group        string  `json:"group"`
-	ModelCalls   int     `json:"model_calls"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CachedTokens int64   `json:"cached_tokens"`
-	CacheHitRate float64 `json:"cache_hit_rate"`
-	Cost         any     `json:"cost"`
+	Group               string  `json:"group"`
+	ModelCalls          int     `json:"model_calls"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CachedTokens        int64   `json:"cached_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_input_tokens"`
+	ReasoningTokens     int64   `json:"reasoning_tokens"`
+	CacheReported       bool    `json:"cache_reported"`
+	ReasoningReported   bool    `json:"reasoning_reported"`
+	CacheHitRate        float64 `json:"cache_hit_rate"`
+	Cost                any     `json:"cost"`
 }
 
 type statsReport struct {
@@ -546,11 +550,11 @@ func cmdStats(args []string, stdout, stderr io.Writer) int {
 		return writeJSON(stdout, report)
 	}
 	_, _ = fmt.Fprintf(stdout, "Stats by %s, last %d days (since %s UTC); oracle ledger covers all runs\n", report.By, report.Days, report.Since)
-	_, _ = fmt.Fprintln(stdout, "GROUP\tMODEL CALLS\tINPUT\tOUTPUT\tCACHED\tCACHE HIT\tCOST")
+	_, _ = fmt.Fprintln(stdout, "GROUP\tMODEL CALLS\tINPUT\tOUTPUT\tCACHED\tCACHE WRITE\tREASONING\tCACHE HIT\tCOST")
 	for _, row := range report.Results {
-		_, _ = fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", row.Group, row.ModelCalls, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheHitRate*100, formatCost(row.Cost))
+		_, _ = fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", row.Group, row.ModelCalls, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheCreationTokens, row.ReasoningTokens, row.CacheHitRate*100, formatCost(row.Cost))
 	}
-	_, _ = fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
+	_, _ = fmt.Fprintf(stdout, "TOTAL\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f%%\t%s\n", report.Totals.ModelCalls, report.Totals.InputTokens, report.Totals.OutputTokens, report.Totals.CachedTokens, report.Totals.CacheCreationTokens, report.Totals.ReasoningTokens, report.Totals.CacheHitRate*100, formatCost(report.Totals.Cost))
 	_, _ = fmt.Fprintf(stdout, "ORACLE CONSULTATIONS\t%d\n", report.OracleConsultations)
 	_, _ = fmt.Fprintf(stdout, "ORACLE ESTIMATED COST (USD)\t%s\n", formatKnownCost(report.OracleEstimatedCostUSD, report.OracleCostKnown))
 	_, _ = fmt.Fprintln(stdout, "MODEL USAGE BY MODEL (ALL RUNS)")
@@ -668,6 +672,10 @@ func addUsage(bucket *statsAccumulator, record sqlite.UsageRecord) {
 	bucket.row.InputTokens += int64(record.Usage.InputTokens)
 	bucket.row.OutputTokens += int64(record.Usage.OutputTokens)
 	bucket.row.CachedTokens += int64(record.Usage.CachedInputTokens)
+	bucket.row.CacheCreationTokens += int64(record.Usage.CacheCreationInputTokens)
+	bucket.row.ReasoningTokens += int64(record.Usage.ReasoningTokens)
+	bucket.row.CacheReported = bucket.row.CacheReported || record.Usage.CacheReported
+	bucket.row.ReasoningReported = bucket.row.ReasoningReported || record.Usage.ReasoningReported
 	if !record.Usage.CostKnown {
 		bucket.costCovered = false
 		return

@@ -110,7 +110,7 @@ func TestBudgetRouteRaisesTheTokenLimit(t *testing.T) {
 	m.Provider = &provider.Mock{Responses: []domain.ModelResponse{
 		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{
 			{Ordinal: 0, Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{ProviderCallID: "c1", Name: "retrieve_history", Arguments: json.RawMessage(`{"query":"anything"}`)}},
-			{Ordinal: 1, Kind: domain.ItemUsage, Usage: &domain.Usage{InputTokens: 90, OutputTokens: 20}},
+			{Ordinal: 1, Kind: domain.ItemUsage, Usage: &domain.Usage{InputTokens: 90, OutputTokens: 20, CachedInputTokens: 12, CacheCreationInputTokens: 5, ReasoningTokens: 7, CacheReported: true, ReasoningReported: true}},
 		}},
 		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Ordinal: 0, Kind: domain.ItemText, Text: "done"}}},
 	}}
@@ -138,6 +138,18 @@ func TestBudgetRouteRaisesTheTokenLimit(t *testing.T) {
 	rec := post(`{"extra_tokens":500}`)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"COMPLETED"`) || !strings.Contains(rec.Body.String(), `"max_tokens":600`) || !strings.Contains(rec.Body.String(), `"used_input_tokens":90`) {
 		t.Fatalf("budget %d %s", rec.Code, rec.Body)
+	}
+	for _, path := range []string{"/v1/runs/" + run.ID, "/v1/sessions/" + ses.ID + "/runs"} {
+		result := httptest.NewRecorder()
+		h.ServeHTTP(result, httptest.NewRequest(http.MethodGet, path, nil))
+		if result.Code != http.StatusOK {
+			t.Fatalf("get %s: %d %s", path, result.Code, result.Body)
+		}
+		for _, field := range []string{`"used_cached_input_tokens":12`, `"used_cache_creation_input_tokens":5`, `"used_reasoning_tokens":7`, `"cache_reported":true`, `"reasoning_reported":true`} {
+			if !strings.Contains(result.Body.String(), field) {
+				t.Fatalf("get %s omitted %s: %s", path, field, result.Body)
+			}
+		}
 	}
 }
 

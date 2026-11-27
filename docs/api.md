@@ -147,12 +147,22 @@ curl -s -X POST -H "Content-Type: application/json" \
     "max_script_calls": 50, "used_script_calls": 0,
     "max_child_runs": 4, "used_child_runs": 0,
     "max_tokens": 0, "used_input_tokens": 0, "used_output_tokens": 0,
-    "used_cached_input_tokens": 0,
+    "used_cached_input_tokens": 0, "used_cache_creation_input_tokens": 0,
+    "used_reasoning_tokens": 0, "cache_reported": false, "reasoning_reported": false,
     "max_cost_usd": 0, "used_cost_usd": 0
   },
   "version": 1
 }
 ```
+
+The `budget` returned by the single-run endpoint and run snapshots includes
+`used_cache_creation_input_tokens` and `used_reasoning_tokens`. Input includes
+cache hits and cache writes; reasoning is included in output, so the limit
+still applies only to input plus output. `cache_reported` and
+`reasoning_reported` are cumulative: any call reporting an optional field
+(even zero) sets its marker to true. Missing markers on old JSON mean not
+reported; a positive legacy cached-input value can still be displayed.
+Unknown optional counts should be hidden; reported zero counts can be shown.
 
 The `wait` query parameter chooses when the request answers:
 
@@ -426,7 +436,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | `wait_kind` | string, optional | Wait kind, matching `wait_reason` when present. |
 | `question` | string, optional | Pending user question for an `ask_user` wait. |
 | `pending_invocation` | object, optional | Invocation awaiting approval, with the same structure as the single-run view. Its optional `warnings` string array is set when the write targets `AGENTS.md` or `.agents/**`, which changes later runs; clients must show it next to the decision. See [approval warnings](cli.md#approval-warnings-for-behavior-files). |
-| `budget` | object | Model, tool, script, and child-run limits and usage counters, plus the token and estimated-cost limits and usage (`max_tokens`, `used_input_tokens`, `used_output_tokens`, `used_cached_input_tokens`, `max_cost_usd`, `used_cost_usd`). A limit of `0` on tokens or cost is unlimited. |
+| `budget` | object | Model, tool, script, and child-run limits and usage counters, plus the token and estimated-cost limits and usage (`max_tokens`, `used_input_tokens`, `used_output_tokens`, `used_cached_input_tokens`, `used_cache_creation_input_tokens`, `used_reasoning_tokens`, `cache_reported`, `reasoning_reported`, `max_cost_usd`, `used_cost_usd`). Input includes cache reads and writes; reasoning is included in output. A limit of `0` on tokens or cost is unlimited. |
 | `final_answer` | string, optional | Final answer for a completed run. |
 | `error` | object, optional | Error details for a failed run. |
 | `version` | integer | Run version. |

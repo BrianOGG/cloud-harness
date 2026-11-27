@@ -99,7 +99,7 @@ func (m *Manager) decidePolicy(ctx context.Context, run storage.Run, st *loopSta
 func (m *Manager) allowPolicyInvocation(ctx context.Context, run storage.Run, st *loopState, inv domain.Invocation, policy security.PolicyDecision) (bool, error) {
 	legacy, err := m.Broker.Authorize(ctx, tools.Request{
 		RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
-		DefaultAllow:  m.oracleDefaultAllow(inv.Name),
+		DefaultAllow: m.oracleDefaultAllow(inv.Name), ApprovalMode: st.approvalMode,
 		SensitiveSeen: st.sensitive, Egress: isEgressTool(m.Broker, inv.Name), Now: m.now(),
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func (m *Manager) allowPolicyInvocation(ctx context.Context, run storage.Run, st
 	if !ok {
 		return false, domain.E(domain.CodeToolError, "unknown tool "+inv.Name)
 	}
-	resources, resourceErr := m.Broker.ExtractResources(inv.Name, inv.Arguments)
+	resources, resourceErr := m.Broker.ExtractRequestResources(tools.Request{Tool: inv.Name, Args: inv.Arguments, ApprovalMode: st.approvalMode})
 	grants, err := m.Store.ListGrants(ctx, run.ID, run.SessionID, m.now())
 	if err != nil {
 		return false, err
@@ -132,7 +132,8 @@ func (m *Manager) allowPolicyInvocation(ctx context.Context, run storage.Run, st
 	if !decision.Allow {
 		return false, nil
 	}
-	if legacy.OK && !(inv.Name == "run_command" && tools.Dangerous(jsonString(inv.Arguments, "command"), m.Workspace)) {
+	exactCommand := inv.Name == "run_command" && len(resources) == 1 && resources[0] == strings.TrimSpace(jsonString(inv.Arguments, "command"))
+	if legacy.OK && !exactCommand {
 		return true, nil
 	}
 	scope := ""

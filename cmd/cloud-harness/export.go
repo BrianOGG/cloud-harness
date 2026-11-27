@@ -444,6 +444,10 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 		usageTotal.InputTokens += usage.InputTokens
 		usageTotal.OutputTokens += usage.OutputTokens
 		usageTotal.CachedInputTokens += usage.CachedInputTokens
+		usageTotal.CacheCreationInputTokens += usage.CacheCreationInputTokens
+		usageTotal.ReasoningTokens += usage.ReasoningTokens
+		usageTotal.CacheReported = usageTotal.CacheReported || usage.CacheReported
+		usageTotal.ReasoningReported = usageTotal.ReasoningReported || usage.ReasoningReported
 		usageTotal.LatencyMS += usage.LatencyMS
 		responseAt, err := parseExportTime(response.createdAt)
 		if err != nil {
@@ -520,11 +524,15 @@ func readExport(ctx context.Context, db *sql.DB, runID string, cfg config.Config
 	doc.Run["model"] = model
 	doc.Run["model_source"] = modelSource
 	doc.Usage = map[string]any{
-		"model_calls":         responseCount,
-		"input_tokens":        usageTotal.InputTokens,
-		"output_tokens":       usageTotal.OutputTokens,
-		"cached_input_tokens": usageTotal.CachedInputTokens,
-		"latency_ms":          usageTotal.LatencyMS,
+		"model_calls":                 responseCount,
+		"input_tokens":                usageTotal.InputTokens,
+		"output_tokens":               usageTotal.OutputTokens,
+		"cached_input_tokens":         usageTotal.CachedInputTokens,
+		"cache_creation_input_tokens": usageTotal.CacheCreationInputTokens,
+		"reasoning_tokens":            usageTotal.ReasoningTokens,
+		"cache_reported":              usageTotal.CacheReported,
+		"reasoning_reported":          usageTotal.ReasoningReported,
+		"latency_ms":                  usageTotal.LatencyMS,
 	}
 
 	invocationTimes := make(map[string]string)
@@ -812,8 +820,9 @@ func renderExportMarkdown(raw []byte) ([]byte, error) {
 	}
 	fmt.Fprintf(&b, "- Provider: %v\n", doc.Run["provider"])
 	fmt.Fprintf(&b, "- Model: %v (%v)\n", doc.Run["model"], doc.Run["model_source"])
-	fmt.Fprintf(&b, "- Usage: %v input, %v output, %v cached input tokens across %v model calls; %v ms latency\n\n",
-		doc.Usage["input_tokens"], doc.Usage["output_tokens"], doc.Usage["cached_input_tokens"], doc.Usage["model_calls"], doc.Usage["latency_ms"])
+	fmt.Fprintf(&b, "- Usage: %v input, %v output, %v cached input, %v cache creation and %v reasoning tokens across %v model calls; %v ms latency\n\n",
+		doc.Usage["input_tokens"], doc.Usage["output_tokens"], doc.Usage["cached_input_tokens"],
+		doc.Usage["cache_creation_input_tokens"], doc.Usage["reasoning_tokens"], doc.Usage["model_calls"], doc.Usage["latency_ms"])
 	if doc.Run["error"] != nil {
 		b.WriteString("## Run error\n\n```json\n")
 		encoded, err := json.MarshalIndent(doc.Run["error"], "", "  ")

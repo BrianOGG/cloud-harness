@@ -69,7 +69,7 @@ await test('approval history: mapped labels replace raw decisions and unknown va
   function renderDecision(content: string): string {
     const message = fact('msg_decision', { role: 'system', kind: 'approval_decision', content });
     return renderToStaticMarkup(createElement(MessageList, {
-      messages: [message], onInspect: () => {},
+      messages: [message],
     }));
   }
 

@@ -30,6 +30,8 @@ type Spec struct {
 	DataClassification string
 	EgressScope        string
 	ExtractResources   func(args json.RawMessage) ([]string, error)
+	// ExtractRequestResources optionally uses trusted invocation metadata (never model arguments).
+	ExtractRequestResources func(Request) ([]string, error)
 	// StatusProbe reads external state and must not perform the side effect.
 	// Known is false when the probe cannot prove the call landed.
 	StatusProbe func(ctx context.Context, args json.RawMessage) (Probe, error)
@@ -69,6 +71,8 @@ type Result struct {
 
 // Request is one invocation.
 type Request struct {
+	// ApprovalMode comes only from the agent loop/checkpoint snapshot.
+	ApprovalMode     string
 	RunID            string
 	SessionID        string
 	InvocationID     string
@@ -276,14 +280,27 @@ func cleanSchemaNode(m map[string]any) {
 
 // ExtractResources resolves the resource scopes for a tool invocation's arguments.
 func (b *Broker) ExtractResources(tool string, args json.RawMessage) ([]string, error) {
-	spec, ok := b.spec(tool)
+	return b.ExtractRequestResources(Request{Tool: tool, Args: args})
+}
+
+// ExtractRequestResources keeps preflight, approval and dispatch resource scopes
+// consistent when a tool needs trusted run metadata to resolve its arguments.
+func (b *Broker) ExtractRequestResources(req Request) ([]string, error) {
+	spec, ok := b.spec(req.Tool)
 	if !ok {
-		return nil, domain.E(domain.CodeToolError, "unknown tool "+tool)
+		return nil, domain.E(domain.CodeToolError, "unknown tool "+req.Tool)
+	}
+	return spec.resources(req)
+}
+
+func (spec Spec) resources(req Request) ([]string, error) {
+	if spec.ExtractRequestResources != nil {
+		return spec.ExtractRequestResources(req)
 	}
 	if spec.ExtractResources == nil {
 		return nil, nil
 	}
-	return spec.ExtractResources(args)
+	return spec.ExtractResources(req.Args)
 }
 
 // Probe asks the tool whether the side effect is already visible.
@@ -326,16 +343,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	if err := validateArgs(spec, req.Args); err != nil {
 		return Spec{}, security.Decision{}, err
 	}
-	var resources []string
-	unresolved := false
-	if spec.ExtractResources != nil {
-		got, err := spec.ExtractResources(req.Args)
-		if err != nil {
-			unresolved = true
-		} else {
-			resources = got
-		}
-	}
+	resources, resourceErr := spec.resources(req)
 	now := req.Now
 	if now.IsZero() {
 		now = b.now()
@@ -353,7 +361,7 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 		SideEffectClass:     spec.SideEffectClass,
 		Readonly:            spec.Readonly,
 		Resources:           resources,
-		UnresolvedResources: unresolved,
+		UnresolvedResources: resourceErr != nil,
 		DefaultAllow:        req.DefaultAllow,
 		ApprovalPossible:    req.ApprovalPossible,
 		SensitiveSeen:       req.SensitiveSeen,

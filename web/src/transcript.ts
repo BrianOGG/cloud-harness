@@ -79,7 +79,8 @@ export function turnSummary(turn: TranscriptTurn): string {
   if (root?.status === 'COMPLETED') state = turn.finalAnswer ? '工作已完成' : '运行已完成 · 无最终答复';
   else if (root?.status === 'FAILED') state = '运行失败';
   else if (root?.status === 'CANCELLED') state = '运行已取消';
-  else if (root?.status === 'WAITING') state = '等待处理 · 最终答复尚未生成';
-  else if (root?.status === 'RUNNING') state = '正在运行 · 最终答复尚未生成';
-  return `${state} · ${turn.toolCalls} 次工具调用 · ${turn.approvals} 次审批`;
+  else if (root?.status === 'WAITING') state = root.wait_reason === 'APPROVAL' ? '等待批准' : '等待处理';
+  else if (root?.status === 'RUNNING') state = '正在运行';
+  const pendingApprovals = turn.runs.filter((run) => run.status === 'WAITING' && run.wait_reason === 'APPROVAL').length;
+  return [state, turn.toolCalls + ' 次工具调用', pendingApprovals ? pendingApprovals + ' 项待批准' : ''].filter(Boolean).join(' · ');
 }

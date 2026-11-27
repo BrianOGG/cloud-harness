@@ -37,7 +37,7 @@ func TestAskOracleReturnsOnlySanitizedConsultationAdvice(t *testing.T) {
 		domain.ResponseItem{Ordinal: 1, Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{
 			ProviderCallID: "unwanted", Name: "write_file", Arguments: json.RawMessage(`{"path":"oracle.txt","content":"should not write"}`),
 		}},
-		domain.ResponseItem{Ordinal: 2, Kind: domain.ItemUsage, Usage: &domain.Usage{InputTokens: 123, OutputTokens: 27, CachedInputTokens: 11}},
+		domain.ResponseItem{Ordinal: 2, Kind: domain.ItemUsage, Usage: &domain.Usage{InputTokens: 123, OutputTokens: 27, CachedInputTokens: 11, CacheCreationInputTokens: 6, ReasoningTokens: 7, CacheReported: true, ReasoningReported: true}},
 	)
 	mock := &provider.Mock{Responses: []domain.ModelResponse{toolResp(call), consultation, textOnly("main model's answer")}}
 	m, db, root := testManager(t, mock)
@@ -88,9 +88,10 @@ func TestAskOracleReturnsOnlySanitizedConsultationAdvice(t *testing.T) {
 		t.Fatalf("stored model usage: %d rows, error = %v", len(rows), err)
 	}
 	asked := oracleEventPayloads(t, db, run.ID, "oracle.asked")
-	if len(asked) != 1 || len(asked[0]) != 9 || asked[0]["model"] != "planner-primary" ||
+	if len(asked) != 1 || len(asked[0]) != 11 || asked[0]["model"] != "planner-primary" ||
 		asked[0]["question_length"] != float64(utf8.RuneCountInString(question)) || asked[0]["code_bytes"] != float64(len(snippet)) ||
-		asked[0]["input_tokens"] != float64(123) || asked[0]["output_tokens"] != float64(27) || asked[0]["cached_input_tokens"] != float64(11) || asked[0]["latency_ms"] == nil {
+		asked[0]["input_tokens"] != float64(123) || asked[0]["output_tokens"] != float64(27) || asked[0]["cached_input_tokens"] != float64(11) || asked[0]["latency_ms"] == nil ||
+		asked[0]["cache_creation_input_tokens"] != float64(6) || asked[0]["reasoning_tokens"] != float64(7) {
 		t.Fatalf("oracle.asked = %+v", asked)
 	}
 }

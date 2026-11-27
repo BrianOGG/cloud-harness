@@ -1,9 +1,52 @@
 package domain
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 )
+
+func TestBudgetAddUsageTracksBreakdownAndReportedFields(t *testing.T) {
+	b := Budget{}.AddUsage(UsageCharge{
+		InputTokens: 100, OutputTokens: 40, CachedInputTokens: 30,
+		CacheCreationInputTokens: 12, ReasoningTokens: 9, CacheReported: true,
+	})
+	b = b.AddUsage(UsageCharge{InputTokens: 5, OutputTokens: 2, ReasoningReported: true})
+	if b.UsedInputTokens != 105 || b.UsedOutputTokens != 42 || b.UsedCachedInputTokens != 30 ||
+		b.UsedCacheCreationInputTokens != 12 || b.UsedReasoningTokens != 9 || !b.CacheReported || !b.ReasoningReported {
+		t.Fatalf("budget usage breakdown=%+v", b)
+	}
+}
+
+func TestBudgetReadsLegacyJSONWithoutUsageBreakdown(t *testing.T) {
+	var b Budget
+	if err := json.Unmarshal([]byte(`{"max_tokens":100,"used_input_tokens":12,"used_output_tokens":4,"used_cached_input_tokens":3}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.UsedInputTokens != 12 || b.UsedOutputTokens != 4 || b.UsedCachedInputTokens != 3 ||
+		b.UsedCacheCreationInputTokens != 0 || b.UsedReasoningTokens != 0 || b.CacheReported || b.ReasoningReported {
+		t.Fatalf("legacy budget decoded incorrectly: %+v", b)
+	}
+}
+
+func TestUsageLegacyJSONAndReportedZeroRoundTrip(t *testing.T) {
+	var usage Usage
+	if err := json.Unmarshal([]byte(`{"input_tokens":12,"output_tokens":4,"cached_input_tokens":3}`), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.CacheReported || usage.ReasoningReported || usage.CacheCreationInputTokens != 0 || usage.ReasoningTokens != 0 {
+		t.Fatalf("legacy usage=%+v", usage)
+	}
+	zero := Usage{CacheReported: true, ReasoningReported: true}
+	raw, err := json.Marshal(zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip Usage
+	if err := json.Unmarshal(raw, &roundTrip); err != nil || roundTrip != zero {
+		t.Fatalf("zero usage=%+v err=%v", roundTrip, err)
+	}
+}
 
 func TestTokenAndCostLimitsRefuseTheNextModelCall(t *testing.T) {
 	b := Budget{MaxModelCalls: 10, MaxToolCalls: 10, MaxTokens: 100, MaxCostUSD: 0.5}
