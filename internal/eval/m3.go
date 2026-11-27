@@ -400,6 +400,10 @@ func sumUsage(ctx context.Context, db *sqlite.DB, runID string) (domain.Usage, e
 		u.InputTokens += row.Usage.InputTokens
 		u.OutputTokens += row.Usage.OutputTokens
 		u.CachedInputTokens += row.Usage.CachedInputTokens
+		u.CacheCreationInputTokens += row.Usage.CacheCreationInputTokens
+		u.ReasoningTokens += row.Usage.ReasoningTokens
+		u.CacheReported = u.CacheReported || row.Usage.CacheReported
+		u.ReasoningReported = u.ReasoningReported || row.Usage.ReasoningReported
 		u.LatencyMS += row.Usage.LatencyMS
 	}
 	return u, nil

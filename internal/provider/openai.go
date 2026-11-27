@@ -505,15 +505,28 @@ type chatUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	PromptDetails    struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens *int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	CompletionDetails struct {
+		ReasoningTokens *int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 func (u chatUsage) domain() domain.Usage {
+	cached, reasoning := 0, 0
+	if u.PromptDetails.CachedTokens != nil {
+		cached = *u.PromptDetails.CachedTokens
+	}
+	if u.CompletionDetails.ReasoningTokens != nil {
+		reasoning = *u.CompletionDetails.ReasoningTokens
+	}
 	return domain.Usage{
 		InputTokens:       u.PromptTokens,
 		OutputTokens:      u.CompletionTokens,
-		CachedInputTokens: u.PromptDetails.CachedTokens,
+		CachedInputTokens: cached,
+		ReasoningTokens:   reasoning,
+		CacheReported:     u.PromptDetails.CachedTokens != nil,
+		ReasoningReported: u.CompletionDetails.ReasoningTokens != nil,
 	}
 }
 

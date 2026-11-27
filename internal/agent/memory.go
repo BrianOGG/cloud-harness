@@ -585,6 +585,10 @@ func usageOf(resp domain.ModelResponse) domain.Usage {
 		u.InputTokens += it.Usage.InputTokens
 		u.OutputTokens += it.Usage.OutputTokens
 		u.CachedInputTokens += it.Usage.CachedInputTokens
+		u.CacheCreationInputTokens += it.Usage.CacheCreationInputTokens
+		u.ReasoningTokens += it.Usage.ReasoningTokens
+		u.CacheReported = u.CacheReported || it.Usage.CacheReported
+		u.ReasoningReported = u.ReasoningReported || it.Usage.ReasoningReported
 		if it.Usage.LatencyMS > u.LatencyMS {
 			u.LatencyMS = it.Usage.LatencyMS
 		}

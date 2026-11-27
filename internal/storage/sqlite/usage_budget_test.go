@@ -26,11 +26,11 @@ func TestChargeUsageCountsChildUsageOnTheParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.ChargeUsage(ctx, "parent", domain.UsageCharge{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 60, CostUSD: 0.2}); err != nil {
+	if err := db.ChargeUsage(ctx, "parent", domain.UsageCharge{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 60, CacheCreationInputTokens: 10, CacheReported: true, CostUSD: 0.2}); err != nil {
 		t.Fatal(err)
 	}
 	// The child's call crosses both limits. It is recorded on both runs.
-	if err := db.ChargeUsage(ctx, "child", domain.UsageCharge{InputTokens: 900, OutputTokens: 50, CostUSD: 0.9}); err != nil {
+	if err := db.ChargeUsage(ctx, "child", domain.UsageCharge{InputTokens: 900, OutputTokens: 50, CacheCreationInputTokens: 7, ReasoningTokens: 14, ReasoningReported: true, CostUSD: 0.9}); err != nil {
 		t.Fatal(err)
 	}
 	parent, err := db.GetRun(ctx, "parent")
@@ -41,10 +41,13 @@ func TestChargeUsageCountsChildUsageOnTheParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parent.Budget.UsedInputTokens != 1000 || parent.Budget.UsedOutputTokens != 70 || parent.Budget.UsedCachedInputTokens != 60 || parent.Budget.UsedCostUSD < 1.09 || parent.Budget.UsedCostUSD > 1.11 {
+	if parent.Budget.UsedInputTokens != 1000 || parent.Budget.UsedOutputTokens != 70 || parent.Budget.UsedCachedInputTokens != 60 ||
+		parent.Budget.UsedCacheCreationInputTokens != 17 || parent.Budget.UsedReasoningTokens != 14 ||
+		!parent.Budget.CacheReported || !parent.Budget.ReasoningReported || parent.Budget.UsedCostUSD < 1.09 || parent.Budget.UsedCostUSD > 1.11 {
 		t.Fatalf("parent budget=%+v", parent.Budget)
 	}
-	if child.Budget.UsedTokens() != 950 || child.Budget.UsedCostUSD != 0.9 {
+	if child.Budget.UsedTokens() != 950 || child.Budget.UsedCostUSD != 0.9 || child.Budget.UsedCacheCreationInputTokens != 7 ||
+		child.Budget.UsedReasoningTokens != 14 || child.Budget.CacheReported || !child.Budget.ReasoningReported {
 		t.Fatalf("child budget=%+v", child.Budget)
 	}
 	if err := db.Charge(ctx, "parent", domain.ChargeModel, 1); !domain.IsCode(err, domain.CodeBudget) {

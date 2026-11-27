@@ -21,14 +21,20 @@ const (
 // report stay zero. Model and cost metadata are optional so older usage_json
 // rows remain readable; a false CostKnown means the cost is unknown, while a
 // true CostKnown with CostUSD == 0 is a known zero-cost call.
+// Input includes cache reads and cache creation; reasoning is a subset of
+// output. Reported flags distinguish missing optional counters from zero.
 type Usage struct {
-	InputTokens       int     `json:"input_tokens,omitempty"`
-	OutputTokens      int     `json:"output_tokens,omitempty"`
-	CachedInputTokens int     `json:"cached_input_tokens,omitempty"`
-	LatencyMS         int64   `json:"latency_ms,omitempty"`
-	Model             string  `json:"model,omitempty"`
-	CostUSD           float64 `json:"cost_usd,omitempty"`
-	CostKnown         bool    `json:"cost_known,omitempty"`
+	InputTokens              int     `json:"input_tokens,omitempty"`
+	OutputTokens             int     `json:"output_tokens,omitempty"`
+	CachedInputTokens        int     `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
+	CacheReported            bool    `json:"cache_reported,omitempty"`
+	ReasoningReported        bool    `json:"reasoning_reported,omitempty"`
+	LatencyMS                int64   `json:"latency_ms,omitempty"`
+	Model                    string  `json:"model,omitempty"`
+	CostUSD                  float64 `json:"cost_usd,omitempty"`
+	CostKnown                bool    `json:"cost_known,omitempty"`
 }
 
 // ToolCall is one provider tool call. Arguments is a raw JSON object.
