@@ -144,7 +144,7 @@ func (a *assembler) response() domain.ModelResponse {
 			},
 		})
 	}
-	if a.usage.InputTokens > 0 || a.usage.OutputTokens > 0 || a.usage.CachedInputTokens > 0 {
+	if hasUsage(a.usage) {
 		u := a.usage
 		add(domain.ResponseItem{Kind: domain.ItemUsage, Usage: &u})
 	}

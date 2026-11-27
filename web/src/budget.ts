@@ -9,6 +9,24 @@ const counters = [
 
 const usedTokens = (budget: Budget) => (budget?.used_input_tokens ?? 0) + (budget?.used_output_tokens ?? 0);
 const usd = (amount: number) => `$${amount.toFixed(amount > 0 && amount < 0.01 ? 4 : 2)}`;
+const tokenCount = (value: number) => value.toLocaleString('en-US');
+
+// Input already includes cache reads/writes; reasoning is a subset of output.
+export function getTokenBreakdown(budget: Budget): string[] {
+  const input = budget?.used_input_tokens ?? 0;
+  const output = budget?.used_output_tokens ?? 0;
+  const cached = budget?.used_cached_input_tokens ?? 0;
+  const creation = budget?.used_cache_creation_input_tokens ?? 0;
+  const reasoning = budget?.used_reasoning_tokens ?? 0;
+  const details = [`输入 ${tokenCount(input)} · 输出 ${tokenCount(output)}`];
+  if (budget?.cache_reported || cached > 0) {
+    const rate = input > 0 ? `（${((cached / input) * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}%）` : '';
+    details.push(`缓存命中 ${tokenCount(cached)}${rate}`);
+  }
+  if (creation > 0) details.push(`缓存写入 ${tokenCount(creation)}`);
+  if (budget?.reasoning_reported || reasoning > 0) details.push(`其中推理 ${tokenCount(reasoning)}`);
+  return details;
+}
 
 export interface BudgetCounter {
   label: string;
@@ -18,6 +36,8 @@ export interface BudgetCounter {
   usedText: string;
   // "不限" for a token or cost limit of 0.
   maxText: string;
+  details?: string[];
+  title?: string;
 }
 
 export function getBudgetCounters(budget: Budget): BudgetCounter[] {
@@ -32,7 +52,7 @@ export function getBudgetCounters(budget: Budget): BudgetCounter[] {
   const maxCost = budget?.max_cost_usd ?? 0;
   return [
     ...calls,
-    { label: 'Token', used: tokens, max: maxTokens, icon: '∑', usedText: tokens.toLocaleString('en-US'), maxText: maxTokens > 0 ? maxTokens.toLocaleString('en-US') : '不限' },
+    { label: 'Token', used: tokens, max: maxTokens, icon: '∑', usedText: tokens.toLocaleString('en-US'), maxText: maxTokens > 0 ? maxTokens.toLocaleString('en-US') : '不限', details: getTokenBreakdown(budget), title: '总量为输入 + 输出；输入含缓存命中与缓存写入；推理含在输出内。未报告的缓存或推理数据不显示。' },
     { label: '预估费用', used: cost, max: maxCost, icon: '$', usedText: usd(cost), maxText: maxCost > 0 ? usd(maxCost) : '不限' },
   ];
 }

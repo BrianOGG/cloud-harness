@@ -369,13 +369,20 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		if text := domain.IndexableText(resp.Items); text != "" && !domain.ContainsOpaqueBytes([]byte(text), resp.Items) {
 			m.indexDoc(ctx, responseID, run.SessionID, text, "model")
 		}
-		if err := m.event(ctx, run.ID, "model.completed", map[string]any{
+		event := map[string]any{
 			"response_id": responseID, "provider": resp.Provider, "model": usage.Model, "action": batch.Action,
 			"prefix_hash":  contextpkg.PrefixHash(toContext(prefix)),
 			"input_tokens": usage.InputTokens, "cached_input_tokens": usage.CachedInputTokens,
 			"output_tokens": usage.OutputTokens, "latency_ms": usage.LatencyMS,
 			"cost_usd": usage.CostUSD, "cost_known": usage.CostKnown,
-		}); err != nil {
+		}
+		if usage.CacheReported {
+			event["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+		}
+		if usage.ReasoningReported {
+			event["reasoning_tokens"] = usage.ReasoningTokens
+		}
+		if err := m.event(ctx, run.ID, "model.completed", event); err != nil {
 			return storage.Run{}, err
 		}
 		stored := storage.StoredBatch{

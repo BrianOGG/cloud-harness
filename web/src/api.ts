@@ -19,6 +19,10 @@ export interface Budget {
   used_input_tokens?: number;
   used_output_tokens?: number;
   used_cached_input_tokens?: number;
+  used_cache_creation_input_tokens?: number;
+  used_reasoning_tokens?: number;
+  cache_reported?: boolean;
+  reasoning_reported?: boolean;
   max_cost_usd?: number;
   used_cost_usd?: number;
 }

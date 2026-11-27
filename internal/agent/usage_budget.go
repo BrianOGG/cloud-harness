@@ -39,7 +39,8 @@ func (m *Manager) pricedModel(p provider.Provider, requested string) string {
 }
 
 // usageCostKnown estimates one call using the price snapshot available to the
-// manager. A missing price is distinct from a known zero-cost call.
+// manager. Cache creation tokens are input-priced; reasoning is already part
+// of output tokens. A missing price is distinct from a known zero-cost call.
 func usageCostKnown(prices map[string]config.ModelPrice, model string, usage domain.Usage) (float64, bool) {
 	price, ok := prices[model]
 	if !ok {
@@ -74,19 +75,23 @@ func (m *Manager) usageForModel(model string, resp domain.ModelResponse) domain.
 // already paid for, so a failed write does not fail the run: the caller's next
 // model charge still sees every committed call.
 func (m *Manager) chargeUsage(ctx context.Context, runID string, usage domain.Usage) {
-	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 {
+	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 &&
+		usage.CacheCreationInputTokens <= 0 && usage.ReasoningTokens <= 0 && !usage.CacheReported && !usage.ReasoningReported {
 		return
 	}
 	_ = m.Store.ChargeUsage(context.WithoutCancel(ctx), runID, domain.UsageCharge{
 		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
-		CachedInputTokens: usage.CachedInputTokens, CostUSD: usage.CostUSD,
+		CachedInputTokens: usage.CachedInputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		ReasoningTokens: usage.ReasoningTokens, CacheReported: usage.CacheReported,
+		ReasoningReported: usage.ReasoningReported, CostUSD: usage.CostUSD,
 	})
 }
 
 // recordFailedUsage persists token and price metadata reported before an
 // unsuccessful completion, without storing partial text or tool calls.
 func (m *Manager) recordFailedUsage(ctx context.Context, runID string, resp domain.ModelResponse, usage domain.Usage) {
-	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 {
+	if m.Store == nil || usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CachedInputTokens <= 0 &&
+		usage.CacheCreationInputTokens <= 0 && usage.ReasoningTokens <= 0 && !usage.CacheReported && !usage.ReasoningReported {
 		return
 	}
 	_ = m.Store.SaveModelResponse(context.WithoutCancel(ctx), storage.StoredResponse{

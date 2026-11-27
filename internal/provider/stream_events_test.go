@@ -104,13 +104,13 @@ func TestProviderStreamDeltaOrderAndFinalMessage(t *testing.T) {
 			provider: "anthropic", responseID: "msg_01StreamFixture", callID: "toolu_01StreamFixture",
 			opaqueKind: "thinking", opaqueHas: `"thinking":"The user wants the file. Read it first."`,
 			signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pk=",
-			wantUsage: domain.Usage{InputTokens: 365, OutputTokens: 58, CachedInputTokens: 300},
+			wantUsage: domain.Usage{InputTokens: 365, OutputTokens: 58, CachedInputTokens: 300, CacheCreationInputTokens: 40, CacheReported: true},
 		},
 		{
 			streamProviderCase: streamProviderCases()[1], fixture: "responses_reasoning_text_tool.sse",
 			provider: "openai-responses", responseID: "resp_stream_fixture", callID: "call_stream_1",
 			opaqueKind: "reasoning", opaqueHas: `"encrypted_content":"gAAAAABfixture-encrypted=="`,
-			wantUsage: domain.Usage{InputTokens: 365, OutputTokens: 58, CachedInputTokens: 300},
+			wantUsage: domain.Usage{InputTokens: 365, OutputTokens: 58, CachedInputTokens: 300, ReasoningTokens: 32, CacheReported: true, ReasoningReported: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

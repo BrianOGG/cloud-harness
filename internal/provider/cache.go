@@ -43,7 +43,7 @@ func (p *PrefixCache) Complete(ctx context.Context, req Request) (domain.ModelRe
 	p.prev = sum
 	p.mu.Unlock()
 	return attachUsage(resp, domain.Usage{
-		InputTokens: in, OutputTokens: 1, CachedInputTokens: cached, LatencyMS: 1,
+		InputTokens: in, OutputTokens: 1, CachedInputTokens: cached, CacheReported: p.ReportHits, LatencyMS: 1,
 	}), nil
 }
 
@@ -75,6 +75,10 @@ func attachUsage(resp domain.ModelResponse, u domain.Usage) domain.ModelResponse
 			items[i].Usage.InputTokens += u.InputTokens
 			items[i].Usage.OutputTokens += u.OutputTokens
 			items[i].Usage.CachedInputTokens += u.CachedInputTokens
+			items[i].Usage.CacheCreationInputTokens += u.CacheCreationInputTokens
+			items[i].Usage.ReasoningTokens += u.ReasoningTokens
+			items[i].Usage.CacheReported = items[i].Usage.CacheReported || u.CacheReported
+			items[i].Usage.ReasoningReported = items[i].Usage.ReasoningReported || u.ReasoningReported
 			if items[i].Usage.LatencyMS == 0 {
 				items[i].Usage.LatencyMS = u.LatencyMS
 			}

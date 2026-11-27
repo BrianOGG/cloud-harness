@@ -25,6 +25,16 @@ func withUsage(resp domain.ModelResponse, input, output, cached int) domain.Mode
 	return resp
 }
 
+func withUsageBreakdown(resp domain.ModelResponse, input, output, cached, cacheCreation, reasoning int, cacheReported, reasoningReported bool) domain.ModelResponse {
+	resp = withUsage(resp, input, output, cached)
+	usage := resp.Items[len(resp.Items)-1].Usage
+	usage.CacheCreationInputTokens = cacheCreation
+	usage.ReasoningTokens = reasoning
+	usage.CacheReported = cacheReported
+	usage.ReasoningReported = reasoningReported
+	return resp
+}
+
 // conversation lists the user and assistant messages of a request as
 // "role: content" lines.
 func conversation(req provider.Request) []string {
@@ -431,7 +441,7 @@ func TestRunWaitsAtTheTokenLimitAndResumesWithMoreTokens(t *testing.T) {
 func TestRunWaitsAtTheCostLimitAndReportsCallCost(t *testing.T) {
 	ctx := context.Background()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{
-		withUsage(toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)}), 1000, 100, 400),
+		withUsageBreakdown(toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)}), 1000, 100, 400, 50, 30, true, true),
 		withUsage(textOnly("done"), 1000, 100, 0),
 	}}
 	m, db, root := testManager(t, mock)
@@ -448,16 +458,29 @@ func TestRunWaitsAtTheCostLimitAndReportsCallCost(t *testing.T) {
 	}
 	// 600 uncached input at $2, 400 cached at $0.50 and 100 output at $10 per million.
 	const firstCall = 0.0024
-	if math.Abs(run.Budget.UsedCostUSD-firstCall) > 1e-12 || run.Budget.UsedCachedInputTokens != 400 {
+	if math.Abs(run.Budget.UsedCostUSD-firstCall) > 1e-12 || run.Budget.UsedCachedInputTokens != 400 ||
+		run.Budget.UsedCacheCreationInputTokens != 50 || run.Budget.UsedReasoningTokens != 30 ||
+		!run.Budget.CacheReported || !run.Budget.ReasoningReported {
 		t.Fatalf("budget=%+v", run.Budget)
 	}
 	completed := eventPayloads(t, db, run.ID, "model.completed")
-	if len(completed) != 1 || math.Abs(completed[0]["cost_usd"].(float64)-firstCall) > 1e-12 || completed[0]["input_tokens"] != float64(1000) || completed[0]["cached_input_tokens"] != float64(400) {
+	if len(completed) != 1 || math.Abs(completed[0]["cost_usd"].(float64)-firstCall) > 1e-12 || completed[0]["input_tokens"] != float64(1000) || completed[0]["cached_input_tokens"] != float64(400) ||
+		completed[0]["cache_creation_input_tokens"] != float64(50) || completed[0]["reasoning_tokens"] != float64(30) {
 		t.Fatalf("model.completed=%v", completed)
 	}
 	run, err = m.Resume(ctx, run.ID, ResumeInput{ExtraCostUSD: 0.01})
 	if err != nil || run.Status != domain.RunCompleted {
 		t.Fatalf("resume with more cost: %+v %v", run, err)
+	}
+	completed = eventPayloads(t, db, run.ID, "model.completed")
+	if len(completed) != 2 {
+		t.Fatalf("model.completed count=%d", len(completed))
+	}
+	if _, ok := completed[1]["cache_creation_input_tokens"]; ok {
+		t.Fatalf("unreported cache creation was included: %v", completed[1])
+	}
+	if _, ok := completed[1]["reasoning_tokens"]; ok {
+		t.Fatalf("unreported reasoning was included: %v", completed[1])
 	}
 	if math.Abs(run.Budget.MaxCostUSD-0.012) > 1e-12 || math.Abs(run.Budget.UsedCostUSD-(firstCall+0.003)) > 1e-12 {
 		t.Fatalf("budget after resume=%+v", run.Budget)
@@ -493,7 +516,7 @@ func TestChildSpendsTheParentTokenAndCostBudget(t *testing.T) {
 	ctx := context.Background()
 	mock := &provider.Mock{Responses: []domain.ModelResponse{
 		withUsage(toolResp(domain.ToolCall{ProviderCallID: "d1", Name: "delegate_task", Arguments: json.RawMessage(`{"goal":"CHILD-GOAL","allowed_tools":["read_file"],"max_model_calls":4,"max_tool_calls":4}`)}), 100, 10, 0),
-		withUsage(toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)}), 200, 20, 0),
+		withUsageBreakdown(toolResp(domain.ToolCall{ProviderCallID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)}), 200, 20, 0, 6, 5, true, true),
 		withUsage(textOnly("child-done"), 300, 30, 0),
 		withUsage(textOnly("parent-done"), 400, 40, 0),
 	}}
@@ -517,14 +540,14 @@ func TestChildSpendsTheParentTokenAndCostBudget(t *testing.T) {
 			child = r
 		}
 	}
-	if child.Budget.UsedInputTokens != 500 || child.Budget.UsedOutputTokens != 50 || math.Abs(child.Budget.UsedCostUSD-0.00055) > 1e-12 {
+	if child.Budget.UsedInputTokens != 500 || child.Budget.UsedOutputTokens != 50 || child.Budget.UsedCacheCreationInputTokens != 6 || child.Budget.UsedReasoningTokens != 5 || !child.Budget.CacheReported || !child.Budget.ReasoningReported || math.Abs(child.Budget.UsedCostUSD-0.00055) > 1e-12 {
 		t.Fatalf("child budget=%+v", child.Budget)
 	}
 	// The child starts with what the parent had left after its first call.
 	if child.Budget.MaxTokens != 10_000-110 || math.Abs(child.Budget.MaxCostUSD-(1-0.00011)) > 1e-12 {
 		t.Fatalf("child limits=%+v", child.Budget)
 	}
-	if run.Budget.UsedInputTokens != 1000 || run.Budget.UsedOutputTokens != 100 || math.Abs(run.Budget.UsedCostUSD-0.0011) > 1e-12 {
+	if run.Budget.UsedInputTokens != 1000 || run.Budget.UsedOutputTokens != 100 || run.Budget.UsedCacheCreationInputTokens != 6 || run.Budget.UsedReasoningTokens != 5 || !run.Budget.CacheReported || !run.Budget.ReasoningReported || math.Abs(run.Budget.UsedCostUSD-0.0011) > 1e-12 {
 		t.Fatalf("parent budget does not include the child: %+v", run.Budget)
 	}
 }

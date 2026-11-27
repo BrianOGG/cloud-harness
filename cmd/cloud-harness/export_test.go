@@ -80,9 +80,13 @@ func TestExportSanitizesReadOnlyAndEmitsMarkdownAndJSON(t *testing.T) {
 			Provider []string `json:"providers"`
 		} `json:"run"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			ModelCalls   int `json:"model_calls"`
+			InputTokens              int  `json:"input_tokens"`
+			OutputTokens             int  `json:"output_tokens"`
+			ModelCalls               int  `json:"model_calls"`
+			CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
+			ReasoningTokens          int  `json:"reasoning_tokens"`
+			CacheReported            bool `json:"cache_reported"`
+			ReasoningReported        bool `json:"reasoning_reported"`
 		} `json:"usage"`
 		Events []struct {
 			Type string `json:"type"`
@@ -94,7 +98,8 @@ func TestExportSanitizesReadOnlyAndEmitsMarkdownAndJSON(t *testing.T) {
 	if report.Run.ID != runID || report.Run.Status != string(domain.RunCompleted) || len(report.Run.Provider) != 1 || report.Run.Provider[0] != "openai" {
 		t.Fatalf("json run metadata: %+v", report.Run)
 	}
-	if report.Usage.InputTokens != 101 || report.Usage.OutputTokens != 12 || report.Usage.ModelCalls != 1 {
+	if report.Usage.InputTokens != 101 || report.Usage.OutputTokens != 12 || report.Usage.ModelCalls != 1 ||
+		report.Usage.CacheCreationInputTokens != 7 || report.Usage.ReasoningTokens != 3 || !report.Usage.CacheReported || !report.Usage.ReasoningReported {
 		t.Fatalf("json usage totals: %+v", report.Usage)
 	}
 	seen := map[string]bool{}
@@ -331,7 +336,7 @@ func createExportFixture(t *testing.T) (string, string, exportSecrets) {
 	}
 	if err := db.SaveModelResponse(ctx, storage.StoredResponse{
 		ID: "rsp_export", RunID: run.ID, Provider: "openai", Complete: true,
-		Usage: domain.Usage{InputTokens: 101, OutputTokens: 12, CachedInputTokens: 20, LatencyMS: 44}, Items: items,
+		Usage: domain.Usage{InputTokens: 101, OutputTokens: 12, CachedInputTokens: 20, CacheCreationInputTokens: 7, ReasoningTokens: 3, CacheReported: true, ReasoningReported: true, LatencyMS: 44}, Items: items,
 		CreatedAt: now.Add(10 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
