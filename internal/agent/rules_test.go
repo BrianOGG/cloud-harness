@@ -81,7 +81,7 @@ func TestProjectRulesFrozenAcrossCompactionAndRestartedResume(t *testing.T) {
 		t.Fatalf("requests=%d", len(mock.Requests))
 	}
 	first := mock.Requests[0]
-	if len(first.Prefix) != 3 || first.Prefix[0].Content != defaultSystem || first.Prefix[1].Content != defaultTools || first.Prefix[2].Role != "system" {
+	if len(first.Prefix) != 3 || first.Prefix[0].Content != defaultSystem || first.Prefix[1].Content != toolDigest("ask") || first.Prefix[2].Role != "system" {
 		t.Fatalf("project rules changed static prefix: %+v", first.Prefix)
 	}
 	if !strings.Contains(first.Messages[3].Content, "existing memory") || first.Messages[4].Content != user {
@@ -201,10 +201,10 @@ func TestNoProjectRulesRunByteForByteAndNoLateInjection(t *testing.T) {
 		t.Fatalf("run=%+v err=%v", run, err)
 	}
 	wantMessages, _ := json.Marshal([]provider.Message{
-		{Role: "system", Content: defaultSystem}, {Role: "system", Content: defaultTools}, {Role: "user", Content: "hello"},
+		{Role: "system", Content: defaultSystem}, {Role: "system", Content: toolDigest("ask")}, {Role: "user", Content: "hello"},
 	})
 	gotMessages, _ := json.Marshal(mock.Requests[0].Messages)
-	wantPrefix, _ := json.Marshal([]provider.Message{{Role: "system", Content: defaultSystem}, {Role: "system", Content: defaultTools}})
+	wantPrefix, _ := json.Marshal([]provider.Message{{Role: "system", Content: defaultSystem}, {Role: "system", Content: toolDigest("ask")}})
 	gotPrefix, _ := json.Marshal(mock.Requests[0].Prefix)
 	if !bytes.Equal(gotMessages, wantMessages) || !bytes.Equal(gotPrefix, wantPrefix) {
 		t.Fatalf("no-rules request changed:\nmessages=%s\nprefix=%s", gotMessages, gotPrefix)
