@@ -110,10 +110,10 @@ func TestFetchCatalogErrorsBoundedRedactedAndNoRedirect(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch scenario {
 				case "401":
-					w.WriteHeader(401)
+					w.WriteHeader(http.StatusUnauthorized)
 					_, _ = io.WriteString(w, key)
 				case "redirect":
-					http.Redirect(w, r, target.URL, 307)
+					http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
 				case "invalid":
 					_, _ = io.WriteString(w, "not JSON "+key)
 				case "oversize":
