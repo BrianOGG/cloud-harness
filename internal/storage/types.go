@@ -19,10 +19,11 @@ type Session struct {
 
 // SessionPreferences are durable per-conversation runtime choices. Provider credentials never belong here.
 type SessionPreferences struct {
-	SessionID    string
-	ApprovalMode string
-	ModelID      string
-	UpdatedAt    time.Time
+	SessionID       string
+	ApprovalMode    string
+	ModelID         string
+	ReasoningEffort string
+	UpdatedAt       time.Time
 }
 
 // SessionSummary is a session and its run aggregates for read-only listings.

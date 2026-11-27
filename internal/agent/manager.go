@@ -165,13 +165,14 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 
 // RunOptions applies to one run. Plan restricts the model to read-only tools.
 type RunOptions struct {
-	Images        []provider.Image
-	Plan          bool
-	ModelID       string
-	Model         string
-	FallbackModel string
-	ProviderID    string
-	ApprovalMode  string
+	Images          []provider.Image
+	Plan            bool
+	ModelID         string
+	Model           string
+	FallbackModel   string
+	ProviderID      string
+	ApprovalMode    string
+	ReasoningEffort string
 }
 
 // RunMessageWithOptions creates a run with the supplied inputs and mode.
@@ -181,6 +182,12 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 	}
 	if opts.ApprovalMode != "ask" && opts.ApprovalMode != "safe" && opts.ApprovalMode != "workspace-write" && opts.ApprovalMode != "full-auto" {
 		return storage.Run{}, domain.E(domain.CodeInvalidArgument, "invalid approval mode")
+	}
+	if opts.ReasoningEffort == "" {
+		opts.ReasoningEffort = "default"
+	}
+	if !provider.ValidReasoningEffort(opts.ReasoningEffort) {
+		return storage.Run{}, domain.E(domain.CodeInvalidArgument, "invalid reasoning effort")
 	}
 	images := opts.Images
 	selectedProvider := providerFromContext(ctx, m.Provider)
@@ -459,7 +466,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		SuffixTokens: contextpkg.Estimate(asm.DynamicSuffix), TokenLimit: m.tokenLimit(),
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
-	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode}
+	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode, reasoningEffort: opts.ReasoningEffort}
 	for _, ref := range references {
 		if ref.Type == "file" && tools.SensitivePath(ref.Path) {
 			st.sensitive = true

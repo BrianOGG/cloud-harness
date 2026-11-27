@@ -89,15 +89,13 @@ func TestFullAutoPreferencesMigrationPreservesExisting011(t *testing.T) {
 		if err := legacy.CreateSession(ctx, storage.Session{ID: mode, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
-		if err := legacy.SaveSessionPreferences(ctx, storage.SessionPreferences{SessionID: mode, ModelID: "profile:" + mode, ApprovalMode: mode}); err != nil {
+		updated := time.Now().UTC().Truncate(time.Microsecond)
+		if _, err := raw.ExecContext(ctx, `INSERT INTO session_preferences(session_id, approval_mode, model_id, updated_at) VALUES(?,?,?,?)`, mode, mode, "profile:"+mode, formatTime(updated)); err != nil {
 			t.Fatal(err)
 		}
-		want[mode], err = legacy.GetSessionPreferences(ctx, mode)
-		if err != nil {
-			t.Fatal(err)
-		}
+		want[mode] = storage.SessionPreferences{SessionID: mode, ApprovalMode: mode, ModelID: "profile:" + mode, ReasoningEffort: "default", UpdatedAt: updated}
 	}
-	if err := legacy.SaveSessionPreferences(ctx, storage.SessionPreferences{SessionID: "ask", ApprovalMode: "full-auto"}); err == nil {
+	if _, err := raw.ExecContext(ctx, `UPDATE session_preferences SET approval_mode='full-auto' WHERE session_id='ask'`); err == nil {
 		t.Fatal("011 fixture unexpectedly accepts full-auto")
 	}
 	if err := legacy.Close(); err != nil {
@@ -135,5 +133,76 @@ func TestFullAutoPreferencesMigrationPreservesExisting011(t *testing.T) {
 	}
 	if violations, err := db.ForeignKeyCheck(ctx); err != nil || len(violations) != 0 {
 		t.Fatalf("migration foreign keys: %+v err=%v", violations, err)
+	}
+}
+
+func TestReasoningMigrationPreservesExisting012AndReopen(t *testing.T) {
+	ctx := t.Context()
+	file := filepath.Join(t.TempDir(), "existing-012.db")
+	raw, err := sql.Open("sqlite", "file:"+file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := &DB{sql: raw, now: time.Now}
+	if err := legacy.configure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	files, err := migrations.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Version <= 12 {
+			if err := legacy.apply(ctx, f.Version, f.Name, f.SQL); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := legacy.CreateSession(ctx, storage.Session{ID: "old", CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `INSERT INTO session_preferences(session_id,approval_mode,model_id,updated_at) VALUES('old','full-auto','custom:old',?)`, formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(ctx, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := db.GetSessionPreferences(ctx, "old")
+	if err != nil || p.ApprovalMode != "full-auto" || p.ModelID != "custom:old" || p.ReasoningEffort != "default" || !p.UpdatedAt.Equal(at) {
+		t.Fatalf("migration changed preference: %+v %v", p, err)
+	}
+	for _, effort := range []string{"off", "low", "medium", "high", "default"} {
+		p.ReasoningEffort = effort
+		if err := db.SaveSessionPreferences(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.ReasoningEffort = "invalid"
+	if err := db.SaveSessionPreferences(ctx, p); err == nil {
+		t.Fatal("constraint accepted invalid effort")
+	}
+	p.ReasoningEffort = "high"
+	if err := db.SaveSessionPreferences(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(ctx, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	p, err = db.GetSessionPreferences(ctx, "old")
+	if err != nil || p.ReasoningEffort != "high" || p.ApprovalMode != "full-auto" || p.ModelID != "custom:old" {
+		t.Fatalf("reopen lost effort: %+v %v", p, err)
 	}
 }

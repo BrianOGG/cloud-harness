@@ -46,8 +46,10 @@ const (
 // Request is one completion. Continuation is the previous response items in order,
 // including opaque bytes that must be replayed unchanged for the same provider.
 type Request struct {
-	Model    string
-	Messages []Message
+	Model               string
+	ReasoningEffort     string
+	OnReasoningFallback func(ReasoningFallbackEvent) `json:"-"`
+	Messages            []Message
 	// Prefix is the stable head of Messages. Compaction must not change it.
 	Prefix               []Message
 	Tools                []ToolDefinition

@@ -13,6 +13,7 @@ import (
 )
 
 type snapshot struct {
+	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
 	ModelID            string                 `json:"model_id,omitempty"`
 	Model              string                 `json:"model,omitempty"`
 	FallbackModel      string                 `json:"fallback_model,omitempty"`
@@ -45,6 +46,7 @@ func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages
 		snap.FallbackModel = st.fallbackModel
 		snap.ProviderID = st.providerID
 		snap.ApprovalMode = st.approvalMode
+		snap.ReasoningEffort = st.reasoningEffort
 		snap.Observations = st.obs
 		if len(st.toolRefs) > 0 {
 			snap.ToolRefs = make(map[string]string, len(st.toolRefs))

@@ -665,7 +665,9 @@ export default function App() {
     if (activeSession) void refreshRuns(activeSession).catch(() => undefined);
   };
   const empty = view === 'chat' && !activeSession && !optimistic;
-  const modelAvailable = models.some((model) => model.id === preferences.model_id);
+  const selectedModel = models.find((model) => model.id === preferences.model_id || model.legacy_id === preferences.model_id);
+  const modelAvailable = Boolean(selectedModel);
+  const modelGroups = [...new Set(models.map((model) => model.provider_id || ''))];
   const modelBlocked = modelsLoading || Boolean(modelsError) || !modelAvailable;
   const composer = (
     <>
@@ -741,10 +743,15 @@ export default function App() {
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
           </>}
           <h1>{view === 'settings' ? '设置' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
-          {view === 'chat' && <select className="value-chip header-model" aria-label="会话模型" title="当前会话 / 下一次运行的模型" disabled={preferencesBusy || modelsLoading || Boolean(modelsError)} value={preferences.model_id} onChange={(event) => { void changePreferences({ ...preferences, model_id: event.target.value }).catch(() => undefined); }}>
-            {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
-            {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-          </select>}
+          {view === 'chat' && <>
+            <select className="value-chip header-model" aria-label="会话模型" title="当前会话 / 下一次运行的模型" disabled={preferencesBusy || modelsLoading || Boolean(modelsError)} value={selectedModel?.id || preferences.model_id} onChange={(event) => { void changePreferences({ ...preferences, model_id: event.target.value }).catch(() => undefined); }}>
+              {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
+              {modelGroups.map((group) => <optgroup key={group} label={models.find((model) => (model.provider_id || '') === group)?.provider_name || (group === '' ? '默认服务' : group)}>{models.filter((model) => (model.provider_id || '') === group).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>)}
+            </select>
+            <select className="value-chip header-reasoning" aria-label="思考强度" title="下一轮生效" disabled={preferencesBusy || modelBlocked || selectedModel?.thinking === 'unsupported'} value={selectedModel?.thinking === 'unsupported' ? 'unsupported' : preferences.reasoning_effort || 'default'} onChange={(event) => { void changePreferences({ ...preferences, reasoning_effort: event.target.value as SessionPreferences['reasoning_effort'] }).catch(() => undefined); }}>
+              {selectedModel?.thinking === 'unsupported' ? <option value="unsupported">思考：不支持</option> : Object.entries({ default: '默认', off: '关', low: '低', medium: '中', high: '高' }).map(([value, label]) => <option key={value} value={value}>思考：{label}</option>)}
+            </select>
+          </>}
           {view === 'chat' && latestRun && <>
             <span className={`chip tone-${statusTone(latestRun.status)}`}>{latestRun.status === 'WAITING' ? waitLabels[latestRun.wait_reason || ''] || statusName(latestRun.status) : statusName(latestRun.status)}</span>
             <button type="button" className={`icon-button ${inspectedRun ? 'current' : ''}`} aria-label="运行详情" title="运行详情" onClick={() => (inspectedRun ? setInspected(null) : actions.inspect(latestRun.id))}><Icon name="panel" size={18} /></button>

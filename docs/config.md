@@ -522,19 +522,19 @@ status.
 
 ## Session model selection and compatible providers
 
-The composer reads `/v1/models`: the configured default model, each
-`model_profiles` entry as `profile:<name>`, and custom providers as `custom:<id>`.
+The conversation header reads `/v1/models`: the configured default model, each
+`model_profiles` entry as `profile:<name>`, and enabled custom models as `custom:<providerID>/<model>` (legacy `custom:<id>` selections still resolve to the default model).
 A selection affects subsequent runs; named profiles retain their configured
 fallback models. A waiting run retains its resolved model,
-provider ID and approval mode in its checkpoint. Keys are resolved privately
+provider ID, approval mode and reasoning effort in its checkpoint. Keys are resolved privately
 at runtime and never placed in checkpoints.
 
 Choices live in `session_preferences` in the configured SQLite `db` (default
 `.cloud-harness/harness.db`). Before creating a session, the browser keeps only
-the draft model ID and mode in `cloud-harness.web-draft-preferences`, then
+the draft model ID, approval mode and thinking choice in `cloud-harness.web-draft-preferences`, then
 writes them to the new session. Custom provider keys never go into browser storage.
 
-Custom OpenAI-compatible providers use `compatible-providers.json` beside
+Custom OpenAI compatible, Anthropic and Gemini services use `compatible-providers.json` beside
 `policy.json`: the directory containing `CLOUD_HARNESS_CONFIG`, or Go's user
 configuration directory plus `cloud-harness` (Linux: `$XDG_CONFIG_HOME/cloud-harness`,
 normally `~/.config/cloud-harness`). The file contains saved keys with mode 0600,
@@ -546,3 +546,15 @@ The authenticated `/v1/providers` API returns only `has_api_key`, never the key.
 An empty key during edit retains the saved value. HTTPS is required except
 for loopback HTTP endpoints. Tests use temporary directories, fixture keys and
 `httptest` endpoints without acceptance provider credentials.
+
+Model service settings can discover the protocol and model list using read-only
+catalog requests; a manual protocol or model ID is also accepted. The enabled
+list controls the header menu, independently of the last fetched catalog.
+Gemini runs through its official OpenAI compatibility endpoint; Anthropic uses
+its native Messages API. Refresh failures retain the previous catalog.
+
+Session thinking effort defaults to `default`, preserving service behavior.
+`off`, `low`, `medium` and `high` apply to the next run and survive waits in
+its checkpoint. Known unsupported models omit the override; a thinking
+parameter rejected with HTTP 400 is retried once without it and remembered
+for that provider/model until this process restarts.

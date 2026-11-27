@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -24,6 +25,8 @@ type Anthropic struct {
 	MaxRetries     int
 	RetryBaseDelay time.Duration
 	DisableImages  bool
+	CapabilityID   string
+	Thinking       map[string]string
 	// ResponseHeaderTimeout and IdleTimeout bound a streamed attempt. Zero
 	// uses DefaultResponseHeaderTimeout and DefaultIdleTimeout.
 	ResponseHeaderTimeout time.Duration
@@ -90,6 +93,13 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 	if maxTokens <= 0 {
 		maxTokens = 8192
 	}
+	identity := p.CapabilityID
+	if identity == "" {
+		identity = p.BaseURL
+	}
+	if ReasoningSupport("anthropic", identity, model, p.Thinking[model]) == "unsupported" {
+		req.ReasoningEffort = "default"
+	}
 	names := newWireToolNames(req.Tools)
 	wire, err := buildAnthropicRequest(model, maxTokens, req, names)
 	if err != nil {
@@ -123,10 +133,24 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 	}
 	streamed := false
 	var raw []byte
-	if onDelta == nil {
-		raw, err = postJSONWithRetry(ctx, cfg)
-	} else {
-		raw, streamed, err = postDeltaStream(ctx, cfg, onDelta, parseAnthropicStream)
+	send := func() {
+		if onDelta == nil {
+			raw, err = postJSONWithRetry(ctx, cfg)
+		} else {
+			raw, streamed, err = postDeltaStream(ctx, cfg, onDelta, parseAnthropicStream)
+		}
+	}
+	send()
+	var statusErr *HTTPStatusError
+	if wire.Thinking != nil && errors.As(err, &statusErr) && reasoningRejected(statusErr.StatusCode, statusErr.Error()) && ctx.Err() == nil {
+		rememberReasoningUnsupported("anthropic", identity, model, req)
+		wire.Thinking = nil
+		wire.MaxTokens = maxTokens
+		cfg.Body, err = json.Marshal(wire)
+		if err != nil {
+			return domain.ModelResponse{}, err
+		}
+		send()
 	}
 	if err != nil {
 		return domain.ModelResponse{}, err
@@ -142,6 +166,7 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 }
 
 type anthropicRequest struct {
+	Thinking  *AnthropicThinking `json:"thinking,omitempty"`
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
 	System    string             `json:"system,omitempty"`
@@ -180,6 +205,11 @@ type anthropicImageSource struct {
 
 func buildAnthropicRequest(model string, maxTokens int, req Request, names *wireToolNames) (anthropicRequest, error) {
 	out := anthropicRequest{Model: model, MaxTokens: maxTokens, System: anthropicSystem(req.Messages)}
+	out.Thinking = MapReasoningEffort("anthropic", req.ReasoningEffort).Thinking
+	if out.Thinking != nil {
+		out.MaxTokens = max(out.MaxTokens, out.Thinking.BudgetTokens+8000)
+	}
+	// No temperature or forced tool_choice is sent with extended thinking.
 	for _, def := range req.Tools {
 		params := def.Parameters
 		if len(params) == 0 {

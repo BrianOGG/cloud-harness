@@ -105,7 +105,7 @@ func TestSettingsAPIPersistenceModelsAndCustomRun(t *testing.T) {
 	}
 	rec = request("GET", "/v1/models", nil, 200)
 	var options []ModelOption
-	if err := json.Unmarshal(rec.Body.Bytes(), &options); err != nil || len(options) != 3 || options[2].ID != "custom:fixture" {
+	if err := json.Unmarshal(rec.Body.Bytes(), &options); err != nil || len(options) != 3 || options[2].ID != "custom:fixture/custom-model" {
 		t.Fatal("default/profile/custom catalog mismatch")
 	}
 	// Explicit selection applies to this run and becomes the next run's default.

@@ -112,11 +112,10 @@ flight, closes the remaining connections, and closes the store.
 
 ## Running a run: POST /v1/sessions/{id}/runs
 
-Optional `model_id` and `approval_mode` select this run's model and approval
-behavior. Omitted values use the saved session preferences, initially
-`default` and `ask`. Explicit values are validated and persisted for later
+Optional `model_id`, `approval_mode` and `reasoning_effort` select this run's model, approval behavior and thinking level. Omitted values use the saved
+session preferences, initially `default`, `ask` and `default`. Explicit values are validated and persisted for later
 runs. A run's checkpoint freezes the resolved model name, provider ID and
-approval mode; changing session preferences does not change a waiting run.
+approval mode and reasoning effort; changing session preferences does not change a waiting run.
 
 The body is `{"message":"..."}`. The response is HTTP 201 with the run view
 described under [GET /v1/sessions/{id}/runs](#get-v1sessionsidruns).
@@ -419,6 +418,7 @@ entry has exactly the same fields as the run view from `GET /v1/runs/{id}`.
 | `session_id` | string | Owning session ID. |
 | `turn_id` | string, optional | Persisted turn identity; use with `parent_id` to group root and child runs without inferring relationships from message text. |
 | `parent_id` | string, optional | ID of the run that delegated this child run. Absent for a run started by a message. |
+| `reasoning_effort` | string, optional | Thinking level frozen in the run checkpoint: `default`, `off`, `low`, `medium`, `high`. |
 | `approval_mode` | string, optional | Actual `ask`, `safe`, `workspace-write`, or `full-auto` mode frozen in this run's checkpoint. It is independent of the session's next-turn preference. Omitted when a legacy or unavailable checkpoint cannot establish the mode; clients must not substitute current session preferences. |
 | `workspace` | string, optional | Execution workspace root from this run's checkpoint policy. A command's optional `pending_invocation.arguments.cwd` is relative to this workspace (or an absolute path subject to the existing boundary check). Omitted when no checkpoint policy is available. |
 | `status` | string | Current run status. |
@@ -843,70 +843,105 @@ a browser to handle the wait on the embedded approval page.
 
 ## GET /v1/models
 
-Returns an array of `{id, name, model, fallback_model?, provider, provider_id?}`. IDs are
-`default`, `profile:<name>` for configured `model_profiles`, and
-`custom:<id>` for saved compatible providers. The CLI lists named profiles in
-sorted order and preserves their configured fallback models across waits. Credentials are never returned. Unknown model IDs return 400.
+Returns an array of `{id, name, model, fallback_model?, provider, provider_id?, provider_name?, legacy_id?, thinking?}`.
+IDs are `default`, `profile:<name>`, or `custom:<providerID>/<model>` for each
+model enabled on a custom service. Split custom IDs at the first slash; model
+names may contain further slashes. `provider` is the actual protocol
+(`openai`, `anthropic` or `gemini`). The default model of each custom provider
+also has `legacy_id: "custom:<providerID>"`; existing preferences using that
+ID remain valid. `thinking` is `supported`, `unsupported` or `unknown`.
+Credentials are never returned. Unknown or disabled model IDs return 400.
 
 ## GET /v1/sessions/{id}/preferences
 ## PUT /v1/sessions/{id}/preferences
 
-GET returns `{ "approval_mode": "ask", "model_id": "default" }` for a session
-without saved preferences. PUT accepts the same two fields and returns the
-saved values. `approval_mode` is one of `ask`, `safe`, `workspace-write`, `full-auto`;
-`model_id` must appear in `/v1/models` (an empty model ID means `default`).
-Invalid settings return 400 and unknown sessions return 404. Values live in
-the serve database's `session_preferences` table (migration 012 extends its mode constraint).
-These choices apply to the next turn. Changing them does not replay or
-authorize an invocation already waiting, or change any active run's snapshot.
-The run view's optional `approval_mode` reports that snapshot separately.
+The equivalent `/v1/sessions/{id}/settings` routes are also available.
+GET initially returns `{"approval_mode":"ask","model_id":"default","reasoning_effort":"default"}`.
+PUT accepts those fields and returns saved values. `approval_mode` is one of
+`ask`, `safe`, `workspace-write`, `full-auto`. `reasoning_effort` is one of
+`default`, `off`, `low`, `medium`, `high`; omission means `default` and sends
+no thinking override to the service. `model_id` must be a configured model
+ID or a legacy custom provider ID; an empty ID means `default`.
+Invalid settings return 400; unknown sessions return 404. Migration 013 adds
+`reasoning_effort` to `session_preferences` while preserving prior choices.
+Changes apply only to the next turn, including after waiting/resuming an
+older run. The run view reports its frozen choices separately.
 
 ## GET /v1/providers
 ## PUT /v1/providers
 
-GET returns an array of `{id, name, base_url, model, has_api_key}`. PUT accepts
-`{id, name, base_url, model, api_key?}` and returns only those public metadata
-fields. A new provider requires a key. Omitting `api_key` or passing an empty
-string when editing keeps its saved key. Neither endpoint returns a complete
-key. The UI uses a password input and clears it after a successful save.
-Manage these connections in **设置 → 模型服务**, reached from the sidebar.
-Connections are global/user configuration. Saving or deleting a connection
-does not rewrite a session's model selection or approval mode. Select the
-model in the **conversation header**; the composer only has the draft,
-send/stop, and the current approval-mode chip, with no API configuration form.
+GET returns `{id, name, base_url, model, has_api_key, protocol, protocol_source, models, catalog, catalog_fetched_at?}`.
+PUT accepts the same configuration with `api_key?` instead of `has_api_key`.
+A new service requires a key; an omitted/empty key during edit retains it.
+Keys are never returned. Old files without the new fields load as OpenAI
+compatible with the original default model enabled.
 
+`protocol` is `openai`, `anthropic` or `gemini`; `protocol_source` is `auto` or
+`manual`. `models` contains the enabled IDs and always includes `model`.
+`catalog` holds up to 1000 `{id, display_name?, thinking?}` entries, with the
+last successful fetch time in `catalog_fetched_at`. Refreshing the catalog
+does not silently enable models or replace the default.
+
+Manage services in **设置 → 模型服务**. Select models and thinking effort in
+the **conversation header**; the composer retains its approval-mode chip.
 IDs use 1–64 ASCII letters, digits, underscores or hyphens. Base URLs require
-HTTPS; HTTP is accepted only for `localhost` or a loopback IP. User info,
-query strings and fragments are rejected. Provider configuration is saved
-atomically in `<configuration-directory>/compatible-providers.json` with
-mode 0600; this separate file contains credentials and must not be committed.
-All settings endpoints require the same bearer token, Host/Origin checks,
-JSON request content type and body-size limits as the other `/v1/` routes.
+HTTPS; only loopback hosts permit HTTP. User info, queries and fragments are
+rejected. Configuration is atomically saved in `compatible-providers.json`
+with mode 0600 and must not be committed. All settings routes use the same
+bearer, Host/Origin, JSON content type and body limits as other `/v1/` routes.
 
-## DELETE /v1/providers/{id}
+## POST /v1/providers/detect
 
-Deletes a saved compatible connection and its credential, returning 204 with
-no body. Unknown IDs return 404. The atomic file replacement retains mode
-0600. It does not modify session preferences or existing run snapshots.
-The deleted `custom:<id>` disappears from `GET /v1/models`. A session that
-selected it keeps that ID and must explicitly select another configured model
-before starting a new run. The UI asks for confirmation and explains that
-the current model may become unavailable; the unsent draft is retained.
+Accepts `{base_url, api_key?, provider_id?, protocol?}`. An empty key with a
+saved `provider_id` reuses that key privately. No settings are written and
+no inference is performed. URL validation is identical to save.
+Official Gemini/Anthropic hosts select their protocol directly; other hosts
+are probed concurrently using Bearer, `x-api-key` + `anthropic-version`, or
+`x-goog-api-key` headers. Keys are never added to query strings. A manual
+`protocol` probes only that protocol. Protocol-specific response shapes win
+over generic OpenAI shapes; ties prefer OpenAI.
+
+Each request times out after 10 seconds, reads at most 1 MiB and refuses
+redirects. Returns `{protocol, models:[{id, display_name?, thinking?}], fetched_at}`.
+Gemini lists exclude models without `generateContent` and strip the
+`models/` prefix. HTTP, invalid/oversized catalog and network errors return
+502 with a fixed Chinese `error` and numeric `upstream_status` (0 when no
+HTTP response arrived). No upstream bodies, network errors or keys are exposed.
+Services without model lists can still be saved using a manual model ID.
+
+## POST /v1/providers/{id}/refresh-models
+
+Fetches the saved protocol's catalog and atomically updates only its cache.
+Returns public provider metadata. Failures retain the last successful cache.
+A concurrent URL/key/protocol edit causes a conflict instead of saving stale
+results. Bounds and errors match detection. The settings card uses one
+**刷新模型列表** action.
 
 ## POST /v1/providers/{id}/test
 
-Tests a **saved** connection; accepts no credentials or configuration body.
-Makes one read-only authenticated `GET <base_url>/models` request with a
-10-second timeout and a 1 MiB response limit. Redirects are not followed.
-Returns `{ "ok": true, "model_available": true }` if the configured model ID
-appears in the catalog; `model_available: false` means the connection answered
-but did not list that model. This is a catalog/authentication check, not a
-guarantee of inference or tool-calling support, and it never starts inference.
-The UI provides a manual model ID; automatic model discovery/import is not
-implemented. Services without `/models` may still be saved and used manually.
+Retained for older clients. Reads the saved protocol's list without changing
+configuration and returns `{ok:true, model_available:boolean}`. It checks
+catalog access only; it never starts inference.
 
-Unknown provider IDs return 404. Network failures, redirects, non-200 status,
-oversize or invalid catalogs return 502 with a fixed, redacted error; an HTTP
-failure can include only its numeric `upstream_status`. Neither the saved key,
-upstream response body, nor raw network errors are returned. This endpoint and
-DELETE have the same request protection as other settings endpoints.
+## DELETE /v1/providers/{id}
+
+Deletes the saved service and credential, returning 204; unknown IDs return
+404. Atomic replacement retains mode 0600. Preferences and run snapshots
+remain intact, so sessions using deleted services must choose another model.
+
+### Thinking parameter negotiation
+
+OpenAI compatible services receive `reasoning_effort` for low/medium/high;
+`off` and `default` omit it. Anthropic receives thinking budgets of
+4000/10000/24000 with `max_tokens >= budget + 8000`, without temperature or
+forced tool choice. Gemini uses its OpenAI compatibility endpoint at
+`<base_url>/openai` and `extra_body.google.thinking_config` with budgets
+0/1024/8192/24576 for off/low/medium/high and `include_thoughts:false`.
+`default` always leaves service defaults intact.
+
+Known unsupported models omit these parameters and disable the header
+control. Unknown models may try them. An upstream HTTP 400 identifying a
+thinking parameter causes one retry without it, caches unsupported status
+for that provider/model in this process, and records
+`provider.reasoning_unsupported` with only protocol and model. The model
+menu reads the same runtime capability cache. No raw error body is traced.

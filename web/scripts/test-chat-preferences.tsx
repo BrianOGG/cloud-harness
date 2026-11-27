@@ -55,7 +55,7 @@ globalThis.fetch = async (input, init) => {
       return new Response(null, { status: 204 });
     }
     if (connectionFailure) return new Response(JSON.stringify({ error: '连接失败' }), { status: 502 });
-    result = { ok: true, model_available: true };
+    result = { ...providers.find((p) => p.id === path.split('/')[3]), catalog: [{ id: 'custom', thinking: 'unknown' }], catalog_fetched_at: now };
   } else if (path === '/v1/sessions') result = method === 'POST' ? { id: 'ses_created' } : ['ses_a', 'ses_b'].map((id) => ({ id, created_at: now, updated_at: now, run_count: linked && id === 'ses_a' ? 1 : 0 }));
   else if (path.endsWith('/preferences')) {
     const id = path.split('/')[3];
@@ -185,8 +185,8 @@ try {
     assert.ok(container.textContent?.includes('密钥已配置'));
     assert.equal(container.innerHTML.includes('test-only-form-key'), false);
     assert.deepEqual(preferences.ses_a, { model_id: 'profile:fast', approval_mode: 'safe' });
-    await clickText('连接检测'); assert.ok(container.textContent?.includes('连接成功，模型已列出'));
-    connectionFailure = true; await clickText('连接检测'); assert.ok(container.querySelector('.provider-card [role="alert"]'));
+    await clickText('刷新模型列表'); assert.ok(container.textContent?.includes('已刷新模型列表'));
+    connectionFailure = true; await clickText('刷新模型列表'); assert.ok(container.querySelector('.provider-card [role="alert"]'));
     await clickText('编辑');
     assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.value, '');
     assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.placeholder, '已保存；留空保留原值');

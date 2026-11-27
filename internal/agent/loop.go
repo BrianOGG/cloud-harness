@@ -168,11 +168,12 @@ func (m *Manager) ensureTools() {
 }
 
 type loopState struct {
-	modelID       string
-	model         string
-	fallbackModel string
-	providerID    string
-	approvalMode  string
+	modelID         string
+	model           string
+	fallbackModel   string
+	providerID      string
+	approvalMode    string
+	reasoningEffort string
 	// summaryOff stops summary attempts for this stretch of the run after one
 	// fails, so a broken summary model costs one model call, not one per step.
 	summaryOff     bool
@@ -323,7 +324,11 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		requestMessages := m.withRepoMap(ctx, run, messages, st.prefixN)
 		started := time.Now()
 		resp, err := model.Complete(ctx, provider.Request{
-			Model:                m.Model,
+			Model:           m.Model,
+			ReasoningEffort: st.reasoningEffort,
+			OnReasoningFallback: func(ev provider.ReasoningFallbackEvent) {
+				_ = m.event(ctx, run.ID, provider.ReasoningFallbackEventType, ev)
+			},
 			Messages:             requestMessages,
 			Prefix:               prefix,
 			Tools:                m.toolDefsFor(st.planTools),

@@ -23,6 +23,9 @@ func TestRunSelectionAndModeSurviveResume(t *testing.T) {
 	calls := 0
 	selected := providerFunc(func(_ context.Context, req provider.Request) (domain.ModelResponse, error) {
 		calls++
+		if req.ReasoningEffort != "high" {
+			t.Error("reasoning effort changed across resume")
+		}
 		if req.Model != "selected-model" {
 			t.Errorf("model=%q, want snapshot selection", req.Model)
 		}
@@ -50,15 +53,15 @@ func TestRunSelectionAndModeSurviveResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := m.RunMessageWithOptions(t.Context(), session.ID, "work", RunOptions{ModelID: "custom:example", Model: "selected-model", ProviderID: "example", ApprovalMode: "workspace-write"})
+	run, err := m.RunMessageWithOptions(t.Context(), session.ID, "work", RunOptions{ModelID: "custom:example", Model: "selected-model", ProviderID: "example", ApprovalMode: "workspace-write", ReasoningEffort: "high"})
 	if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
 		t.Fatalf("initial: %+v %v", run, err)
 	}
 	snap, err := m.loadCheckpoint(t.Context(), run.ID)
-	if err != nil || snap.Model != "selected-model" || snap.ProviderID != "example" || snap.ApprovalMode != "workspace-write" {
+	if err != nil || snap.Model != "selected-model" || snap.ProviderID != "example" || snap.ApprovalMode != "workspace-write" || snap.ReasoningEffort != "high" {
 		t.Fatalf("snapshot selection missing: %v", err)
 	}
-	if err := db.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: "ask"}); err != nil {
+	if err := db.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: "ask", ReasoningEffort: "off"}); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh Manager simulates restart. Neither the new session preferences nor
