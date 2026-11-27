@@ -142,12 +142,12 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
     setModelQuery('');
   };
   const renderModel = (item: CatalogModel) => <div className="provider-model-row" key={item.id} data-model-id={item.id}>
-    <label title={item.id}><input type="checkbox" aria-label={`启用 ${item.id}`} checked={enabled.includes(item.id) || item.id === model} disabled={item.id === model} onChange={(event) => {
+    <label title={item.id}><input className="model-choice" type="checkbox" aria-label={`启用 ${item.id}`} checked={enabled.includes(item.id) || item.id === model} disabled={item.id === model} onChange={(event) => {
       generation.current.version++; setDetecting(false);
       setEnabled((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id));
       if (event.target.checked && !model) setModel(item.id);
     }} /><span>{item.display_name || item.id}{item.display_name && item.display_name !== item.id && <small>{item.id}</small>}</span>{isOtherModel(item) && <small>其他</small>}</label>
-    <label className="provider-model-default"><input type="radio" name="default-model" aria-label={`默认模型 ${item.id}`} checked={item.id === model} disabled={!enabled.includes(item.id) && item.id !== model} onChange={() => { generation.current.version++; setDetecting(false); setModel(item.id); }} />默认</label>
+    <label className="provider-model-default"><input className="model-choice" type="radio" name="default-model" aria-label={`默认模型 ${item.id}`} checked={item.id === model} disabled={!enabled.includes(item.id) && item.id !== model} onChange={() => { generation.current.version++; setDetecting(false); setModel(item.id); }} />默认</label>
   </div>;
   return <form ref={form} className="provider-form" aria-label={provider ? '编辑模型服务' : '添加模型服务'} onSubmit={async (event) => {
     event.preventDefault();
