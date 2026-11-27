@@ -85,17 +85,22 @@ async function choose(selector: string, value: string) {
   await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
 }
 async function selectModel(id: string) {
-  await act(async () => { container.querySelector<HTMLButtonElement>('.composer [aria-label="会话模型"]')!.click(); });
-  const option = [...container.querySelectorAll<HTMLButtonElement>('.composer [role="option"]')].find((item) => item.dataset.modelId === id)!;
+  await openModelList();
+  const option = [...document.querySelectorAll<HTMLButtonElement>('.reasoning-popover [role="option"]')].find((item) => item.dataset.modelId === id)!;
   assert.ok(option);
   await act(async () => { option.click(); });
 }
-const slider = () => container.querySelector<HTMLElement>('.composer [role="slider"][aria-label="思考强度"]')!;
+const slider = () => document.querySelector<HTMLElement>('.reasoning-popover [role="slider"][aria-label="思考强度"]')!;
+const effortTrigger = () => container.querySelector<HTMLButtonElement>('.reasoning-trigger')!;
+async function openEffort() {
+  if (effortTrigger().getAttribute('aria-expanded') !== 'true') await act(async () => { effortTrigger().click(); });
+}
 async function slide(key: string) {
   await act(async () => { slider().dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); });
 }
 async function openModelList() {
-  await act(async () => { container.querySelector<HTMLButtonElement>('.composer [aria-label="会话模型"]')!.click(); });
+  await openEffort();
+  if (!document.querySelector('.reasoning-model-view')) await act(async () => { document.querySelector<HTMLButtonElement>('.reasoning-model-link')!.click(); });
 }
 async function toggleModel(id: string) {
   const input = container.querySelector<HTMLInputElement>('[aria-label="启用 ' + id + '"]')!;
@@ -222,16 +227,16 @@ try {
   });
   await test('toggle reasoning has only off and on and displays stored effort as on', async () => {
     await reset(); modelOverrides = { reasoning_type: 'toggle', thinking: 'supported' }; prefs.reasoning_effort = 'high';
-    localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+    localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />); await openEffort();
     assert.equal(slider().getAttribute('aria-valuetext'), '开');
-    assert.deepEqual([...slider().querySelectorAll('.reasoning-notch-label')].map((option) => option.textContent), ['关', '开']);
+    assert.deepEqual([...slider().querySelectorAll('.reasoning-notch')].map((option) => option.getAttribute('data-effort')), ['off', 'default']);
     await slide('Home'); assert.equal(prefs.reasoning_effort, 'off'); assert.equal(slider().getAttribute('aria-valuetext'), '关');
     await slide('End'); assert.equal(prefs.reasoning_effort, 'default');
   });
   await test('effort reasoning disables missing levels without expanding max to high', async () => {
     for (const values of [['low', 'high'], ['low', 'medium', 'high'], ['minimal', 'max', 'none'], ['off', 'minimal']]) {
       await reset(); modelOverrides = { reasoning_type: 'effort', reasoning_values: values, thinking: 'supported' };
-      localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+      localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />); await openEffort();
       const available = (id: string) => slider().querySelector('[data-effort="' + id + '"]')!.getAttribute('data-available') === 'true';
       assert.equal(available('default'), true); assert.equal(available('low'), true);
       assert.equal(available('medium'), values.includes('medium')); assert.equal(available('high'), values.includes('high'));
@@ -249,37 +254,37 @@ try {
   });
   await test('a legacy missing effort is displayed as the service default', async () => {
     await reset(); modelOverrides = { reasoning_type: 'effort', reasoning_values: ['low', 'high'], thinking: 'supported' };
-    prefs.reasoning_effort = 'medium'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+    prefs.reasoning_effort = 'medium'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />); await openEffort();
     assert.equal(slider().getAttribute('aria-valuetext'), '默认');
     assert.equal(seen.some((r) => r.method === 'PUT'), false);
   });
   await test('composer slider saves next-turn preferences and custom model list groups by service', async () => {
-    await reset(); localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+    await reset(); localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />); await openEffort();
     assert.equal(container.querySelector('header [aria-label="思考强度"], header [aria-label="会话模型"], header .header-model'), null);
     assert.equal(container.querySelector('select[aria-label="会话模型"], input[type="range"], datalist'), null);
     assert.equal(slider().title, '下一轮生效'); assert.equal(slider().getAttribute('aria-valuetext'), '默认');
-    assert.deepEqual([...slider().querySelectorAll('.reasoning-notch-label')].map((option) => option.textContent), ['默认', '关', '低', '中', '高']);
+    assert.deepEqual([...slider().querySelectorAll('.reasoning-notch')].map((option) => option.getAttribute('data-effort')), ['default', 'off', 'low', 'medium', 'high']);
     assert.equal(slider().textContent?.includes('思考：'), false);
     await slide('Home'); assert.equal(seen.some((r) => r.method === 'PUT'), false);
     await slide('End');
     assert.equal(prefs.reasoning_effort, 'high'); assert.equal(seen.find((r) => r.method === 'PUT')?.body?.reasoning_effort, 'high');
     assert.equal(slider().getAttribute('aria-valuetext'), '高');
     await openModelList();
-    assert.deepEqual([...container.querySelectorAll('.composer .model-group-label')].map((group) => group.textContent), ['默认服务', '服务']);
-    assert.deepEqual([...container.querySelectorAll('.composer [role="option"]')].map((option) => option.getAttribute('data-model-id')), ['default', 'custom:provider/sonnet']);
-    assert.equal(container.querySelector('[aria-label="会话模型"]')!.getAttribute('title'), '下一轮模型');
+    assert.deepEqual([...document.querySelectorAll('.reasoning-popover .model-group-label')].map((group) => group.textContent), ['默认服务', '服务']);
+    assert.deepEqual([...document.querySelectorAll('.reasoning-popover [role="option"]')].map((option) => option.getAttribute('data-model-id')), ['default', 'custom:provider/sonnet']);
+    assert.equal(document.querySelector<HTMLButtonElement>('.reasoning-popover [role="option"][aria-selected="true"]')!.textContent?.trim(), 'Agnes');
     await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-    assert.equal(container.querySelector('[role="listbox"]'), null);
-    assert.equal(document.activeElement, container.querySelector('[aria-label="会话模型"]'));
+    assert.equal(document.querySelector('[role="listbox"]'), null);
+    assert.equal(document.activeElement, effortTrigger());
     await openModelList();
     await act(async () => { container.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true })); });
-    assert.equal(container.querySelector('[role="listbox"]'), null);
+    assert.equal(document.querySelector('[role="listbox"]'), null);
   });
   await test('unsupported reasoning disables the entire slider while unknown models may choose', async () => {
     await reset(); thinking = 'unsupported'; localStorage.setItem('cloud-harness.web-session', 'session');
     const listModels = api.listModels;
     api.listModels = async () => (await listModels()).map((model) => model.id === 'custom:provider/sonnet' ? { ...model, thinking: 'unknown' } : model);
-    try { await mount(<App />); } finally { api.listModels = listModels; }
+    try { await mount(<App />); await openEffort(); } finally { api.listModels = listModels; }
     assert.equal(slider().getAttribute('aria-disabled'), 'true'); assert.equal(slider().getAttribute('aria-valuetext'), '不支持');
     await slide('End'); assert.equal(seen.some((r) => r.method === 'PUT'), false);
     await selectModel('custom:provider/sonnet');
@@ -289,12 +294,12 @@ try {
   });
   await test('legacy custom selection remains available in the composer', async () => {
     await reset(); prefs.model_id = 'custom:provider'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
-    assert.equal(container.querySelector<HTMLButtonElement>('.composer [aria-label="会话模型"]')!.dataset.modelId, 'custom:provider/sonnet');
+    assert.equal(effortTrigger().dataset.modelId, 'custom:provider/sonnet');
     assert.equal(container.textContent?.includes('当前模型不可用'), false);
   });
   await test('a service named default still has its own model group', async () => {
     await reset(); customProviderID = 'default'; await mount(<App />); await openModelList();
-    assert.deepEqual([...container.querySelectorAll('.composer .model-group-label')].map((group) => group.textContent), ['默认服务', '服务']);
+    assert.deepEqual([...document.querySelectorAll('.reasoning-popover .model-group-label')].map((group) => group.textContent), ['默认服务', '服务']);
   });
 } finally {
   if (root) await act(async () => { root!.unmount(); }); dom.window.close();
