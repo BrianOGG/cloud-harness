@@ -34,33 +34,41 @@ const confirmation = () => container.querySelector<HTMLDialogElement>('dialog')!
 const enable = () => confirmation().querySelector<HTMLButtonElement>('.primary')!;
 
 try {
-  await test('模式名称及范围保持现有 ID 与真实授权边界', () => {
+  await test('模式名称与简短说明保持既定文案', () => {
     assert.equal(approvalModeLabel('ask'), '按策略确认');
     assert.equal(approvalModeLabel('safe'), '文件读取与 Git 查看自动');
     assert.equal(approvalModeLabel('workspace-write'), '工作区文件编辑自动 · 命令另行确认');
     assert.equal(approvalModeLabel('full-auto'), '完全自主');
     assert.equal(approvalModeLabel(), '未记录审批模式');
-    assert.match(approvalModeDescription('ask'), /不是每个读取工具都询问/);
-    for (const tool of ['read_file', 'list_dir', 'list_files', 'grep', 'git_status', 'git_diff', 'git_log']) assert.ok(approvalModeDescription('safe').includes(tool));
-    assert.match(approvalModeDescription('safe'), /七类.*不覆盖拒绝/);
-    assert.match(approvalModeDescription('workspace-write'), /边界校验.*write_file、edit_file/);
+    assert.equal(approvalModeDescription('ask'), '按已有规则询问或拒绝。');
+    assert.equal(approvalModeDescription('safe'), '读文件和查看 Git 自动执行，写入和命令仍需确认。');
+    assert.equal(approvalModeDescription('workspace-write'), '工作区内读写自动执行，命令仍需确认。');
+    assert.equal(approvalModeDescription('full-auto'), '自动执行本会询问的调用；拒绝规则仍生效。仅在你信任当前任务时使用。');
     assert.equal(approvalWaitReason(), '此调用需要你确认。');
-    assert.match(approvalModeDescription('full-auto'), /命令、写入及其他工具调用.*既有拒绝规则仍生效/);
     assert.doesNotMatch(approvalWaitReason(), /应自动放行|已自动执行|模式未记录/);
   });
-  await test('菜单可见下一轮生效信息并明确保留既有命令规则', async () => {
+  await test('菜单只展示四种模式及简短说明，芯片承载下一轮提示', async () => {
     await mount();
     assert.equal(trigger().textContent, '下一轮 · 按策略确认');
+    assert.equal(trigger().title, '下一轮审批模式；不改变正在运行或等待的回合');
     assert.equal(trigger().getAttribute('aria-expanded'), 'false');
     await open();
     assert.equal(trigger().getAttribute('aria-expanded'), 'true');
-    assert.match(container.textContent || '', /仅下一轮生效，不改变正在运行或等待的回合/);
-    assert.match(container.textContent || '', /不会自动重放或放行当前调用/);
-    assert.ok(container.textContent?.includes('既有明确允许与默认安全命令 ls / pwd / wc'));
     assert.equal(container.querySelectorAll('.mode-option').length, 4);
-    assert.equal(container.querySelectorAll('.mode-option strong')[3].textContent, '完全自主');
-    assert.ok(container.textContent?.includes(approvalModeDescription('full-auto')));
-    assert.equal(container.textContent?.includes('自动执行受限诊断命令'), false);
+    assert.deepEqual(Array.from(container.querySelectorAll('.mode-option strong'), (node) => node.textContent), [
+      '按策略确认', '文件读取与 Git 查看自动', '工作区文件编辑自动 · 命令另行确认', '完全自主',
+    ]);
+    assert.deepEqual(Array.from(container.querySelectorAll('.mode-option span'), (node) => node.textContent), [
+      '按已有规则询问或拒绝。',
+      '读文件和查看 Git 自动执行，写入和命令仍需确认。',
+      '工作区内读写自动执行，命令仍需确认。',
+      '自动执行本会询问的调用；拒绝规则仍生效。仅在你信任当前任务时使用。',
+    ]);
+    const menuText = container.querySelector('.approval-mode-popover')?.textContent || '';
+    for (const removed of [
+      'ask', 'safe', 'workspace-write', 'ls', 'pwd', 'wc', 'read_file', 'list_dir', 'list_files', 'grep', 'git_status', 'git_diff', 'git_log',
+      '底层许可', '敏感或控制路径', '仅下一轮生效，不改变正在运行或等待的回合', '不会自动重放或放行当前调用',
+    ]) assert.equal(menuText.includes(removed), false, removed);
     await act(async () => { container.querySelectorAll<HTMLButtonElement>('.mode-option')[2].click(); });
     assert.deepEqual(changed, ['workspace-write']);
     assert.equal(container.querySelector('.approval-mode-popover'), null);
