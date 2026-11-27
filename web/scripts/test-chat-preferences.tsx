@@ -163,7 +163,11 @@ try {
     assert.equal(composer.querySelector('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
     assert.equal(composer.querySelector('.approval-mode-popover'), null);
     await act(async () => { composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.click(); });
-    assert.ok(composer.textContent?.includes('仅下一轮生效'));
+    assert.equal(composer.querySelector('.approval-mode-popover') !== null, true);
+    assert.deepEqual(Array.from(composer.querySelectorAll('.mode-option strong'), (node) => node.textContent), [
+      '按策略确认', '文件读取与 Git 查看自动', '工作区文件编辑自动 · 命令另行确认', '完全自主',
+    ]);
+    assert.equal(composer.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!.textContent, '下一轮 · 按策略确认');
     await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
     assert.equal(composer.querySelector('.approval-mode-popover'), null);
     assert.equal(seen.some((r) => r.path === '/v1/providers'), false);
