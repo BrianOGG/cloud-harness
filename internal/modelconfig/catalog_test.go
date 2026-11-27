@@ -130,8 +130,8 @@ func TestSelectAutoProtocolPrefersOpenAI(t *testing.T) {
 		t.Fatalf("hint: protocol=%s alts=%v models=%v", protocol, alts, models)
 	}
 	protocol, alts, models = SelectAutoProtocol(map[string][]Model{"openai": openaiModels, "anthropic": anthropicModels, "gemini": geminiModels}, nil)
-	if protocol != "openai" || len(alts) != 2 || alts[0] != "anthropic" || alts[1] != "gemini" {
-		t.Fatalf("all: protocol=%s alts=%v", protocol, alts)
+	if protocol != "openai" || len(alts) != 2 || alts[0] != "anthropic" || alts[1] != "gemini" || models[0].ID != "agnes-3.0-flash" {
+		t.Fatalf("all: protocol=%s alts=%v models=%v", protocol, alts, models)
 	}
 	protocol, alts, models = SelectAutoProtocol(nil, nil)
 	if protocol != "" || alts != nil || models != nil {
