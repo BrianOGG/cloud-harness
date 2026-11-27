@@ -174,7 +174,7 @@ try {
     await clickText('设置');
     assert.ok(container.querySelector('[aria-label="模型服务设置"]'));
     assert.equal(container.querySelector('textarea'), null);
-    assert.ok(container.textContent?.includes('全局 / 用户配置'));
+    assert.ok(container.textContent?.includes('供所有会话使用'));
     await clickText('添加模型服务');
     await type('#provider-name', 'Fixture'); await type('#provider-url', 'http://127.0.0.1:1234/v1'); await type('#provider-model', 'custom'); await type('#provider-key', 'test-only-form-key');
     assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.type, 'password');
@@ -198,7 +198,7 @@ try {
     assert.equal(container.querySelector<HTMLSelectElement>('.header-model')!.value, 'profile:fast');
     await choose('会话模型', 'custom:' + id);
     await clickText('设置'); await clickText('删除');
-    assert.ok(container.textContent?.includes('当前模型可能变得不可用'));
+    assert.ok(container.textContent?.includes('当前模型可能不可用'));
     assert.equal(seen.some((r) => r.method === 'DELETE'), false);
     await clickText('取消'); assert.equal(providers.length, 1);
     await clickText('删除'); await clickText('确认删除'); assert.equal(providers.length, 0);

@@ -278,7 +278,7 @@ try {
   await waitFor(`${turn} .work-list .work-tool`);
   const workTools = await driver.executeScript((selector) => [...document.querySelectorAll(`${selector} .work-tool`)].map((node) => node.textContent), turn);
   assert.deepEqual(workTools, ['write_file', 'list_files', 'delegate_task']);
-  await driver.findElement(By.xpath(`//article[@data-run-id='${approvalRun}']//div[contains(@class,'turn-actions')]/button[contains(.,'运行详情')]`)).click();
+  await driver.findElement(By.xpath(`//article[@data-run-id='${approvalRun}']//div[contains(@class,'turn-actions')]/button[@aria-label='运行详情']`)).click();
   await waitFor('.inspector .trace-call');
   const runTrace = await serveJSON(`/v1/runs/${approvalRun}/trace`);
   const rendered = await driver.executeScript(() => ({

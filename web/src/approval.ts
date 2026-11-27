@@ -1,3 +1,5 @@
+import type { PendingInvocation } from './api';
+
 export const approvalModes = [
   {
     id: 'ask',
@@ -32,17 +34,33 @@ export function approvalModeDescription(mode?: string): string {
   return approvalModes.find((item) => item.id === mode)?.description || '该轮未记录可识别的审批模式，请以实际待办与后端策略为准。';
 }
 
-// This describes the mode boundary, not a guessed backend policy decision.
-export function approvalWaitReason(mode?: string, tool?: string): string {
-  if (mode === 'full-auto') return `本轮记录为完全自主，策略要求询问的调用应自动放行；${tool === 'run_command' ? '这条命令' : '此调用'}当前仍由后端要求确认，请以实际待办为准。`;
-  if (tool === 'run_command') {
-    if (mode === 'workspace-write') return '本轮模式仅自动授权允许范围内的文件读取与编辑，这条命令不在模式自动执行范围；当前由后端要求确认。';
-    if (mode === 'safe') return '本轮模式仅自动授权文件读取与 Git 查看，不包含命令自动授权；这条命令当前由后端要求确认。';
-    if (mode === 'ask') return '本轮按既有策略与底层许可判定；这条命令当前由后端要求确认。';
-    return '这条命令当前由后端要求确认；该轮模式未记录，不能用下一轮偏好推断权限。';
-  }
-  if (mode === 'workspace-write') return '本轮仅自动授权通过后端边界校验的文件读取与编辑；此调用仍由后端要求确认。';
-  if (mode === 'safe') return '本轮仅自动授权既有七类文件读取与 Git 查看工具；此调用仍由后端要求确认。';
-  if (mode === 'ask') return '本轮按既有策略与底层许可判定；此调用由后端要求确认。';
-  return '此调用正在等待后端审批；该轮模式未记录，不能用下一轮偏好推断权限。';
+export function approvalWaitReason(): string {
+  return '此调用需要你确认。';
+}
+
+export function approvalOperation(pending: PendingInvocation): string {
+  const tool = pending.tool || pending.name || '工具调用';
+  const args = pending.arguments && typeof pending.arguments === 'object' && !Array.isArray(pending.arguments)
+    ? pending.arguments as Record<string, unknown> : {};
+  if (tool === 'run_command' && typeof args.command === 'string' && args.command.trim()) return args.command;
+  const path = [args.path, args.file_path, args.directory, args.url, pending.resources?.[0]]
+    .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+  return path ? tool + ' · ' + path : tool;
+}
+
+// Compare lexical paths without claiming to resolve backend symlinks.
+export function approvalWorkingDirectory(workspace: string | undefined, cwd: unknown): string | undefined {
+  if (typeof cwd !== 'string' || !cwd.trim()) return undefined;
+  const normalize = (path: string) => {
+    const absolute = path.startsWith('/');
+    const parts: string[] = [];
+    for (const part of path.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+      else if (part !== '..' || !absolute) parts.push(part);
+    }
+    return (absolute ? '/' : '') + parts.join('/') || '.';
+  };
+  const resolved = normalize(cwd.startsWith('/') || !workspace ? cwd : workspace + '/' + cwd);
+  return resolved === normalize(workspace || '.') ? undefined : resolved;
 }
