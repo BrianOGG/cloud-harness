@@ -16,6 +16,7 @@ import (
 	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 var promptAuditModes = []string{"ask", "safe", "workspace-write", "full-auto"}
@@ -93,12 +94,16 @@ func TestPromptAuditBuiltInPromptsNeutral(t *testing.T) {
 	}
 	for _, mode := range promptAuditModes {
 		prompts[mode] = toolDigest(mode)
+		prompts[mode+" system"] = defaultSystemForMode(mode)
 	}
 	for name, prompt := range prompts {
 		t.Run(name, func(t *testing.T) { assertPromptAuditNeutral(t, name, prompt) })
 	}
 	if toolDigest("") != toolDigest("ask") {
 		t.Fatal("an omitted mode must use ask instructions")
+	}
+	if defaultSystemForMode("") != defaultSystemForMode("ask") {
+		t.Fatal("an omitted mode must use ask command rules")
 	}
 }
 
@@ -107,7 +112,7 @@ func TestPromptAuditRequestMatchesApprovalMode(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			req := promptAuditRequest(t, mode, false)
 			text, _, count := promptAuditSystemText(req)
-			if count != 2 || req.Messages[0].Content != defaultSystem || req.Messages[1].Content != toolDigest(mode) {
+			if count != 2 || req.Messages[0].Content != defaultSystemForMode(mode) || req.Messages[1].Content != toolDigest(mode) {
 				t.Fatalf("incorrect system instructions: %+v", req.Messages)
 			}
 			assertPromptAuditNeutral(t, mode, text)
@@ -123,7 +128,7 @@ func TestPromptAuditRequestMatchesApprovalMode(t *testing.T) {
 			}
 			lower := strings.ToLower(text)
 			if mode == "full-auto" {
-				for _, forbidden := range []string{"wait for approval", "waiting", "require approval", "requires approval", "ask for approval", "approval required"} {
+				for _, forbidden := range []string{"wait for approval", "waiting", "require approval", "requires approval", "ask for approval", "approval required", "outside paths are rejected", "unsupported"} {
 					if strings.Contains(lower, forbidden) {
 						t.Errorf("full-auto contains waiting instruction %q", forbidden)
 					}
@@ -137,10 +142,79 @@ func TestPromptAuditRequestMatchesApprovalMode(t *testing.T) {
 			} else if !strings.Contains(lower, "wait for approval") || !strings.Contains(lower, "waiting call must not be repeated") {
 				t.Fatal("approval mode lost its waiting instructions")
 			}
-			for _, phrase := range []string{"text-only response ends the turn", "only tool call in its response", "without a shell", "cwd defaults to the workspace", "outside paths are rejected", "Pipes, redirection", "ls, pwd, and wc", "do not know the underlying model"} {
+			assertPromptAuditCommandRules(t, mode, text)
+			for _, phrase := range []string{"text-only response ends the turn", "only tool call in its response", "do not know the underlying model"} {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("missing instruction %q", phrase)
 				}
+			}
+		})
+	}
+}
+
+func assertPromptAuditCommandRules(t *testing.T, mode, text string) {
+	t.Helper()
+	phrases := []string{"cwd defaults to the workspace"}
+	if mode == "full-auto" {
+		phrases = append(phrases, "File tools (read/write/edit) stay inside the workspace", "Commands may use shell syntax (pipes, redirection, operators)", "absolute paths or cwd outside the workspace", "Harness control files are hidden")
+		for _, forbidden := range []string{"without a shell", "outside paths are rejected", "unsupported"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("full-auto has obsolete command rule %q", forbidden)
+			}
+		}
+	} else {
+		phrases = append(phrases, "without a shell", "outside paths are rejected", "Pipes, redirection", "ls, pwd, and wc")
+	}
+	for _, phrase := range phrases {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("%s missing command instruction %q", mode, phrase)
+		}
+	}
+}
+
+func TestPromptAuditResumeKeepsFrozenCommandRules(t *testing.T) {
+	for _, mode := range promptAuditModes {
+		t.Run(mode, func(t *testing.T) {
+			isolateRuleConfig(t)
+			mock := &provider.Mock{Responses: []domain.ModelResponse{
+				toolResp(domain.ToolCall{ProviderCallID: "question", Name: domain.ToolAskUser, Arguments: json.RawMessage(`{"question":"continue?"}`)}),
+				textOnly("done"),
+			}}
+			m, db, root := testManager(t, mock)
+			m.SkipPlanner, m.DisableRepoMap, m.DisableSnapshots = true, true, true
+			m.ModelRouting = &config.ModelRouting{}
+			session, err := m.CreateSession(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := m.RunMessageWithOptions(t.Context(), session.ID, "inspect command rules", RunOptions{ApprovalMode: mode})
+			if err != nil || run.Status != domain.RunWaiting || run.WaitReason != domain.WaitUser {
+				t.Fatalf("initial run=%+v err=%v", run, err)
+			}
+			nextMode := "full-auto"
+			if mode == "full-auto" {
+				nextMode = "ask"
+			}
+			if err := db.SaveSessionPreferences(t.Context(), storage.SessionPreferences{SessionID: session.ID, ModelID: "default", ApprovalMode: nextMode}); err != nil {
+				t.Fatal(err)
+			}
+			fresh := &Manager{Store: db, Provider: mock, Broker: m.Broker, Workspace: root, OwnerID: "prompt-audit-resume", DisableSnapshots: true, DisableRepoMap: true, ModelRouting: m.ModelRouting}
+			run, err = fresh.Resume(t.Context(), run.ID, ResumeInput{Answer: "yes"})
+			if err != nil || run.Status != domain.RunCompleted || len(mock.Requests) != 2 {
+				t.Fatalf("resumed run=%+v err=%v requests=%d", run, err, len(mock.Requests))
+			}
+			req := mock.Requests[1]
+			text, _, count := promptAuditSystemText(req)
+			if count != 2 || req.Messages[0].Content != defaultSystemForMode(mode) || req.Messages[1].Content != toolDigest(mode) {
+				t.Fatalf("resumed prompt used new preferences: %+v", req.Messages)
+			}
+			assertPromptAuditCommandRules(t, mode, text)
+			if mode == "full-auto" && strings.Count(strings.ToLower(text), "approval") != 1 {
+				t.Fatal("resumed full-auto repeated approval instructions")
+			}
+			snap, err := fresh.loadCheckpoint(t.Context(), run.ID)
+			if err != nil || snap.ApprovalMode != mode {
+				t.Fatalf("snapshot mode=%q err=%v", snap.ApprovalMode, err)
 			}
 		})
 	}
@@ -175,9 +249,14 @@ func TestPromptAuditToolRegistryNeutral(t *testing.T) {
 					t.Fatal("file-write description hardcodes authorization")
 				}
 			case "run_command":
-				for _, phrase := range []string{"single command without a shell", "cwd inside the workspace", "session's approval mode"} {
+				for _, phrase := range []string{"single command (default cwd: workspace root)", "Shell syntax and cwd outside the workspace are only available in full-auto mode", "outside-workspace path arguments", "session's approval mode"} {
 					if !strings.Contains(definition.Description, phrase) {
 						t.Errorf("command description missing %q", phrase)
+					}
+				}
+				for _, forbidden := range []string{"without a shell", "cwd inside the workspace"} {
+					if strings.Contains(definition.Description, forbidden) {
+						t.Errorf("command description hardcodes %q", forbidden)
 					}
 				}
 			}

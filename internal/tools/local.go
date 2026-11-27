@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/security"
 )
 
 const (
@@ -949,7 +950,7 @@ func gitCeilingDirs(workDir string) string {
 func runCommandSpec(b *Broker, abs string) Spec {
 	return Spec{
 		Name:            "run_command",
-		Description:     "Run a single command without a shell, with cwd inside the workspace (default: workspace root). Whether dangerous commands need approval depends on the session's approval mode.",
+		Description:     "Run a single command (default cwd: workspace root). Shell syntax and cwd outside the workspace are only available in full-auto mode. Whether commands, including outside-workspace path arguments, need approval depends on the session's approval mode. Harness control files stay protected.",
 		Required:        []string{"command"},
 		Timeout:         defaultCommandTimeout,
 		Readonly:        true,
@@ -957,36 +958,31 @@ func runCommandSpec(b *Broker, abs string) Spec {
 		SideEffectClass: securityNone,
 		Parameters: strictSchema(map[string]schemaProp{
 			"command": {Type: "string", Description: "Command and arguments, for example: ls"},
-			"cwd":     {Type: "string", Description: "Optional working directory inside the workspace."},
+			"cwd":     {Type: "string", Description: "Optional working directory; full-auto also permits existing absolute directories outside the workspace. Harness control directories are forbidden."},
 		}, "command"),
-		ExtractResources: func(args json.RawMessage) ([]string, error) {
-			return commandResourcesWithCwd(abs, stringField(args, "cwd"), stringField(args, "command"))
+		ExtractRequestResources: func(req Request) ([]string, error) {
+			return commandResourcesForMode(abs, stringField(req.Args, "cwd"), stringField(req.Args, "command"), req.ApprovalMode)
 		},
 		Execute: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-			workDir := abs
-			if rawCwd := strings.TrimSpace(stringField(args, "cwd")); rawCwd != "" {
-				var err error
-				workDir, err = resolveInside(abs, rawCwd)
-				if err != nil {
-					return nil, err
-				}
-				info, serr := os.Stat(workDir)
-				if serr != nil {
-					return nil, domain.E(domain.CodeToolError, serr.Error())
-				}
-				if !info.IsDir() {
-					return nil, domain.E(domain.CodeInvalidArgument, "cwd is not a directory")
-				}
-				if controlFiles(abs)(workDir) {
-					return nil, domain.E(domain.CodeAuthDenied, "cwd cannot be inside harness control files")
-				}
-			}
-			command := stringField(args, "command")
-			argv, dangerous, err := parseCommandInDir(abs, workDir, command)
+			req, _ := ctx.Value(requestKey).(Request)
+			workDir, err := commandWorkDir(abs, stringField(args, "cwd"), req.ApprovalMode)
 			if err != nil {
 				return nil, err
 			}
+			command := stringField(args, "command")
+			argv, dangerous, err := parseCommandInDirForMode(abs, workDir, command, req.ApprovalMode)
+			if err != nil {
+				return nil, err
+			}
+			// A safe executable in an outside cwd still requires exact command authority
+			// and the mandatory control-file sandbox.
+			if !ValidCwd(abs, workDir) {
+				dangerous = true
+			}
 			if dangerous {
+				if len(argv) == 0 && req.ApprovalMode == "full-auto" {
+					argv = []string{"/bin/sh", "-c", command}
+				}
 				if len(argv) == 0 || !b.isApprovedCommand(ctx, command) {
 					return nil, domain.E(domain.CodeAuthDenied, "dangerous command was not approved and was not started")
 				}
@@ -1524,20 +1520,101 @@ func commandResources(root, command string) ([]string, error) {
 	return commandResourcesWithCwd(root, "", command)
 }
 
-func commandResourcesWithCwd(root, cwd, command string) ([]string, error) {
-	workDir := root
-	if strings.TrimSpace(cwd) != "" {
-		var err error
-		workDir, err = resolveInside(root, cwd)
-		if err != nil {
-			return nil, err
+// ValidCommandCwd applies the run's frozen mode, never a model-supplied mode.
+func ValidCommandCwd(root, cwd, mode string) bool {
+	if mode != "full-auto" {
+		return ValidCwd(root, cwd)
+	}
+	_, err := commandWorkDir(root, cwd, mode)
+	return err == nil
+}
+
+func commandControlPath(root, target string) bool {
+	if security.ControlPath(root, target) {
+		return true
+	}
+	// A retained run worktree is inside the original control directory. The
+	// worktree remains usable, but its masked siblings/ancestors do not.
+	worktrees := filepath.Dir(filepath.Clean(root))
+	control := filepath.Dir(worktrees)
+	if filepath.Base(worktrees) == "worktrees" && filepath.Base(control) == security.ControlDir {
+		if _, err := resolveInside(root, target); err != nil {
+			return security.ControlPath(filepath.Dir(control), target)
 		}
 	}
-	argv, dangerous, err := parseCommandInDir(root, workDir, command)
+	return false
+}
+
+func commandWorkDir(root, cwd, mode string) (string, error) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return root, nil
+	}
+	workDir, err := resolveInside(root, cwd)
+	if err != nil {
+		if mode != "full-auto" || !filepath.IsAbs(cwd) {
+			return "", err
+		}
+		workDir, err = evalPath(cwd)
+		if err != nil {
+			return "", domain.E(domain.CodeAuthDenied, "cwd could not be resolved")
+		}
+	}
+	// Check lexical and resolved aliases before allowing an outside directory.
+	target := cwd
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	resolved, err := evalPath(target)
+	if err != nil {
+		return "", domain.E(domain.CodeAuthDenied, "cwd could not be resolved")
+	}
+	if commandControlPath(root, target) || commandControlPath(root, resolved) {
+		return "", domain.E(domain.CodeAuthDenied, "cwd cannot be inside harness control files")
+	}
+	if mode == "full-auto" && !ValidCwd(root, workDir) {
+		configDir, err := security.ConfigDirectory()
+		if err != nil {
+			return "", domain.E(domain.CodeAuthDenied, "cwd cannot be checked against harness configuration")
+		}
+		// A mount mask cannot hide files relative to an inherited cwd handle
+		// already inside the masked directory. Do not start there at all.
+		if _, err := resolveInside(configDir, workDir); err == nil {
+			return "", domain.E(domain.CodeAuthDenied, "cwd cannot be inside harness control files")
+		}
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return "", domain.E(domain.CodeToolError, err.Error())
+	}
+	if !info.IsDir() {
+		return "", domain.E(domain.CodeInvalidArgument, "cwd is not a directory")
+	}
+	return workDir, nil
+}
+
+func commandResourcesWithCwd(root, cwd, command string) ([]string, error) {
+	return commandResourcesForMode(root, cwd, command, "")
+}
+
+func commandResourcesForMode(root, cwd, command, mode string) ([]string, error) {
+	workDir := root
+	var err error
+	if mode == "full-auto" {
+		workDir, err = commandWorkDir(root, cwd, mode)
+	} else if strings.TrimSpace(cwd) != "" {
+		// Keep legacy preflight behavior; execution validates directory type
+		// and control paths independently in every mode.
+		workDir, err = resolveInside(root, cwd)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if dangerous {
+	argv, dangerous, err := parseCommandInDirForMode(root, workDir, command, mode)
+	if err != nil {
+		return nil, err
+	}
+	if dangerous || !ValidCwd(root, workDir) {
 		return []string{strings.TrimSpace(command)}, nil
 	}
 	out := []string{root}
@@ -1565,6 +1642,16 @@ func parseCommand(root, command string) ([]string, bool, error) {
 	return parseCommandInDir(root, root, command)
 }
 
+func parseCommandInDirForMode(root, workDir, command, mode string) ([]string, bool, error) {
+	argv, dangerous, err := parseCommandInDir(root, workDir, command)
+	// Preserve literal argv behavior in other modes. Full-auto also expands
+	// glob patterns, while retaining any control-path error from the parser.
+	if err == nil && mode == "full-auto" && strings.ContainsAny(command, "*?[") {
+		return nil, true, nil
+	}
+	return argv, dangerous, err
+}
+
 func parseCommandInDir(root, workDir, command string) ([]string, bool, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -1587,7 +1674,7 @@ func parseCommandInDir(root, workDir, command string) ([]string, bool, error) {
 	if !safeCommands[name] {
 		return fields, true, nil
 	}
-	isControl := controlFiles(root)
+	dangerous := false
 	for _, arg := range fields[1:] {
 		if strings.HasPrefix(arg, "-") {
 			continue
@@ -1596,13 +1683,19 @@ func parseCommandInDir(root, workDir, command string) ([]string, bool, error) {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(workDir, target)
 		}
-		p, err := resolveInside(root, target)
+		resolvedTarget, err := evalPath(target)
 		if err != nil {
-			return nil, true, err
+			return nil, true, domain.E(domain.CodeAuthDenied, "command argument could not be resolved")
 		}
-		if isControl(p) {
+		if commandControlPath(root, target) || commandControlPath(root, resolvedTarget) {
 			return nil, true, domain.E(domain.CodeAuthDenied, "command arguments cannot target harness control files")
 		}
+		if _, err := resolveInside(root, target); err != nil {
+			dangerous = true
+		}
+	}
+	if dangerous {
+		return fields, true, nil
 	}
 	resolved, err := exec.LookPath(name)
 	if err != nil {

@@ -560,7 +560,7 @@ func (m *Manager) gate(ctx context.Context, run storage.Run, st *loopState) func
 		if policy.Effect == security.EffectDeny {
 			return st.denyPolicy(inv, policy.Reason())
 		}
-		if inv.Name == "run_command" && !tools.ValidCwd(m.Workspace, jsonString(inv.Arguments, "cwd")) {
+		if inv.Name == "run_command" && !tools.ValidCommandCwd(m.Workspace, jsonString(inv.Arguments, "cwd"), st.approvalMode) {
 			return domain.GateDeny
 		}
 		if policy.Effect == security.EffectAllow {
@@ -645,6 +645,7 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			DefaultAllow:     m.oracleDefaultAllow(inv.Name),
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
 			ApprovalPossible: false,
+			ApprovalMode:     st.approvalMode,
 			SensitiveSeen:    st.sensitive,
 			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),

@@ -282,10 +282,24 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 		}
 	}
 	trusted := p.WorkspaceTrust != nil && p.WorkspaceTrust.Effective()
-	for _, layer := range []struct {
+	layers := []struct {
 		name  string
 		rules []Rule
-	}{{"workspace", p.WorkspaceRules}, {"global", p.GlobalRules}} {
+	}{{"workspace", p.WorkspaceRules}, {"global", p.GlobalRules}}
+	// A shell stage matching an explicit command deny is terminal, including
+	// when an earlier rule would allow/ask for the outer command. Plain commands
+	// and file policies retain their existing layer/first-match precedence.
+	if strings.ContainsAny(req.Command, ";&|\n\r()`") {
+		for _, layer := range layers {
+			for i, rule := range layer.rules {
+				if rule.Effect == EffectDeny && rule.CommandPrefix != "" && p.matches(rule, req) {
+					d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, layer.name, i+1, ruleSummary(rule)
+					return d
+				}
+			}
+		}
+	}
+	for _, layer := range layers {
 		for i, rule := range layer.rules {
 			// An untrusted workspace file may only restrict: its allow and ask
 			// rules could otherwise loosen the global layer or the baseline.
@@ -320,11 +334,7 @@ func (p *Policy) matches(rule Rule, req PolicyRequest) bool {
 		return false
 	}
 	if rule.CommandPrefix != "" {
-		prefix, command := strings.TrimSpace(rule.CommandPrefix), strings.TrimSpace(req.Command)
-		if !commandTool(req.Tool) || !strings.HasPrefix(command, prefix) {
-			return false
-		}
-		if len(command) > len(prefix) && !strings.ContainsRune(" \t\r\n", rune(command[len(prefix)])) {
+		if !commandTool(req.Tool) || !matchesCommandPrefix(rule, req.Command) {
 			return false
 		}
 	}
@@ -346,6 +356,32 @@ func (p *Policy) matches(rule Rule, req PolicyRequest) bool {
 		}
 	}
 	return rule.Effect == EffectAllow
+}
+
+// Deny candidates include shell stages and substitutions. This is deliberately
+// conservative best-effort matching, not a shell parser: quoted separators may
+// add candidates too. Allow/ask rules keep the original whole-command boundary
+// match, so a match in one stage cannot broaden an allow rule.
+func matchesCommandPrefix(rule Rule, command string) bool {
+	prefix := strings.TrimSpace(rule.CommandPrefix)
+	match := func(command string) bool {
+		command = strings.TrimSpace(command)
+		return strings.HasPrefix(command, prefix) && (len(command) == len(prefix) || strings.ContainsRune(" \t\r\n", rune(command[len(prefix)])))
+	}
+	if match(command) {
+		return true
+	}
+	if rule.Effect != EffectDeny {
+		return false
+	}
+	for _, segment := range strings.FieldsFunc(command, func(r rune) bool {
+		return strings.ContainsRune(";&|\n\r()`", r)
+	}) {
+		if match(segment) {
+			return true
+		}
+	}
+	return false
 }
 
 func commandTool(tool string) bool {
