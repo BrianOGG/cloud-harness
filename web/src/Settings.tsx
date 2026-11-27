@@ -96,12 +96,13 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
   const [name, setName] = useState(provider?.name || '');
   const [baseURL, setBaseURL] = useState(provider?.base_url || '');
   const [model, setModel] = useState(provider?.model || '');
+  const [modelQuery, setModelQuery] = useState('');
   const [key, setKey] = useState('');
   const [protocol, setProtocol] = useState<ProviderProtocol>(provider?.protocol || 'openai');
   const [source, setSource] = useState<'auto' | 'manual'>(provider?.protocol_source || 'auto');
   const [catalog, setCatalog] = useState<CatalogModel[]>(provider?.catalog || []);
   const [fetchedAt, setFetchedAt] = useState(provider?.catalog_fetched_at);
-  const [enabled, setEnabled] = useState<string[]>(provider?.models || (provider?.model ? [provider.model] : []));
+  const [enabled, setEnabled] = useState<string[]>([...new Set([...(provider?.models || []), ...(provider?.model ? [provider.model] : [])])]);
   const [detecting, setDetecting] = useState(false);
   const [detected, setDetected] = useState(false);
   const [detectError, setDetectError] = useState('');
@@ -123,13 +124,35 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
       const result = await api.detectProvider({ base_url: baseURL, ...(key ? { api_key: key } : {}), ...(provider ? { provider_id: provider.id } : {}), ...(source === 'manual' ? { protocol } : {}) });
       if (identity !== generation.current.version) return;
       setProtocol(result.protocol); setCatalog(result.models); setFetchedAt(result.fetched_at); setDetected(true); setAlternatives(result.alternatives || []);
-      if (!model && result.models[0]) { setModel(result.models[0].id); setEnabled((previous) => [...new Set([...previous, result.models[0].id])]); }
+      const first = result.models.find((item) => !isOtherModel(item));
+      if (!model && first) { setModel(first.id); setEnabled((previous) => [...new Set([...previous, first.id])]); }
     } catch { if (identity === generation.current.version) setDetectError('获取模型列表失败，可手填模型名并保存。'); }
     finally { if (identity === generation.current.version) setDetecting(false); }
   };
-  const choices: CatalogModel[] = [...new Map<string, CatalogModel>([...catalog, ...enabled.map((id) => ({ id })), ...(model ? [{ id: model }] : [])].map((item) => [item.id, item] as [string, CatalogModel])).values()];
+  const choices: CatalogModel[] = [...new Map<string, CatalogModel>([...enabled.map((id) => ({ id })), ...(model ? [{ id: model }] : []), ...catalog].map((item) => [item.id, item] as [string, CatalogModel])).values()];
+  const filteredChoices = choices.filter((item) => (item.id + ' ' + (item.display_name || '')).toLowerCase().includes(modelQuery.trim().toLowerCase()));
+  const visibleChoices = filteredChoices.filter((item) => !isOtherModel(item) || enabled.includes(item.id) || item.id === model);
+  const otherChoices = filteredChoices.filter((item) => isOtherModel(item) && !enabled.includes(item.id) && item.id !== model);
+  const addModel = () => {
+    const id = modelQuery.trim();
+    if (!id || id.length > 200) return;
+    generation.current.version++; setDetecting(false); setError('');
+    setEnabled((previous) => [...new Set([...previous, id])]);
+    if (!model) setModel(id);
+    setModelQuery('');
+  };
+  const renderModel = (item: CatalogModel) => <div className="provider-model-row" key={item.id} data-model-id={item.id}>
+    <label title={item.id}><input type="checkbox" aria-label={`启用 ${item.id}`} checked={enabled.includes(item.id) || item.id === model} disabled={item.id === model} onChange={(event) => {
+      generation.current.version++; setDetecting(false);
+      setEnabled((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id));
+      if (event.target.checked && !model) setModel(item.id);
+    }} /><span>{item.display_name || item.id}{item.display_name && item.display_name !== item.id && <small>{item.id}</small>}</span>{isOtherModel(item) && <small>其他</small>}</label>
+    <label className="provider-model-default"><input type="radio" name="default-model" aria-label={`默认模型 ${item.id}`} checked={item.id === model} disabled={!enabled.includes(item.id) && item.id !== model} onChange={() => { generation.current.version++; setDetecting(false); setModel(item.id); }} />默认</label>
+  </div>;
   return <form ref={form} className="provider-form" aria-label={provider ? '编辑模型服务' : '添加模型服务'} onSubmit={async (event) => {
-    event.preventDefault(); generation.current.version++; setDetecting(false); setSaving(true); setError('');
+    event.preventDefault();
+    if (!model || !enabled.includes(model)) { setError('请先勾选模型并设为默认。'); return; }
+    generation.current.version++; setDetecting(false); setSaving(true); setError('');
     try {
       await onSave({ id: provider?.id || crypto.randomUUID(), name, base_url: baseURL, model, protocol, protocol_source: source, models: [...new Set([model, ...enabled])], catalog, ...(fetchedAt ? { catalog_fetched_at: fetchedAt } : {}), ...(key ? { api_key: key } : {}) });
       setKey('');
@@ -142,11 +165,22 @@ function ProviderForm({ provider, onSave, onCancel }: { provider?: CustomProvide
       <label htmlFor="provider-url">Base URL<input id="provider-url" type="url" title="仅支持 HTTPS 或本机回环 HTTP" value={baseURL} required placeholder="https://api.example.com/v1" onChange={(event) => { invalidate(); setBaseURL(event.target.value); setCatalog([]); setFetchedAt(undefined); }} onBlur={() => void detect()} /></label>
       <label htmlFor="provider-key">API key<input id="provider-key" type="password" autoComplete="new-password" value={key} required={!provider} placeholder={provider?.has_api_key ? '已保存；留空保留原值' : '输入 API key'} onChange={(event) => { invalidate(); setKey(event.target.value); }} onBlur={() => void detect()} /></label>
       <div className="settings-actions provider-protocol"><label htmlFor="provider-protocol">协议<select id="provider-protocol" title={alternatives.length ? `该服务也兼容 ${alternatives.map((item) => protocolNames[item]).join('、')}；可手动更改` : '可手动更改自动识别结果'} value={protocol} onChange={(event) => { invalidate(); setProtocol(event.target.value as ProviderProtocol); setSource('manual'); setCatalog([]); setFetchedAt(undefined); }}>{Object.entries(protocolNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className="button" title="识别协议并读取模型目录" disabled={detecting || saving || !baseURL || (!key && !provider?.has_api_key)} onClick={() => void detect()}>{detecting ? '识别中…' : '识别'}</button>{detected && <span role="status">{source === 'auto' ? '已识别' : '已选择'}：{protocolNames[protocol]}</span>}</div>
-      <label htmlFor="provider-model">默认模型<input id="provider-model" title="可搜索目录或输入模型名" placeholder="搜索或输入模型名" list="provider-model-catalog" value={model} maxLength={200} required onChange={(event) => { generation.current.version++; setDetecting(false); setModel(event.target.value); }} /><datalist id="provider-model-catalog">{catalog.map((item) => <option key={item.id} value={item.id}>{item.display_name || item.id}</option>)}</datalist></label>
-      {choices.length > 0 && <fieldset className="provider-models"><legend>会话模型</legend>{choices.map((item) => <label key={item.id} title={item.id}><input type="checkbox" checked={item.id === model || enabled.includes(item.id)} disabled={item.id === model} onChange={(event) => setEnabled((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id))} />{item.display_name || item.id}{item.id === model && <small>默认</small>}</label>)}</fieldset>}
+      <div className="provider-model-picker" role="group" aria-label="模型列表">
+        <div className="provider-model-search"><label htmlFor="provider-model-search">模型<input id="provider-model-search" type="search" placeholder="搜索名称或输入模型 ID" value={modelQuery} maxLength={200} onChange={(event) => setModelQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addModel(); } }} /></label><button type="button" className="button" disabled={!modelQuery.trim()} onClick={addModel}>添加并勾选</button></div>
+        <div className="provider-model-list">
+          {visibleChoices.map(renderModel)}
+          {otherChoices.length > 0 && <details className="provider-other-models"><summary>其他（{otherChoices.length}）</summary>{otherChoices.map(renderModel)}</details>}
+          {filteredChoices.length === 0 && <p className="muted">{modelQuery ? '没有匹配的模型，可添加此 ID。' : '识别模型目录或输入模型 ID 添加。'}</p>}
+        </div>
+      </div>
     </div>
     {detectError && <p role="status" className="settings-error">{detectError}</p>}
     {error && <p role="alert" className="settings-error">{error}</p>}
     <div className="settings-actions"><button type="submit" className="button primary" disabled={saving}>{saving ? '保存中…' : '保存模型服务'}</button><button type="button" className="button" disabled={saving} onClick={onCancel}>取消</button></div>
   </form>;
+}
+
+function isOtherModel(item: CatalogModel): boolean {
+  if (item.category) return item.category === 'other';
+  return /tts|asr|realtime|real-time|whisper|embedding|embed-|image|video|router|rerank|transcrib|speech/i.test(item.id + ' ' + (item.display_name || ''));
 }

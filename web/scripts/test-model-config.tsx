@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import React, { act, StrictMode } from 'react';
 import type { Root } from 'react-dom/client';
-import type { CustomProvider, ModelDetection, SessionPreferences } from '../src/api';
+import type { CustomProvider, ModelDetection, ModelOption, SessionPreferences } from '../src/api';
 
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://fixture.invalid/ui/' });
 for (const key of ['window', 'document', 'localStorage', 'HTMLElement', 'Event', 'MouseEvent', 'FocusEvent']) {
@@ -30,6 +30,7 @@ let deferred: ((value: Response) => void) | undefined;
 let holdDetection = false;
 let customProviderID = 'provider';
 let detectionOverride: ModelDetection | undefined;
+let modelOverrides: Partial<ModelOption> = {};
 
 globalThis.fetch = async (input, init) => {
   const path = String(input), method = init?.method || 'GET';
@@ -51,7 +52,7 @@ globalThis.fetch = async (input, init) => {
     result = { ...providers[0], catalog: detection.models, catalog_fetched_at: fetchedAt };
   }
   else if (path === '/healthz') result = { status: 'ok', provider: 'fixture' };
-  else if (path === '/v1/models') result = [{ id: 'default', name: 'Agnes', model: 'agnes-3.0-flash', provider: 'openai', thinking }, { id: 'custom:' + customProviderID + '/sonnet', legacy_id: 'custom:' + customProviderID, name: '服务 · sonnet', model: 'sonnet', provider: 'anthropic', provider_id: customProviderID, provider_name: '服务', thinking: 'supported' }];
+  else if (path === '/v1/models') result = [{ id: 'default', name: 'Agnes', model: 'agnes-3.0-flash', provider: 'openai', thinking, ...modelOverrides }, { id: 'custom:' + customProviderID + '/sonnet', legacy_id: 'custom:' + customProviderID, name: '服务 · sonnet', model: 'sonnet', provider: 'anthropic', provider_id: customProviderID, provider_name: '服务', thinking: 'supported' }];
   else if (path === '/v1/sessions') result = [{ id: 'session', created_at: fetchedAt, updated_at: fetchedAt, run_count: 0 }];
   else if (path.endsWith('/preferences')) { if (method === 'PUT') prefs = body as unknown as SessionPreferences; result = prefs; }
   else if (path.includes('/messages')) result = { messages: [], next_cursor: '' };
@@ -64,7 +65,7 @@ async function reset() {
   if (root) await act(async () => { root!.unmount(); root = undefined; });
   localStorage.clear(); window.history.replaceState(null, '', '/ui/');
   providers = []; prefs = { approval_mode: 'ask', model_id: 'default', reasoning_effort: 'default' };
-  seen = []; failDetection = false; thinking = 'unknown'; holdDetection = false; deferred = undefined; customProviderID = 'provider'; detectionOverride = undefined;
+  seen = []; failDetection = false; thinking = 'unknown'; holdDetection = false; deferred = undefined; customProviderID = 'provider'; detectionOverride = undefined; modelOverrides = {};
 }
 async function mount(element: React.ReactNode) { root = createRoot(container); await act(async () => { root!.render(<StrictMode>{element}</StrictMode>); }); }
 async function click(text: string) {
@@ -83,6 +84,16 @@ async function choose(selector: string, value: string) {
   const select = container.querySelector<HTMLSelectElement>(selector)!; assert.ok(select && !select.disabled);
   await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
 }
+async function toggleModel(id: string) {
+  const input = container.querySelector<HTMLInputElement>('[aria-label="启用 ' + id + '"]')!;
+  assert.ok(input); assert.equal(input.disabled, false);
+  await act(async () => { input.click(); });
+}
+async function setDefault(id: string) {
+  const input = container.querySelector<HTMLInputElement>('[aria-label="默认模型 ' + id + '"]')!;
+  assert.ok(input); assert.equal(input.disabled, false);
+  await act(async () => { input.click(); });
+}
 async function blur(selector: string) {
   await act(async () => { container.querySelector(selector)!.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true })); });
 }
@@ -97,9 +108,11 @@ try {
     await reset(); await add(); await blur('#provider-key');
     assert.equal(container.querySelector<HTMLSelectElement>('#provider-protocol')!.value, 'anthropic');
     assert.ok(container.textContent?.includes('已识别：Anthropic'));
-    assert.equal(container.querySelector<HTMLInputElement>('#provider-model')!.value, 'sonnet');
-    assert.deepEqual([...container.querySelectorAll('#provider-model-catalog option')].map((item) => item.getAttribute('value')), ['sonnet', 'haiku']);
-    await act(async () => { container.querySelectorAll<HTMLInputElement>('.provider-models input')[1].click(); });
+    assert.equal(container.querySelector('datalist'), null);
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="默认模型 sonnet"]')!.checked, true);
+    assert.deepEqual([...container.querySelectorAll('.provider-model-row')].map((item) => item.getAttribute('data-model-id')), ['sonnet', 'haiku']);
+    assert.ok(container.querySelector('[data-model-id="sonnet"]')?.textContent?.includes('Sonnet'));
+    await toggleModel('haiku');
     await submit();
     assert.equal(providers[0].protocol, 'anthropic'); assert.equal(providers[0].protocol_source, 'auto'); assert.deepEqual(providers[0].models, ['sonnet', 'haiku']);
     assert.ok(container.querySelector('.provider-heading .chip')?.textContent?.includes('Anthropic · 2 个模型'));
@@ -107,7 +120,7 @@ try {
     assert.equal(seen.some((r) => r.path.includes('/preferences')), false);
   });
   await test('dual-protocol detection prefers OpenAI and mentions the alternative in the title', async () => {
-    detectionOverride = { protocol: 'openai', models: [{ id: 'agnes-3.0-flash' }], fetched_at: fetchedAt, alternatives: ['anthropic'] };
+    await reset(); detectionOverride = { protocol: 'openai', models: [{ id: 'agnes-3.0-flash' }], fetched_at: fetchedAt, alternatives: ['anthropic'] };
     await add();
     await type('#provider-url', 'https://example.invalid/v1');
     await type('#provider-key', 'secret-key');
@@ -127,7 +140,7 @@ try {
   await test('failed catalog fetch still allows a manual model and save', async () => {
     await reset(); await add(); failDetection = true; await click('识别');
     assert.ok(container.textContent?.includes('可手填模型名并保存'));
-    await type('#provider-model', 'manual-model'); await submit();
+    await type('#provider-model-search', 'manual-model'); await click('添加并勾选'); await submit();
     assert.equal(providers[0].model, 'manual-model'); assert.deepEqual(providers[0].models, ['manual-model']);
   });
   await test('editing reuses saved credentials and failed refresh keeps cached models', async () => {
@@ -138,14 +151,98 @@ try {
     await submit(); assert.equal(seen.find((r) => r.method === 'PUT')?.body?.api_key, undefined);
     await click('刷新模型列表'); assert.ok(container.textContent?.includes('已刷新模型列表'));
     failDetection = true; await click('刷新模型列表'); assert.ok(container.querySelector('.provider-card [role="alert"]'));
-    await click('编辑'); assert.equal(container.querySelectorAll('#provider-model-catalog option').length, 2);
+    await click('编辑'); assert.equal(container.querySelectorAll('.provider-model-row').length, 2);
   });
   await test('late automatic discovery cannot overwrite a manual protocol', async () => {
     await reset(); await add(); holdDetection = true; await blur('#provider-key');
     assert.ok(deferred); await choose('#provider-protocol', 'openai');
     await act(async () => { deferred!(new Response(JSON.stringify(detection))); });
     assert.equal(container.querySelector<HTMLSelectElement>('#provider-protocol')!.value, 'openai');
-    assert.equal(container.querySelectorAll('#provider-model-catalog option').length, 0);
+    assert.equal(container.querySelectorAll('.provider-model-row').length, 0);
+  });
+  await test('single list filters names and IDs, adds manual IDs, and protects the selected default', async () => {
+    await reset(); await add(); await click('识别');
+    const defaultCheckbox = () => container.querySelector<HTMLInputElement>('[aria-label="启用 sonnet"]')!;
+    assert.equal(defaultCheckbox().checked, true); assert.equal(defaultCheckbox().disabled, true);
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="默认模型 haiku"]')!.disabled, true);
+    await type('#provider-model-search', 'HAI');
+    assert.deepEqual([...container.querySelectorAll('.provider-model-row')].map((row) => row.getAttribute('data-model-id')), ['haiku']);
+    await toggleModel('haiku'); await setDefault('haiku');
+    await type('#provider-model-search', ''); await toggleModel('sonnet');
+    assert.equal(defaultCheckbox().checked, false);
+    await type('#provider-model-search', 'private-new-id'); await click('添加并勾选');
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="启用 private-new-id"]')!.checked, true);
+    await setDefault('private-new-id'); await toggleModel('haiku');
+    const manual = container.querySelector<HTMLInputElement>('[aria-label="启用 private-new-id"]')!;
+    assert.equal(manual.disabled, true); await act(async () => { manual.click(); }); assert.equal(manual.checked, true);
+    await submit();
+    assert.equal(providers[0].model, 'private-new-id'); assert.deepEqual(providers[0].models, ['private-new-id']);
+  });
+  await test('other models start collapsed and selected or default other models stay visible', async () => {
+    await reset(); detectionOverride = { protocol: 'openai', fetched_at: fetchedAt, models: [
+      { id: 'stepaudio-2.5-tts', category: 'other' },
+      { id: 'step-5-preview', display_name: 'Step 5 Preview', category: 'chat' },
+      { id: 'stepaudio-2.5-asr', category: 'other' }, { id: 'stepaudio-2.5-chat', category: 'other' },
+      { id: 'step-router-v1' }, { id: 'stepaudio-2.5-realtime' },
+    ] };
+    await add(); await click('识别');
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="默认模型 step-5-preview"]')!.checked, true);
+    const details = container.querySelector<HTMLDetailsElement>('.provider-other-models')!;
+    assert.equal(details.open, false); assert.equal(details.querySelectorAll('.provider-model-row').length, 5);
+    assert.equal(container.querySelector('[data-model-id="step-5-preview"]')!.closest('details'), null);
+    await act(async () => { details.open = true; }); await toggleModel('stepaudio-2.5-tts');
+    const tts = container.querySelector('[data-model-id="stepaudio-2.5-tts"]')!;
+    assert.equal(tts.closest('details'), null); await setDefault('stepaudio-2.5-tts');
+    await act(async () => { container.querySelector<HTMLDetailsElement>('details')!.open = false; });
+    assert.equal(container.querySelector('[data-model-id="stepaudio-2.5-tts"]')!.closest('details'), null);
+    await submit(); assert.equal(providers[0].model, 'stepaudio-2.5-tts'); assert.ok(providers[0].models?.includes('stepaudio-2.5-tts'));
+    await click('编辑');
+    assert.equal(container.querySelector('[data-model-id="stepaudio-2.5-tts"]')!.closest('details'), null);
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="启用 stepaudio-2.5-tts"]')!.disabled, true);
+  });
+  await test('manual IDs can be saved without a successful catalog or reasoning choice', async () => {
+    await reset(); await add(); await submit(); assert.equal(providers.length, 0);
+    assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes('默认'));
+    await type('#provider-model-search', 'unlisted-router'); await click('添加并勾选');
+    assert.equal(container.querySelector('[data-model-id="unlisted-router"]')!.closest('details'), null);
+    await submit(); assert.equal(providers[0].model, 'unlisted-router');
+  });
+  await test('toggle reasoning offers only off and on and displays stored effort as on', async () => {
+    await reset(); modelOverrides = { reasoning_type: 'toggle', thinking: 'supported' }; prefs.reasoning_effort = 'high';
+    localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+    const trigger = container.querySelector<HTMLButtonElement>('header [aria-label="思考强度"]')!;
+    assert.equal(trigger.textContent, '思考：开'); await act(async () => { trigger.click(); });
+    const menu = container.querySelector('[aria-label="选择思考强度"]')!;
+    assert.deepEqual([...menu.querySelectorAll('button')].map((option) => option.textContent), ['关', '开']);
+    await click('关'); assert.equal(prefs.reasoning_effort, 'off'); assert.equal(trigger.textContent, '思考：关');
+    await act(async () => { trigger.click(); }); await click('开'); assert.equal(prefs.reasoning_effort, 'default');
+  });
+  await test('effort reasoning disables missing levels without expanding max to high', async () => {
+    for (const values of [['low', 'high'], ['low', 'medium', 'high'], ['minimal', 'max', 'none']]) {
+      await reset(); modelOverrides = { reasoning_type: 'effort', reasoning_values: values, thinking: 'supported' };
+      localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+      await act(async () => { container.querySelector<HTMLButtonElement>('header [aria-label="思考强度"]')!.click(); });
+      const options = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="选择思考强度"] button')];
+      const disabled = (label: string) => options.find((item) => item.textContent === label)!.disabled;
+      assert.equal(disabled('默认'), false); assert.equal(disabled('低'), false);
+      assert.equal(disabled('中'), !values.includes('medium')); assert.equal(disabled('高'), !values.includes('high'));
+      assert.equal(disabled('关'), !values.includes('none'));
+      if (disabled('中')) { const medium = options.find((item) => item.textContent === '中')!; await act(async () => { medium.click(); }); assert.equal(seen.some((r) => r.method === 'PUT'), false); }
+    }
+  });
+  await test('a late discovery cannot replace a manually added default', async () => {
+    await reset(); await add(); holdDetection = true; await blur('#provider-key'); assert.ok(deferred);
+    await type('#provider-model-search', 'manual-first'); await click('添加并勾选');
+    await act(async () => { deferred!(new Response(JSON.stringify(detection))); });
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="默认模型 manual-first"]')!.checked, true);
+    assert.equal(container.querySelector('[data-model-id="sonnet"]'), null);
+    await submit(); assert.equal(providers[0].model, 'manual-first');
+  });
+  await test('a legacy missing effort is displayed as the service default', async () => {
+    await reset(); modelOverrides = { reasoning_type: 'effort', reasoning_values: ['low', 'high'], thinking: 'supported' };
+    prefs.reasoning_effort = 'medium'; localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);
+    assert.equal(container.querySelector<HTMLButtonElement>('header [aria-label="思考强度"]')!.textContent, '思考：默认');
+    assert.equal(seen.some((r) => r.method === 'PUT'), false);
   });
   await test('reasoning selection writes session preferences and models group by service', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'session'); await mount(<App />);

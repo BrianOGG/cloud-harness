@@ -853,13 +853,16 @@ a browser to handle the wait on the embedded approval page.
 
 ## GET /v1/models
 
-Returns an array of `{id, name, model, fallback_model?, provider, provider_id?, provider_name?, legacy_id?, thinking?}`.
+Returns an array of `{id, name, model, fallback_model?, provider, provider_id?, provider_name?, legacy_id?, display_name?, thinking?, reasoning_type?, reasoning_values?, category?}`.
 IDs are `default`, `profile:<name>`, or `custom:<providerID>/<model>` for each
 model enabled on a custom service. Split custom IDs at the first slash; model
 names may contain further slashes. `provider` is the actual protocol
 (`openai`, `anthropic` or `gemini`). The default model of each custom provider
 also has `legacy_id: "custom:<providerID>"`; existing preferences using that
 ID remain valid. `thinking` is `supported`, `unsupported` or `unknown`.
+`reasoning_type` is `toggle` or `effort` when advertised; `reasoning_values`
+contains that selected catalog record's effort values. `category` is `chat`
+or `other`. Optional fields also appear in saved/detected catalog entries.
 Credentials are never returned. Unknown or disabled model IDs return 400.
 
 ## GET /v1/sessions/{id}/preferences
@@ -869,8 +872,8 @@ The equivalent `/v1/sessions/{id}/settings` routes are also available.
 GET initially returns `{"approval_mode":"ask","model_id":"default","reasoning_effort":"default"}`.
 PUT accepts those fields and returns saved values. `approval_mode` is one of
 `ask`, `safe`, `workspace-write`, `full-auto`. `reasoning_effort` is one of
-`default`, `off`, `low`, `medium`, `high`; omission means `default` and sends
-no thinking override to the service. `model_id` must be a configured model
+`default`, `off`, `low`, `medium`, `high`; omission means `default` (service
+default for effort models, on for toggle models). `model_id` must be a configured model
 ID or a legacy custom provider ID; an empty ID means `default`.
 Invalid settings return 400; unknown sessions return 404. Migration 013 adds
 `reasoning_effort` to `session_preferences` while preserving prior choices.
@@ -888,11 +891,16 @@ compatible with the original default model enabled.
 
 `protocol` is `openai`, `anthropic` or `gemini`; `protocol_source` is `auto` or
 `manual`. `models` contains the enabled IDs and always includes `model`.
-`catalog` holds up to 1000 `{id, display_name?, thinking?}` entries, with the
+`catalog` holds up to 1000 `{id, display_name?, thinking?, reasoning_type?, reasoning_values?, category?}` entries, with the
 last successful fetch time in `catalog_fetched_at`. Refreshing the catalog
 does not silently enable models or replace the default.
 
-Manage services in **设置 → 模型服务**. Select models and thinking effort in
+Manage services in **设置 → 模型服务**. A single searchable list supports
+manual ID addition, enable checkboxes and an inline default radio. The default
+is always enabled; select another default before unchecking it. Non-chat
+models live in collapsed **其他**, while enabled/default entries stay visible
+outside that group. Models.dev friendly names take precedence over IDs.
+Select models and thinking effort in
 the **conversation header**; the composer retains its approval-mode chip.
 IDs use 1–64 ASCII letters, digits, underscores or hyphens. Base URLs require
 HTTPS; only loopback hosts permit HTTP. User info, queries and fragments are
@@ -918,7 +926,7 @@ this in its title (for example, “该服务也兼容 Anthropic”) and can stil
 override the choice.
 
 Each request times out after 10 seconds, reads at most 1 MiB and refuses
-redirects. Returns `{protocol, models:[{id, display_name?, thinking?}], fetched_at, alternatives?}`.
+redirects. Returns `{protocol, models:[{id, display_name?, thinking?, reasoning_type?, reasoning_values?, category?}], fetched_at, alternatives?}`.
 Gemini lists exclude models without `generateContent` and strip the
 `models/` prefix. HTTP, invalid/oversized catalog and network errors return
 502 with a fixed Chinese `error` and numeric `upstream_status` (0 when no
@@ -947,13 +955,23 @@ remain intact, so sessions using deleted services must choose another model.
 
 ### Thinking parameter negotiation
 
-OpenAI compatible services receive `reasoning_effort` for low/medium/high;
-`off` and `default` omit it. Anthropic receives thinking budgets of
+Without catalog metadata, OpenAI compatible services receive
+`reasoning_effort` for low/medium/high; `off` and `default` omit it. Catalog
+effort models send only advertised values (including `none/off` for off). Anthropic receives thinking budgets of
 4000/10000/24000 with `max_tokens >= budget + 8000`, without temperature or
 forced tool choice. Gemini uses its OpenAI compatibility endpoint at
 `<base_url>/openai` and `extra_body.google.thinking_config` with budgets
 0/1024/8192/24576 for off/low/medium/high and `include_thoughts:false`.
-`default` always leaves service defaults intact.
+`default` leaves effort-based service defaults intact. Toggle models expose only
+**关/开** in the header: `default` (and legacy low/medium/high preferences)
+means on. Agnes OpenAI-compatible requests use the documented
+`chat_template_kwargs.enable_thinking` boolean, including explicit `false`
+for off ([Agnes Thinking mode](https://agnes-ai.com/en/docs/agnes-30-flash)).
+Native Anthropic toggles use `thinking.type: enabled/disabled`. Effort menus
+disable unavailable values: Step 3.5 Flash has low/high, Step 5 Preview has
+low/medium/high. `none/off` map to off; `minimal` is used for low only when
+`low` is absent. `max/xhigh` never expand the high option. A saved preference
+missing from the current capability record falls back to the service default.
 
 Known unsupported models omit these parameters and disable the header
 control. Unknown models may try them. An upstream HTTP 400 identifying a
@@ -961,3 +979,30 @@ thinking parameter causes one retry without it, caches unsupported status
 for that provider/model in this process, and records
 `provider.reasoning_unsupported` with only protocol and model. The model
 menu reads the same runtime capability cache. No raw error body is traced.
+
+### Public models.dev metadata
+
+Settings list/save/detect/refresh and `GET /v1/models` enrich models from
+`GET https://models.dev/api.json`. Only this fixed public GET is used, with
+no Authorization, API key, custom base URL, query or referrer; redirects are
+refused and the request has a five-second timeout and a 32 MiB bound. A public
+`models-dev-cache.json` beside `compatible-providers.json` lasts 24 hours.
+Failures retain stale data; no cache falls back to name heuristics and does
+not fail settings or manual saves. Inference reads metadata without fetching.
+
+Matching strips provider namespaces (for example `stepfun/` or
+`nvidia/stepfun-ai/`) then compares exact case-sensitive model IDs. Candidate
+providers first match the configured host and the longest boundary-aligned
+API path prefix. Thus `/v1` and `/step_plan/v1` on `api.stepfun.com` select
+different records; `api.stepfun.ai` stays separate from China. Without an
+address match, known first-party providers precede aggregators; ties are
+stable by provider ID. Exactly one record supplies capabilities, never their
+union. Official StepFun low/medium/high cannot inherit Requesty's none/max.
+
+Text-output models belong in chat unless audio-only input, audio dialogue
+without tool calls, router or realtime. Other modalities live in **其他**.
+Unmatched tts/asr/realtime/whisper/embedding/image/video/router names use the
+same other group; unfamiliar manual IDs default to chat. Reasoning=false
+is authoritative, while unmatched IDs retain the existing thinking heuristic
+and the runtime HTTP 400 fallback. Default unit tests use a small local
+fixture and loopback HTTP servers, with no external requests.

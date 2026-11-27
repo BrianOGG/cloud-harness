@@ -569,8 +569,31 @@ list controls the header menu, independently of the last fetched catalog.
 Gemini runs through its official OpenAI compatibility endpoint; Anthropic uses
 its native Messages API. Refresh failures retain the previous catalog.
 
-Session thinking effort defaults to `default`, preserving service behavior.
+Session thinking effort defaults to `default`, preserving effort-model service behavior
+and enabling toggle-model thinking.
 `off`, `low`, `medium` and `high` apply to the next run and survive waits in
 its checkpoint. Known unsupported models omit the override; a thinking
 parameter rejected with HTTP 400 is retried once without it and remembered
 for that provider/model until this process restarts.
+
+
+Model settings use one searchable, filterable list with enable checkboxes and
+an inline default choice. Other modalities/router/realtime models are collapsed;
+enabled/default entries remain visible. Manual IDs can always be added.
+Public models.dev metadata supplies friendly names, classification and toggle
+or effort capabilities. Address host + longest API-path prefix wins, then
+first-party providers before aggregators; capabilities come from one record.
+
+Only a fixed credential-free GET to https://models.dev/api.json is made. The
+public models-dev-cache.json in the existing config directory expires after
+24 hours. Requests time out after five seconds and refuse redirects; stale
+cache survives failures and no cache uses name heuristics. No API keys or
+custom base URLs leave for models.dev. The public cache is not a repository
+asset. See [API metadata and thinking mapping](api.md#public-modelsdev-metadata)
+for matching rules and wire behavior.
+
+Agnes toggle models expose off/on (default and legacy effort preferences mean
+on), using the documented chat_template_kwargs.enable_thinking boolean for
+OpenAI-compatible requests. Effort models disable unadvertised values, for
+example medium on Step 3.5 Flash, and never promote max/xhigh to high. The
+existing HTTP 400 retry/cache remains the final negotiation fallback.

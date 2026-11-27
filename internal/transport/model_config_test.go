@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/BrianOGG/cloud-harness/internal/agent"
 	"io"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
@@ -260,4 +262,91 @@ func TestDefaultReasoningFallbackTraceAndMenu(t *testing.T) {
 	if calls.Load() != 3 {
 		t.Fatal("unexpected negotiation retry count")
 	}
+}
+
+func TestModelsDevMetadataAcrossSettingsAndModelMenu(t *testing.T) {
+	const key = "modelsdev-integration-fixture-key"
+	store := config.CustomProviderStore{Directory: t.TempDir()}
+	fixture, err := os.ReadFile("../provider/testdata/modelsdev.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{"fetched_at": time.Now(), "providers": json.RawMessage(fixture)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Directory, "models-dev-cache.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := provider.NewModelsDev(store.Directory)
+	primary := &provider.OpenAICompatible{BaseURL: "https://apihub.agnes-ai.com/v1", Model: "agnes-3.0-flash"}
+	provider.SetModelCatalog(primary, catalog)
+	s := &Server{Token: approvalTestToken, ProviderSettings: store, ModelsDev: catalog, Manager: &agent.Manager{Provider: primary}, Models: []ModelOption{{ID: "default", Name: "默认 · agnes-3.0-flash", Model: "agnes-3.0-flash", Provider: "openai"}}}
+	h := s.Handler()
+	input := config.CustomProvider{ID: "step", Name: "StepFun", BaseURL: "https://api.stepfun.com/v1", APIKey: key, Model: "step-3.5-flash", Models: []string{"step-5-preview", "stepaudio-2.5-tts"}, Catalog: []modelconfig.Model{{ID: "step-3.5-flash"}, {ID: "step-5-preview"}, {ID: "stepaudio-2.5-tts"}}}
+	rec := modelConfigRequest(t, h, "PUT", "/v1/providers", input, 200, key)
+	var saved config.CustomProviderInfo
+	if json.Unmarshal(rec.Body.Bytes(), &saved) != nil || len(saved.Catalog) != 3 || saved.Catalog[0].ReasoningType != "effort" || !reflect.DeepEqual(saved.Catalog[0].ReasoningValues, []string{"low", "high"}) {
+		t.Fatal("saved catalog missing metadata")
+	}
+	persisted, err := store.Get("step")
+	if err != nil || persisted.Catalog[0].ReasoningType != "effort" {
+		t.Fatal("new optional fields failed strict on-disk reload")
+	}
+	rec = modelConfigRequest(t, h, "GET", "/v1/models", nil, 200, key)
+	var options []ModelOption
+	if json.Unmarshal(rec.Body.Bytes(), &options) != nil || len(options) != 4 {
+		t.Fatal("wrong model menu")
+	}
+	if options[0].ReasoningType != "toggle" || options[0].Thinking != "supported" || options[0].DisplayName != "Agnes 3.0 Flash" {
+		t.Fatalf("default metadata=%+v", options[0])
+	}
+	if options[1].Name != "StepFun · Step 3.5 Flash" || options[1].ReasoningType != "effort" || options[3].Category != "other" || options[3].Thinking != "unsupported" {
+		t.Fatalf("custom menu=%+v", options)
+	}
+	// Old records get the same enriched view without writing or exposing credentials.
+	persisted.Catalog = nil
+	if _, err := store.Save(persisted); err != nil {
+		t.Fatal(err)
+	}
+	rec = modelConfigRequest(t, h, "GET", "/v1/providers", nil, 200, key)
+	var infos []config.CustomProviderInfo
+	if json.Unmarshal(rec.Body.Bytes(), &infos) != nil || len(infos) != 1 || infos[0].Catalog[0].DisplayName != "Step 3.5 Flash" {
+		t.Fatal("legacy provider listing not enriched")
+	}
+	// A separate upstream list still gets enriched during detect and refresh.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			t.Error("fixture provider credential missing")
+		}
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"stepfun/step-5-preview"},{"id":"stepaudio-2.5-tts"}]}`)
+	}))
+	defer upstream.Close()
+	rec = modelConfigRequest(t, h, "POST", "/v1/providers/detect", map[string]string{"base_url": upstream.URL, "api_key": key, "protocol": "openai"}, 200, key)
+	var detected modelconfig.Detection
+	if json.Unmarshal(rec.Body.Bytes(), &detected) != nil || detected.Models[0].DisplayName != "Step 5 Preview" || len(detected.Models[0].ReasoningValues) != 3 || detected.Models[1].Category != "other" {
+		t.Fatal("detected catalog not enriched")
+	}
+	persisted.BaseURL = upstream.URL
+	persisted.Protocol = "openai"
+	if _, err := store.Save(persisted); err != nil {
+		t.Fatal(err)
+	}
+	rec = modelConfigRequest(t, h, "POST", "/v1/providers/step/refresh-models", nil, 200, key)
+	if json.Unmarshal(rec.Body.Bytes(), &saved) != nil || saved.Catalog[0].ReasoningType != "effort" || saved.Catalog[1].Category != "other" {
+		t.Fatal("refreshed catalog not enriched")
+	}
+}
+func TestModelsDevUnavailableDoesNotBlockManualSettings(t *testing.T) {
+	store := config.CustomProviderStore{Directory: t.TempDir()}
+	// Nil enrichment is the no-cache/no-network fallback and never fails settings.
+	h := (&Server{Token: approvalTestToken, ProviderSettings: store}).Handler()
+	input := config.CustomProvider{ID: "manual", Name: "Manual", BaseURL: "https://private.invalid/v1", APIKey: "offline-fixture-key", Model: "my-manual-model", Catalog: []modelconfig.Model{{ID: "step-router-v1"}}}
+	rec := modelConfigRequest(t, h, "PUT", "/v1/providers", input, 200, input.APIKey)
+	var info config.CustomProviderInfo
+	if json.Unmarshal(rec.Body.Bytes(), &info) != nil || info.Catalog[0].Category != "other" || info.Catalog[1].Thinking != "unknown" || info.Catalog[1].Category != "chat" {
+		t.Fatal("manual save offline fallback failed")
+	}
+	modelConfigRequest(t, h, "GET", "/v1/providers", nil, 200, input.APIKey)
+	modelConfigRequest(t, h, "GET", "/v1/models", nil, 200, input.APIKey)
 }

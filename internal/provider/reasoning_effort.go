@@ -9,7 +9,7 @@ import (
 
 type AnthropicThinking struct {
 	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 type GeminiThinking struct {
 	ThinkingBudget  int  `json:"thinking_budget"`
@@ -21,10 +21,17 @@ type GeminiGoogle struct {
 type GeminiExtraBody struct {
 	Google GeminiGoogle `json:"google"`
 }
+
+// Agnes documents this field at /en/docs/agnes-30-flash (Thinking mode).
+type ChatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking"`
+}
+
 type ReasoningParameters struct {
-	Effort    string
-	Thinking  *AnthropicThinking
-	ExtraBody *GeminiExtraBody
+	Effort             string
+	Thinking           *AnthropicThinking
+	ExtraBody          *GeminiExtraBody
+	ChatTemplateKwargs *ChatTemplateKwargs
 }
 
 func ValidReasoningEffort(effort string) bool {
@@ -74,9 +81,6 @@ func ReasoningSupport(protocol, identity, model, declared string) string {
 	if _, ok := unsupportedReasoning.Load(reasoningKey{protocol, identity, model}); ok {
 		return "unsupported"
 	}
-	if modelconfig.ThinkingSupport(protocol, model) == "unsupported" {
-		return "unsupported"
-	}
 	if declared == "supported" || declared == "unsupported" {
 		return declared
 	}
@@ -93,7 +97,7 @@ func reasoningRejected(status int, message string) bool {
 		return false
 	}
 	text := strings.ToLower(message)
-	for _, parameter := range []string{"reasoning_effort", "thinking", "thinking_config", "unsupported parameter"} {
+	for _, parameter := range []string{"reasoning_effort", "chat_template_kwargs", "enable_thinking", "thinking", "thinking_config", "unsupported parameter"} {
 		if strings.Contains(text, parameter) {
 			return true
 		}
@@ -103,8 +107,99 @@ func reasoningRejected(status int, message string) bool {
 
 // ModelReasoningSupport shares the runtime cache with the built-in model menu.
 func ModelReasoningSupport(p Provider, model string) string {
+	return ModelMetadata(p, model).Thinking
+}
+
+// MapModelReasoning uses one catalog record, never the union of third-party
+// capabilities. Unsupported legacy preferences preserve the service default.
+func MapModelReasoning(protocol, effort string, m modelconfig.Model) ReasoningParameters {
+	if m.Thinking == "unsupported" {
+		return ReasoningParameters{}
+	}
+	if m.ReasoningType == "toggle" {
+		if protocol == "anthropic" {
+			if effort == "off" {
+				return ReasoningParameters{Thinking: &AnthropicThinking{Type: "disabled"}}
+			}
+			return MapReasoningEffort(protocol, "low")
+		}
+		if protocol == "gemini" {
+			if effort == "off" {
+				return MapReasoningEffort(protocol, "off")
+			}
+			return ReasoningParameters{}
+		}
+		// OpenAI-compatible Agnes uses a boolean, not a synthetic effort level.
+		return ReasoningParameters{ChatTemplateKwargs: &ChatTemplateKwargs{EnableThinking: effort != "off"}}
+	}
+	if effort == "" || effort == "default" {
+		return ReasoningParameters{}
+	}
+	if m.ReasoningType == "effort" {
+		value := effort
+		values := m.ReasoningValues
+		contains := func(v string) bool {
+			for _, item := range values {
+				if item == v {
+					return true
+				}
+			}
+			return false
+		}
+		if effort == "off" {
+			if contains("none") {
+				value = "none"
+			} else {
+				value = "off"
+			}
+		}
+		if effort == "low" && !contains("low") {
+			value = "minimal"
+		}
+		if !contains(value) {
+			return ReasoningParameters{}
+		}
+		if protocol == "" || protocol == "openai" {
+			return ReasoningParameters{Effort: value}
+		}
+	}
+	return MapReasoningEffort(protocol, effort)
+}
+
+// SetModelCatalog shares a cache between the settings boundary and inference.
+// Inference only reads it; it never makes a models.dev request.
+func SetModelCatalog(p Provider, catalog *ModelsDev) {
 	switch p := p.(type) {
 	case *OpenAICompatible:
+		p.ModelsDev = catalog
+	case *Anthropic:
+		p.ModelsDev = catalog
+	}
+}
+func ModelCatalog(p Provider) *ModelsDev {
+	switch p := p.(type) {
+	case *OpenAICompatible:
+		return p.ModelsDev
+	case *Anthropic:
+		return p.ModelsDev
+	}
+	return nil
+}
+func reasoningMetadata(c *ModelsDev, base, protocol, identity, model string, metadata map[string]modelconfig.Model, thinking map[string]string) modelconfig.Model {
+	m, ok := metadata[model]
+	if !ok {
+		m = modelconfig.Model{ID: model, Thinking: thinking[model]}
+	}
+	m = c.Enrich(base, protocol, []modelconfig.Model{m})[0]
+	m.Thinking = ReasoningSupport(protocol, identity, model, m.Thinking)
+	return m
+}
+func ModelMetadata(p Provider, model string) modelconfig.Model {
+	switch p := p.(type) {
+	case *OpenAICompatible:
+		if model == "" {
+			model = p.Model
+		}
 		protocol := p.Protocol
 		if protocol == "" {
 			protocol = "openai"
@@ -113,20 +208,16 @@ func ModelReasoningSupport(p Provider, model string) string {
 		if identity == "" {
 			identity = p.BaseURL
 		}
+		return reasoningMetadata(p.ModelsDev, p.BaseURL, protocol, identity, model, p.ModelMetadata, p.Thinking)
+	case *Anthropic:
 		if model == "" {
 			model = p.Model
 		}
-		return ReasoningSupport(protocol, identity, model, p.Thinking[model])
-	case *Anthropic:
 		identity := p.CapabilityID
 		if identity == "" {
 			identity = p.BaseURL
 		}
-		if model == "" {
-			model = p.Model
-		}
-		return ReasoningSupport("anthropic", identity, model, p.Thinking[model])
-	default:
-		return modelconfig.ThinkingSupport("", model)
+		return reasoningMetadata(p.ModelsDev, p.BaseURL, "anthropic", identity, model, p.ModelMetadata, p.Thinking)
 	}
+	return modelconfig.Model{ID: model, Thinking: modelconfig.ThinkingSupport("", model)}
 }

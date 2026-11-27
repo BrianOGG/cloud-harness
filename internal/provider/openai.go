@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
 )
 
 const (
@@ -48,9 +49,11 @@ type OpenAICompatible struct {
 	// DisableImages declares a text-only compatible endpoint or model.
 	DisableImages bool
 	// Protocol gemini uses the official OpenAI compatibility endpoint.
-	Protocol     string
-	CapabilityID string
-	Thinking     map[string]string
+	Protocol      string
+	CapabilityID  string
+	Thinking      map[string]string
+	ModelMetadata map[string]modelconfig.Model
+	ModelsDev     *ModelsDev
 }
 
 func (p *OpenAICompatible) Name() string { return "openai" }
@@ -231,11 +234,9 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 	if identity == "" {
 		identity = p.BaseURL
 	}
-	if ReasoningSupport(protocol, identity, model, p.Thinking[model]) != "unsupported" {
-		params := MapReasoningEffort(protocol, req.ReasoningEffort)
-		body.ReasoningEffort, body.ExtraBody = params.Effort, params.ExtraBody
-	}
-	reasoningSent := body.ReasoningEffort != "" || body.ExtraBody != nil
+	params := MapModelReasoning(protocol, req.ReasoningEffort, ModelMetadata(p, model))
+	body.ReasoningEffort, body.ExtraBody, body.ChatTemplateKwargs = params.Effort, params.ExtraBody, params.ChatTemplateKwargs
+	reasoningSent := body.ReasoningEffort != "" || body.ExtraBody != nil || body.ChatTemplateKwargs != nil
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return domain.ModelResponse{}, err
@@ -326,7 +327,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req Request) (_ domain.
 			cancelAttempt()
 			if reasoningSent && reasoningRejected(res.StatusCode, string(respBody)) && ctx.Err() == nil {
 				rememberReasoningUnsupported(protocol, identity, model, req)
-				body.ReasoningEffort, body.ExtraBody = "", nil
+				body.ReasoningEffort, body.ExtraBody, body.ChatTemplateKwargs = "", nil, nil
 				raw, err = json.Marshal(body)
 				if err != nil {
 					return domain.ModelResponse{}, err
@@ -517,14 +518,15 @@ func truncate(s string, n int) string {
 }
 
 type chatRequest struct {
-	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
-	ExtraBody       *GeminiExtraBody `json:"extra_body,omitempty"`
-	Model           string           `json:"model"`
-	Messages        []chatMessage    `json:"messages"`
-	Tools           []chatTool       `json:"tools,omitempty"`
-	Stream          bool             `json:"stream"`
-	StreamOptions   *streamOptions   `json:"stream_options,omitempty"`
-	Opaque          []opaqueWire     `json:"cloud_harness_opaque,omitempty"`
+	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+	ReasoningEffort    string              `json:"reasoning_effort,omitempty"`
+	ExtraBody          *GeminiExtraBody    `json:"extra_body,omitempty"`
+	Model              string              `json:"model"`
+	Messages           []chatMessage       `json:"messages"`
+	Tools              []chatTool          `json:"tools,omitempty"`
+	Stream             bool                `json:"stream"`
+	StreamOptions      *streamOptions      `json:"stream_options,omitempty"`
+	Opaque             []opaqueWire        `json:"cloud_harness_opaque,omitempty"`
 }
 
 type streamOptions struct {
