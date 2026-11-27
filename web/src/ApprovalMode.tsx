@@ -40,7 +40,7 @@ export function ApprovalModeMenu({ value, onChange, disabled }: { value: string;
     </div>}
     {confirming && <dialog ref={dialog} className="full-auto-confirmation" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={() => setConfirming(false)} onClose={() => setConfirming(false)}>
       <h2 id={titleId}>确认启用完全自主？</h2>
-      <p id={descriptionId}>启用后，下一轮将自动执行命令和工作区（以及政策未拒绝的工作区外）写入，不再逐次询问；误操作或提示注入可能导致修改文件、执行命令或对外发送数据；既有拒绝规则仍生效，但这不是安全保障。仅在你信任当前任务和环境时使用。</p>
+      <p id={descriptionId}>启用后，下一轮将自动执行命令（可读写工作区外文件）和工作区内文件写入，不再逐次询问；误操作或提示注入可能导致修改文件、执行命令或对外发送数据；既有拒绝规则仍生效，但这不是安全保障。仅在你信任当前任务和环境时使用。</p>
       <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />我已了解风险，并愿意继续</label>
       <div className="full-auto-actions">
         <button type="button" className="button" autoFocus onClick={() => setConfirming(false)}>取消</button>
