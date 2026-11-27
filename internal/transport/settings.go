@@ -13,15 +13,19 @@ import (
 )
 
 type ModelOption struct {
-	ProviderName  string `json:"provider_name,omitempty"`
-	LegacyID      string `json:"legacy_id,omitempty"`
-	Thinking      string `json:"thinking,omitempty"`
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Model         string `json:"model"`
-	FallbackModel string `json:"fallback_model,omitempty"`
-	Provider      string `json:"provider"`
-	ProviderID    string `json:"provider_id,omitempty"`
+	ProviderName    string   `json:"provider_name,omitempty"`
+	LegacyID        string   `json:"legacy_id,omitempty"`
+	Thinking        string   `json:"thinking,omitempty"`
+	ReasoningType   string   `json:"reasoning_type,omitempty"`
+	ReasoningValues []string `json:"reasoning_values,omitempty"`
+	Category        string   `json:"category,omitempty"`
+	DisplayName     string   `json:"display_name,omitempty"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Model           string   `json:"model"`
+	FallbackModel   string   `json:"fallback_model,omitempty"`
+	Provider        string   `json:"provider"`
+	ProviderID      string   `json:"provider_id,omitempty"`
 }
 
 func (s *Server) sessionSettings(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +89,12 @@ func (s *Server) configuredModels() []ModelOption {
 			if items[i].Thinking == "" {
 				items[i].Thinking = modelconfig.ThinkingSupport(items[i].Provider, items[i].Model)
 				if s.Manager != nil {
-					items[i].Thinking = provider.ModelReasoningSupport(s.Manager.Provider, items[i].Model)
+					m := provider.ModelMetadata(s.Manager.Provider, items[i].Model)
+					items[i].Thinking = m.Thinking
+					items[i].ReasoningType, items[i].ReasoningValues, items[i].Category, items[i].DisplayName = m.ReasoningType, m.ReasoningValues, m.Category, m.DisplayName
+					if m.DisplayName != "" {
+						items[i].Name = strings.TrimSuffix(items[i].Name, items[i].Model) + m.DisplayName
+					}
 				}
 			}
 		}
@@ -94,7 +103,8 @@ func (s *Server) configuredModels() []ModelOption {
 	return []ModelOption{{ID: "default", Name: "默认模型"}}
 }
 
-func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	s.ModelsDev.Refresh(r.Context())
 	items := s.configuredModels()
 	if s.ProviderSettings.Directory != "" {
 		providers, err := s.ProviderSettings.List()
@@ -103,6 +113,7 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			return
 		}
 		for _, p := range providers {
+			p = s.enrichProvider(p)
 			for _, model := range p.Models {
 				items = append(items, customModelOption(p, model))
 			}
@@ -120,7 +131,7 @@ func (s *Server) modelOption(id string) (ModelOption, bool) {
 	if strings.HasPrefix(id, "custom:") && s.ProviderSettings.Directory != "" {
 		custom, model, err := s.ProviderSettings.ResolveModelID(id)
 		if err == nil {
-			option := customModelOption(customProviderInfo(custom), model)
+			option := customModelOption(s.enrichProvider(customProviderInfo(custom)), model)
 			option.ID = id
 			return option, true
 		}
@@ -139,6 +150,10 @@ func (s *Server) customProviders(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, domain.E("internal", "provider settings could not be read"))
 			return
 		}
+		s.ModelsDev.Refresh(r.Context())
+		for i := range rows {
+			rows[i] = s.enrichProvider(rows[i])
+		}
 		writeJSON(w, http.StatusOK, rows)
 		return
 	}
@@ -147,12 +162,14 @@ func (s *Server) customProviders(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.ModelsDev.Refresh(r.Context())
+	input.Catalog = s.ModelsDev.Enrich(input.BaseURL, input.Protocol, input.Catalog)
 	result, err := s.ProviderSettings.Save(input)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, s.enrichProvider(result))
 }
 
 func (s *Server) deleteCustomProvider(w http.ResponseWriter, r *http.Request) {
@@ -168,17 +185,17 @@ func (s *Server) deleteCustomProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 func customProviderInfo(p config.CustomProvider) config.CustomProviderInfo {
-	return config.CustomProviderInfo{ID: p.ID, Name: p.Name, Model: p.Model, Protocol: p.Protocol, Catalog: p.Catalog, BaseURL: p.BaseURL}
+	return config.CustomProviderInfo{ID: p.ID, Name: p.Name, Model: p.Model, Protocol: p.Protocol, Models: p.Models, Catalog: p.Catalog, BaseURL: p.BaseURL}
 }
 func customModelOption(p config.CustomProviderInfo, model string) ModelOption {
-	declared := "unknown"
-	for _, entry := range p.Catalog {
-		if entry.ID == model {
-			declared = entry.Thinking
+	entry := modelconfig.Model{ID: model, Thinking: "unknown"}
+	for _, candidate := range p.Catalog {
+		if candidate.ID == model {
+			entry = candidate
 			break
 		}
 	}
-	option := ModelOption{ID: "custom:" + p.ID + "/" + model, Name: p.Name + " · " + model, Model: model, Provider: p.Protocol, ProviderID: p.ID, ProviderName: p.Name, Thinking: provider.ReasoningSupport(p.Protocol, "custom:"+p.ID, model, declared)}
+	option := ModelOption{ID: "custom:" + p.ID + "/" + model, Name: p.Name + " · " + displayModel(entry), DisplayName: entry.DisplayName, ReasoningType: entry.ReasoningType, ReasoningValues: entry.ReasoningValues, Category: entry.Category, Model: model, Provider: p.Protocol, ProviderID: p.ID, ProviderName: p.Name, Thinking: provider.ReasoningSupport(p.Protocol, "custom:"+p.ID, model, entry.Thinking)}
 	if model == p.Model {
 		option.LegacyID = "custom:" + p.ID
 	}
@@ -223,6 +240,8 @@ func (s *Server) detectCustomProvider(w http.ResponseWriter, r *http.Request) {
 		writeCatalogError(w, err)
 		return
 	}
+	s.ModelsDev.Refresh(r.Context())
+	result.Models = s.ModelsDev.Enrich(base, result.Protocol, result.Models)
 	writeJSON(w, http.StatusOK, result)
 }
 func writeCatalogError(w http.ResponseWriter, err error) {
@@ -249,6 +268,8 @@ func (s *Server) refreshCustomProviderModels(w http.ResponseWriter, r *http.Requ
 		writeCatalogError(w, err)
 		return
 	}
+	s.ModelsDev.Refresh(r.Context())
+	result.Models = s.ModelsDev.Enrich(p.BaseURL, p.Protocol, result.Models)
 	info, err := s.ProviderSettings.UpdateCatalog(p, result)
 	if err != nil {
 		writeErr(w, err)
@@ -280,4 +301,29 @@ func (s *Server) testCustomProvider(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_available": found})
+}
+
+func displayModel(m modelconfig.Model) string {
+	if m.DisplayName != "" {
+		return m.DisplayName
+	}
+	return m.ID
+}
+func (s *Server) enrichCatalog(base, protocol string, catalog []modelconfig.Model, enabled []string) []modelconfig.Model {
+	rows := append([]modelconfig.Model{}, catalog...)
+	seen := map[string]bool{}
+	for _, m := range rows {
+		seen[m.ID] = true
+	}
+	for _, id := range enabled {
+		if id != "" && !seen[id] {
+			rows = append(rows, modelconfig.Model{ID: id})
+			seen[id] = true
+		}
+	}
+	return s.ModelsDev.Enrich(base, protocol, rows)
+}
+func (s *Server) enrichProvider(p config.CustomProviderInfo) config.CustomProviderInfo {
+	p.Catalog = s.enrichCatalog(p.BaseURL, p.Protocol, p.Catalog, append([]string{p.Model}, p.Models...))
+	return p
 }

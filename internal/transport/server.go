@@ -48,6 +48,7 @@ type Server struct {
 	Manager           *agent.Manager
 	Models            []ModelOption
 	ProviderSettings  config.CustomProviderStore
+	ModelsDev         *provider.ModelsDev
 	Now               func() time.Time
 	Token             string
 	HTTPToken         string

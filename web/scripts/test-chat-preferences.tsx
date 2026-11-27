@@ -180,7 +180,7 @@ try {
     assert.equal(container.querySelector('textarea'), null);
     assert.ok(container.querySelector<HTMLInputElement>('[aria-label="搜索模型服务"]'));
     await clickText('添加模型服务');
-    await type('#provider-name', 'Fixture'); await type('#provider-url', 'http://127.0.0.1:1234/v1'); await type('#provider-model', 'custom'); await type('#provider-key', 'test-only-form-key');
+    await type('#provider-name', 'Fixture'); await type('#provider-url', 'http://127.0.0.1:1234/v1'); await type('#provider-model-search', 'custom'); await clickText('添加并勾选'); await type('#provider-key', 'test-only-form-key');
     assert.equal(container.querySelector<HTMLInputElement>('#provider-key')!.type, 'password');
     await submitProvider();
     assert.equal(providers.length, 1);
@@ -225,7 +225,7 @@ try {
   });
   await test('provider save failure stays in settings without losing editable values', async () => {
     await reset(); await mount(); await clickText('设置'); await clickText('添加模型服务');
-    await type('#provider-name', 'Fixture'); await type('#provider-url', 'https://example.invalid/v1'); await type('#provider-model', 'fixture'); await type('#provider-key', 'test-only-form-key');
+    await type('#provider-name', 'Fixture'); await type('#provider-url', 'https://example.invalid/v1'); await type('#provider-model-search', 'fixture'); await clickText('添加并勾选'); await type('#provider-key', 'test-only-form-key');
     saveFailure = true; await submitProvider();
     assert.ok(container.querySelector('.provider-form [role="alert"]'));
     assert.equal(container.querySelector<HTMLInputElement>('#provider-name')!.value, 'Fixture');

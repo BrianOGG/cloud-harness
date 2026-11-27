@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -198,5 +199,144 @@ func TestUnsupportedReasoningOmittedAndOther400NotRetried(t *testing.T) {
 		if ValidReasoningEffort(effort) {
 			t.Fatal("invalid effort accepted")
 		}
+	}
+}
+
+func TestCatalogReasoningWire(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, effort, want string
+		values                   []string
+		toggle                   *bool
+	}{
+		{name: "Agnes off", kind: "toggle", effort: "off", toggle: boolPointer(false)},
+		{name: "Agnes default", kind: "toggle", effort: "default", toggle: boolPointer(true)},
+		{name: "Agnes legacy high", kind: "toggle", effort: "high", toggle: boolPointer(true)},
+		{name: "Step 3.5 low", kind: "effort", effort: "low", want: "low", values: []string{"low", "high"}},
+		{name: "Step 3.5 missing medium", kind: "effort", effort: "medium", values: []string{"low", "high"}},
+		{name: "Step 3.5 missing off", kind: "effort", effort: "off", values: []string{"low", "high"}},
+		{name: "Step 5 medium", kind: "effort", effort: "medium", want: "medium", values: []string{"low", "medium", "high"}},
+		{name: "Step 5 high", kind: "effort", effort: "high", want: "high", values: []string{"low", "medium", "high"}},
+		{name: "minimal alias", kind: "effort", effort: "low", want: "minimal", values: []string{"minimal", "max", "none"}},
+		{name: "off alias", kind: "effort", effort: "off", want: "none", values: []string{"minimal", "max", "none"}},
+		{name: "max is not high", kind: "effort", effort: "high", values: []string{"minimal", "max", "none"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body map[string]json.RawMessage
+				if json.NewDecoder(r.Body).Decode(&body) != nil {
+					t.Error("invalid request")
+				}
+				var effort string
+				_ = json.Unmarshal(body["reasoning_effort"], &effort)
+				if effort != tc.want {
+					t.Errorf("wire effort=%s want=%s", effort, tc.want)
+				}
+				if tc.toggle == nil {
+					if body["chat_template_kwargs"] != nil {
+						t.Error("unexpected toggle")
+					}
+				} else {
+					var toggle struct {
+						EnableThinking *bool `json:"enable_thinking"`
+					}
+					if json.Unmarshal(body["chat_template_kwargs"], &toggle) != nil || toggle.EnableThinking == nil || *toggle.EnableThinking != *tc.toggle {
+						t.Error("toggle did not carry the explicit boolean")
+					}
+				}
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+			}))
+			defer upstream.Close()
+			m := modelconfig.Model{ID: "catalog-model", Thinking: "supported", ReasoningType: tc.kind, ReasoningValues: tc.values}
+			p := &OpenAICompatible{BaseURL: upstream.URL, APIKey: "catalog-wire-fixture", Model: m.ID, ModelMetadata: map[string]modelconfig.Model{m.ID: m}}
+			if _, err := p.Complete(t.Context(), Request{ReasoningEffort: tc.effort, Messages: []Message{{Role: "user", Content: "hello"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
+	}
+}
+func boolPointer(v bool) *bool { return &v }
+
+func TestToggleRejectionStillRetriesOnceAndCaches(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "json", true: "stream"}[stream], func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body map[string]json.RawMessage
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if (body["chat_template_kwargs"] != nil) != (calls == 1) {
+					t.Errorf("call %d toggle presence unexpected", calls)
+				}
+				if calls == 1 {
+					w.WriteHeader(400)
+					_, _ = io.WriteString(w, `{"error":{"message":"unsupported chat_template_kwargs.enable_thinking"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+			}))
+			defer upstream.Close()
+			m := modelconfig.Model{ID: "agnes-3.0-flash", Thinking: "supported", ReasoningType: "toggle"}
+			p := &OpenAICompatible{BaseURL: upstream.URL, APIKey: "toggle-rejection-fixture", Model: m.ID, ModelMetadata: map[string]modelconfig.Model{m.ID: m}}
+			events := 0
+			req := Request{ReasoningEffort: "off", Messages: []Message{{Role: "user", Content: "hello"}}, OnReasoningFallback: func(ReasoningFallbackEvent) { events++ }}
+			if stream {
+				req.OnDelta = func(string) {}
+			}
+			for range 2 {
+				if _, err := p.Complete(t.Context(), req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if calls != 3 || events != 1 || ModelMetadata(p, m.ID).Thinking != "unsupported" {
+				t.Fatalf("calls=%d events=%d", calls, events)
+			}
+		})
+	}
+	if got := ReasoningSupport("openai", "authoritative-fixture", "gpt-4-future", "supported"); got != "supported" {
+		t.Fatal("name heuristic overrode catalog")
+	}
+}
+
+func TestCatalogAnthropicToggleAndMissingEffortWire(t *testing.T) {
+	for _, tc := range []struct {
+		kind, effort, wantType string
+		maxTokens              int
+	}{
+		{"toggle", "off", "disabled", 8192}, {"toggle", "default", "enabled", 12000}, {"toggle", "high", "enabled", 12000}, {"effort", "medium", "", 8192},
+	} {
+		t.Run(tc.kind+"/"+tc.effort, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				thinking, _ := body["thinking"].(map[string]any)
+				if tc.wantType == "" {
+					if thinking != nil {
+						t.Error("unavailable effort sent thinking")
+					}
+				} else if thinking["type"] != tc.wantType {
+					t.Error("wrong toggle type")
+				}
+				if tc.wantType == "disabled" {
+					if _, exists := thinking["budget_tokens"]; exists {
+						t.Error("disabled thinking included a budget")
+					}
+				}
+				if body["max_tokens"] != float64(tc.maxTokens) {
+					t.Errorf("max_tokens=%v", body["max_tokens"])
+				}
+				_, _ = io.WriteString(w, `{"id":"msg","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
+			}))
+			defer upstream.Close()
+			m := modelconfig.Model{ID: "catalog-native", Thinking: "supported", ReasoningType: tc.kind, ReasoningValues: []string{"low", "high"}}
+			p := &Anthropic{BaseURL: upstream.URL, APIKey: "native-toggle-fixture", Model: m.ID, ModelMetadata: map[string]modelconfig.Model{m.ID: m}}
+			if _, err := p.Complete(t.Context(), Request{ReasoningEffort: tc.effort, Messages: []Message{{Role: "user", Content: "hello"}}}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

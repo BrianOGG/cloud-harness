@@ -137,7 +137,7 @@ func (s CustomProviderStore) Save(input CustomProvider) (CustomProviderInfo, err
 		}
 	}
 	for _, model := range input.Catalog {
-		if model.ID == "" || len(model.ID) > 200 || len(model.DisplayName) > 500 || model.Thinking != "" && model.Thinking != "unknown" && model.Thinking != "supported" && model.Thinking != "unsupported" {
+		if !validModelMetadata(model) || model.ID == "" || len(model.ID) > 200 || len(model.DisplayName) > 500 || model.Thinking != "" && model.Thinking != "unknown" && model.Thinking != "supported" && model.Thinking != "unsupported" {
 			return CustomProviderInfo{}, domain.E(domain.CodeInvalidArgument, "无效的模型列表")
 		}
 	}
@@ -292,4 +292,22 @@ func (s CustomProviderStore) ResolveModelID(id string) (CustomProvider, string, 
 		}
 	}
 	return CustomProvider{}, "", domain.E(domain.CodeInvalidArgument, "selected model is not enabled")
+}
+
+func validModelMetadata(m modelconfig.Model) bool {
+	if m.Category != "" && m.Category != "chat" && m.Category != "other" {
+		return false
+	}
+	if m.ReasoningType != "" && m.ReasoningType != "toggle" && m.ReasoningType != "effort" {
+		return false
+	}
+	if len(m.ReasoningValues) > 32 {
+		return false
+	}
+	for _, value := range m.ReasoningValues {
+		if len(value) > 32 {
+			return false
+		}
+	}
+	return true
 }

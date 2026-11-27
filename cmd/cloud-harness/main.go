@@ -23,6 +23,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/eval"
 	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/imageinput"
+	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
 	"github.com/BrianOGG/cloud-harness/internal/notify"
 	"github.com/BrianOGG/cloud-harness/internal/program"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
@@ -278,12 +279,16 @@ func openManager(ctx context.Context, cfg config.Config, workspace string) (*age
 		_ = db.Close()
 		return nil, nil, err
 	}
+	catalog := provider.NewModelsDev(providerStore.Directory)
+	provider.SetModelCatalog(prov, catalog)
 	providerResolver := func(id string) (provider.Provider, error) {
 		custom, err := providerStore.Get(id)
 		if err != nil {
 			return nil, domain.E(domain.CodeProviderConfig, "selected custom provider is unavailable")
 		}
-		return customModelProvider(custom), nil
+		p := customModelProvider(custom)
+		provider.SetModelCatalog(p, catalog)
+		return p, nil
 	}
 	return &agent.Manager{Store: db, Provider: prov, ProviderResolver: providerResolver, Notifier: notifier, ApprovalBaseURL: cfg.Notify.ApprovalBaseURL, OwnerID: cfg.OwnerID, Broker: broker, Workspace: abs, DisableSnapshots: cfg.DisableSnapshots,
 		MaxRunTokens: cfg.MaxRunTokens, MaxRunCostUSD: cfg.MaxRunCostUSD, ModelPrices: prices}, db, nil
@@ -451,8 +456,13 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
+	catalog := provider.ModelCatalog(mgr.Provider)
+	if catalog == nil {
+		catalog = provider.NewModelsDev(providerStore.Directory)
+	}
 	srv := (&transport.Server{
-		Manager: mgr, Models: configuredModelOptions(cfg), ProviderSettings: providerStore, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
+		ModelsDev: catalog,
+		Manager:   mgr, Models: configuredModelOptions(cfg), ProviderSettings: providerStore, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
 		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
 	}).NewHTTPServer(cfg.ListenAddr)
 	errCh := make(chan error, 1)
@@ -1345,15 +1355,17 @@ func writeJSON(w io.Writer, v any) int {
 // customModelProvider adapts the saved protocol; req.Model supplies each selection.
 func customModelProvider(custom config.CustomProvider) provider.Provider {
 	thinking := map[string]string{}
+	metadata := map[string]modelconfig.Model{}
 	for _, model := range custom.Catalog {
+		metadata[model.ID] = model
 		thinking[model.ID] = model.Thinking
 	}
 	base := strings.TrimRight(custom.BaseURL, "/")
 	if custom.Protocol == "anthropic" {
-		return &provider.Anthropic{BaseURL: strings.TrimSuffix(base, "/v1"), APIKey: custom.APIKey, Model: custom.Model, CapabilityID: "custom:" + custom.ID, Thinking: thinking}
+		return &provider.Anthropic{BaseURL: strings.TrimSuffix(base, "/v1"), APIKey: custom.APIKey, Model: custom.Model, CapabilityID: "custom:" + custom.ID, Thinking: thinking, ModelMetadata: metadata}
 	}
 	if custom.Protocol == "gemini" {
 		base += "/openai"
 	}
-	return &provider.OpenAICompatible{BaseURL: base, APIKey: custom.APIKey, Model: custom.Model, Protocol: custom.Protocol, CapabilityID: "custom:" + custom.ID, Thinking: thinking}
+	return &provider.OpenAICompatible{BaseURL: base, APIKey: custom.APIKey, Model: custom.Model, Protocol: custom.Protocol, CapabilityID: "custom:" + custom.ID, Thinking: thinking, ModelMetadata: metadata}
 }

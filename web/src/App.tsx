@@ -748,7 +748,7 @@ export default function App() {
               {!modelAvailable && <option value={preferences.model_id} disabled>{modelsLoading ? '加载中…' : models.length === 0 ? '未配置模型' : '模型不可用'}</option>}
               {modelGroups.map((group) => <optgroup key={group} label={models.find((model) => (model.provider_id || '') === group)?.provider_name || (group === '' ? '默认服务' : group)}>{models.filter((model) => (model.provider_id || '') === group).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>)}
             </select>
-            <ReasoningEffortMenu value={preferences.reasoning_effort} disabled={preferencesBusy || modelBlocked} unsupported={selectedModel?.thinking === 'unsupported'} onChange={(reasoning_effort) => { void changePreferences({ ...preferences, reasoning_effort }).catch(() => undefined); }} />
+            <ReasoningEffortMenu model={selectedModel} value={preferences.reasoning_effort} disabled={preferencesBusy || modelBlocked} unsupported={selectedModel?.thinking === 'unsupported'} onChange={(reasoning_effort) => { void changePreferences({ ...preferences, reasoning_effort }).catch(() => undefined); }} />
           </>}
         </header>
 

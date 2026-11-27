@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
+	"github.com/BrianOGG/cloud-harness/internal/modelconfig"
 )
 
 // Anthropic calls the Messages API with the standard library. It replays the
@@ -27,6 +28,8 @@ type Anthropic struct {
 	DisableImages  bool
 	CapabilityID   string
 	Thinking       map[string]string
+	ModelMetadata  map[string]modelconfig.Model
+	ModelsDev      *ModelsDev
 	// ResponseHeaderTimeout and IdleTimeout bound a streamed attempt. Zero
 	// uses DefaultResponseHeaderTimeout and DefaultIdleTimeout.
 	ResponseHeaderTimeout time.Duration
@@ -97,13 +100,19 @@ func (p *Anthropic) Complete(ctx context.Context, req Request) (domain.ModelResp
 	if identity == "" {
 		identity = p.BaseURL
 	}
-	if ReasoningSupport("anthropic", identity, model, p.Thinking[model]) == "unsupported" {
-		req.ReasoningEffort = "default"
-	}
+	params := MapModelReasoning("anthropic", req.ReasoningEffort, ModelMetadata(p, model))
+	// Build messages without the legacy effort mapping, then apply the catalog
+	// mapping once so a disabled/missing level cannot inflate max_tokens.
+	wireReq := req
+	wireReq.ReasoningEffort = "default"
 	names := newWireToolNames(req.Tools)
-	wire, err := buildAnthropicRequest(model, maxTokens, req, names)
+	wire, err := buildAnthropicRequest(model, maxTokens, wireReq, names)
 	if err != nil {
 		return domain.ModelResponse{}, err
+	}
+	wire.Thinking = params.Thinking
+	if wire.Thinking != nil && wire.Thinking.Type == "enabled" {
+		wire.MaxTokens = max(wire.MaxTokens, wire.Thinking.BudgetTokens+8000)
 	}
 	onDelta := req.OnDelta
 	if req.oracle {

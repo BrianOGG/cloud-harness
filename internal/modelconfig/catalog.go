@@ -14,9 +14,12 @@ const MaxCatalogBytes = 1 << 20
 const MaxCatalogModels = 1000
 
 type Model struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name,omitempty"`
-	Thinking    string `json:"thinking,omitempty"`
+	ID              string   `json:"id"`
+	DisplayName     string   `json:"display_name,omitempty"`
+	Thinking        string   `json:"thinking,omitempty"`
+	ReasoningType   string   `json:"reasoning_type,omitempty"`
+	ReasoningValues []string `json:"reasoning_values,omitempty"`
+	Category        string   `json:"category,omitempty"`
 }
 type Detection struct {
 	Protocol     string    `json:"protocol"`

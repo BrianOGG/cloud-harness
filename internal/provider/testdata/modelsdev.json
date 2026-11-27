@@ -1,0 +1,268 @@
+{
+  "stepfun": {
+    "id": "stepfun",
+    "api": "https://api.stepfun.com/v1",
+    "models": {
+      "step-5-preview": {
+        "id": "step-5-preview",
+        "name": "Step 5 Preview",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      },
+      "step-3.5-flash": {
+        "id": "step-3.5-flash",
+        "name": "Step 3.5 Flash",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high"
+            ]
+          }
+        ]
+      },
+      "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "name": "Step 3.7 Flash",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      },
+      "step-1o-turbo-vision": {
+        "id": "step-1o-turbo-vision",
+        "name": "Step-1o Turbo Vision",
+        "reasoning": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true
+      },
+      "stepaudio-2.5-chat": {
+        "id": "stepaudio-2.5-chat",
+        "name": "stepaudio-2.5-chat",
+        "reasoning": false,
+        "modalities": {
+          "input": [
+            "text",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": false
+      },
+      "stepaudio-2.5-tts": {
+        "id": "stepaudio-2.5-tts",
+        "name": "stepaudio-2.5-tts",
+        "reasoning": false,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "audio"
+          ]
+        },
+        "tool_call": false
+      },
+      "stepaudio-2.5-asr": {
+        "id": "stepaudio-2.5-asr",
+        "name": "stepaudio-2.5-asr",
+        "reasoning": false,
+        "modalities": {
+          "input": [
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": false
+      }
+    }
+  },
+  "stepfun-ai": {
+    "id": "stepfun-ai",
+    "api": "https://api.stepfun.ai/v1",
+    "models": {
+      "step-5-preview": {
+        "id": "step-5-preview",
+        "name": "Global Step 5",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "stepfun-step-plan": {
+    "id": "stepfun-step-plan",
+    "api": "https://api.stepfun.com/step_plan/v1",
+    "models": {
+      "step-5-preview": {
+        "id": "step-5-preview",
+        "name": "Plan Step 5",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "high"
+            ]
+          }
+        ]
+      },
+      "step-router-v1": {
+        "id": "step-router-v1",
+        "name": "step-router-v1",
+        "reasoning": false,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true
+      }
+    }
+  },
+  "agnes": {
+    "id": "agnes",
+    "api": "https://apihub.agnes-ai.com/v1",
+    "models": {
+      "agnes-3.0-flash": {
+        "id": "agnes-3.0-flash",
+        "name": "Agnes 3.0 Flash",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ]
+      }
+    }
+  },
+  "requesty": {
+    "id": "requesty",
+    "api": "https://router.requesty.ai/v1",
+    "models": {
+      "stepfun/step-5-preview": {
+        "id": "stepfun/step-5-preview",
+        "name": "Aggregator Step 5",
+        "reasoning": true,
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
