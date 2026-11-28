@@ -109,7 +109,7 @@ func (f changesFixture) read(path string) string {
 }
 func (f changesFixture) capture(phase string) storage.WorkspaceSnapshot {
 	f.t.Helper()
-	s, err := f.snap.Snapshot(f.t.Context(), f.run.ID+"/batch-1/"+phase)
+	s, err := f.snap.Snapshot(f.t.Context(), f.run.ID+"/batch-1/exec_test/"+phase)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -224,6 +224,32 @@ func TestRunChangesRefusesForeignInputsAndStalePair(t *testing.T) {
 	f.m.Workspace = root
 	if f.read("new") != "created\n" {
 		t.Fatal("wrong run/path altered file")
+	}
+}
+
+func TestRunChangesRefusesLegacyApprovalWindow(t *testing.T) {
+	f := setupChanges(t, false)
+	oldPair := f
+	var err error
+	oldPair.before, err = f.snap.Snapshot(t.Context(), f.run.ID+"/batch-2/pre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write("human-only", "added while waiting")
+	f.write("approved-write", "tool result")
+	oldPair.after, err = f.snap.Snapshot(t.Context(), f.run.ID+"/batch-2/post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := modelConfigRequest(t, f.h, "GET", f.base(), nil, 200, "")
+	var list review
+	if err := json.Unmarshal(result.Body.Bytes(), &list); err != nil || !list.Incomplete || len(list.Batches) != 1 || list.Batches[0].Before != f.before.ID {
+		t.Fatalf("unexpected review: %s", result.Body)
+	}
+	oldPair.diff("human-only", 409)
+	oldPair.restore("human-only", true, 409)
+	if f.read("human-only") != "added while waiting" {
+		t.Fatal("legacy review altered the human edit")
 	}
 }
 

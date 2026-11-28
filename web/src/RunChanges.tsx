@@ -89,7 +89,7 @@ export function RunChanges({ runId }: { runId: string }) {
               <pre aria-label="文件差异" tabIndex={0}>{patch.diff}</pre>
               {patch.truncated && <p>差异仅展示前 64 KiB</p>}
               {list.terminal && (confirm ? <div className="changes-confirm">
-                <p>将 {item.path} 还原到第 {batch.number} 批执行前，并保存安全快照？</p>
+                <p>将 {item.path} 还原到本次工具执行前，并保存安全快照？</p>
                 <button type="button" onClick={() => setConfirm(false)}>取消</button>
                 <button type="button" onClick={() => void restore()}>确认还原</button>
               </div> : <button type="button" disabled={saving} onClick={() => setConfirm(true)}>{saving ? '正在还原…' : '还原此文件'}</button>)}

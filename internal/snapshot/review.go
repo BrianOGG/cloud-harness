@@ -11,81 +11,159 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
-// BatchPair identifies two immutable capture points, including the latest
-// post-dispatch segment of a batch resumed after approval.
+// BatchPair identifies one tool execution within a batch. Resumes and retries
+// have independent baselines, even when they share a batch and invocation ID.
 type BatchPair struct {
 	Number        int
 	Before, After storage.WorkspaceSnapshot
 }
 
-// ReviewPairs consumes chronological workspace history. A missing capture or
-// another run's interleaved capture cannot supply an attributable diff.
-func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path string) (pairs []BatchPair, incomplete bool) {
-	type interval struct {
-		batch       BatchPair
-		first, last int
+type captureWindow struct {
+	BatchPair
+	run, batch  string
+	first, last int
+	records     int
+}
+
+func captureLabel(rec storage.WorkspaceSnapshot) (batch, attempt, phase string, number int, ok bool) {
+	tail, ok := strings.CutPrefix(rec.Label, rec.RunID+"/batch-")
+	if !ok || rec.RunID == "" {
+		return "", "", "", 0, false
 	}
-	groups := map[int]*interval{}
-	var ordered []*interval
-	// Mark foreign capture windows, including batches enclosing this run's
-	// entire pair. Prefix sums let each pair check its window in O(1).
-	coverage := make([]int, len(records)+1)
-	foreignStarts := map[string]int{}
-	for index, rec := range records {
+	num, rest, _ := strings.Cut(tail, "/")
+	n, err := strconv.Atoi(num)
+	if err != nil || n < 1 || strconv.Itoa(n) != num {
+		return "", "", "", 0, false
+	}
+	batch = rec.RunID + "/batch-" + num
+	attempt, phase, ok = strings.Cut(rest, "/")
+	if !ok {
+		attempt, phase = "", rest // Historical rewind checkpoint.
+	} else if !strings.HasPrefix(attempt, "exec_") || attempt == "exec_" {
+		return "", "", "", 0, false
+	}
+	return batch, attempt, phase, n, phase == "pre" || phase == "post"
+}
+
+// ReviewPairs consumes chronological workspace history. Legacy batch-wide
+// checkpoints cannot prove that no approval wait occurred inside their diff.
+func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path string) (pairs []BatchPair, incomplete bool) {
+	windows := map[string]*captureWindow{}
+	var ordered []*captureWindow
+	type checkpointHistory struct {
+		run                                  string
+		first, last                          int
+		hasDispatch, dispatchSinceCheckpoint bool
+	}
+	checkpoints := map[string]*checkpointHistory{}
+	depth := make([]int, len(records)+1)
+	for i, rec := range records {
 		if rec.WorkspaceID != workspaceID || (rec.WorkspacePath != "" && rec.WorkspacePath != path) {
 			continue
 		}
-		// v4 snapshots predate workspace_path. Their persisted path hash
-		// above still binds them to the verified server workspace.
 		rec.WorkspacePath = path
-		tail, hasPrefix := strings.CutPrefix(rec.Label, rec.RunID+"/batch-")
-		num, phase, ok := strings.Cut(tail, "/")
-		n, err := strconv.Atoi(num)
-		batch := hasPrefix && ok && rec.RunID != "" && err == nil && n > 0 && strconv.Itoa(n) == num && (phase == "pre" || phase == "post")
-		if rec.RunID != runID {
-			start := index
-			if batch {
-				key := rec.RunID + "/batch-" + num
-				if phase == "pre" {
-					foreignStarts[key] = index
-				} else if pre, ok := foreignStarts[key]; ok {
-					start = pre
+		batch, attempt, phase, n, ok := captureLabel(rec)
+		if !ok {
+			if rec.RunID != runID {
+				depth[i]++
+				depth[i+1]--
+			}
+			continue
+		}
+		h := checkpoints[batch]
+		if h == nil {
+			h = &checkpointHistory{run: rec.RunID, first: -1, last: -1}
+			checkpoints[batch] = h
+		}
+		if attempt == "" {
+			if h.first < 0 {
+				h.first = i
+			}
+			// A broad post with no dispatch boundaries since the previous
+			// checkpoint can span an approval wait, even in a batch resumed
+			// after upgrading. Never expose that interval for restore.
+			if phase == "post" && !h.dispatchSinceCheckpoint {
+				if rec.RunID == runID {
+					incomplete = true
+				} else {
+					start := max(h.last, h.first)
+					depth[start]++
+					depth[i+1]--
 				}
 			}
-			coverage[start]++
-			coverage[index+1]--
+			h.last, h.dispatchSinceCheckpoint = i, false
 			continue
 		}
-		if !batch {
-			continue
+		h.hasDispatch, h.dispatchSinceCheckpoint = true, true
+		key := batch + "/" + attempt
+		w := windows[key]
+		if w == nil {
+			w = &captureWindow{BatchPair: BatchPair{Number: n}, run: rec.RunID, batch: batch, first: i}
+			windows[key] = w
+			ordered = append(ordered, w)
 		}
-		g := groups[n]
-		if g == nil {
-			g = &interval{batch: BatchPair{Number: n}}
-			groups[n] = g
-			ordered = append(ordered, g)
-		}
+		w.records++
+		w.last = i
 		if phase == "pre" {
-			g.batch.Before, g.first = rec, index
-			g.batch.After = storage.WorkspaceSnapshot{}
+			w.Before = rec
 		} else {
-			g.batch.After, g.last = rec, index
+			w.After = rec
 		}
 	}
-	covered, total := 0, 0
-	for i, v := range coverage {
-		covered += v
-		coverage[i] = total
-		if covered > 0 {
-			total++
+
+	for _, h := range checkpoints {
+		if h.hasDispatch {
+			continue
+		}
+		if h.run == runID {
+			incomplete = true
+		} else {
+			depth[h.first]++
+			depth[h.last+1]--
 		}
 	}
-	for _, g := range ordered {
-		if g.batch.Before.ID == "" || g.batch.After.ID == "" || coverage[g.first] != coverage[g.last+1] {
+	for _, w := range ordered {
+		first, last := w.first, w.last
+		if w.run != runID {
+			// A missing boundary from a concurrent writer leaves the
+			// extent of that execution unknown up to its rewind checkpoints.
+			h := checkpoints[w.batch]
+			if w.Before.ID == "" {
+				first = 0
+				if h.first >= 0 && h.first < w.first {
+					first = h.first
+				}
+			}
+			if w.After.ID == "" {
+				last = len(records) - 1
+				if h.last > w.last {
+					last = h.last
+				}
+			}
+		}
+		depth[first]++
+		depth[last+1]--
+	}
+	// Prefix counts allow each complete pair to check for an overlapping
+	// execution (including an enclosing interval) in constant time.
+	active, overlaps := 0, 0
+	for i, delta := range depth {
+		active += delta
+		depth[i] = overlaps
+		if active > 1 {
+			overlaps++
+		}
+	}
+	for _, w := range ordered {
+		if w.run != runID {
+			continue
+		}
+		if w.records != 2 || w.Before.ID == "" || w.After.ID == "" ||
+			records[w.first].ID != w.Before.ID || depth[w.first] != depth[w.last+1] {
 			incomplete = true
 			continue
 		}
-		pairs = append(pairs, g.batch)
+		pairs = append(pairs, w.BatchPair)
 	}
 	return pairs, incomplete
 }

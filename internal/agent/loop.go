@@ -672,7 +672,6 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			Egress:           isEgressTool(m.Broker, inv.Name),
 			Now:              m.now(),
 		})
-		m.recordSnapshotDispatch(ctx, inv, res)
 		if err != nil {
 			return nil, err
 		}

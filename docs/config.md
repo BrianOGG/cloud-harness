@@ -526,6 +526,11 @@ latest persisted event in that run when the record is created, or is null when
 the event sequence cannot be read. Approval resume reuses the batch's pre
 snapshot. A post snapshot is captured after each execution segment that actually
 dispatched a side-effecting tool, including a segment ending in an approval wait.
+The inspector also records a separate pre/post pair around each actual
+side-effecting tool dispatch. An approval wait, denial or cached reply does
+not start a dispatch pair. A fresh execution after resume or retry gets a
+new pair, even when the batch or invocation ID is reused. Dispatch pairs
+have a null `event_seq` and support code-only rewind.
 Snapshot failures only add a `snapshot_skipped` event and never fail the run.
 Unavailable Git is reported at most once per run. Setting `disable_snapshots`
 to `true` also suppresses snapshot initialization and diagnostics.
