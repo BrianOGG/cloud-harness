@@ -1,0 +1,32 @@
+.skill-popover {
+  position: absolute;
+  z-index: 12;
+  inset-inline: 0;
+  bottom: calc(100% + 6px);
+  max-height: min(16rem, 34dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.welcome .skill-popover { top: calc(100% + 6px); bottom: auto; }
+.skill-popover button {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  text-align: start;
+  overflow-wrap: anywhere;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.skill-popover button:hover, .skill-popover button[aria-selected='true'] { background: var(--accent-soft); }
+.skill-popover strong { font: 600 13px/1.5 var(--mono); }
+.skill-popover span, .skill-popover p { font-size: 12px; color: var(--text-secondary); }
+.skill-popover p { margin: 8px 10px; }

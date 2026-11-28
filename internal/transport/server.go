@@ -160,6 +160,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /v1/models", s.models)
+	mux.HandleFunc("GET /v1/skills", s.skills)
 	mux.HandleFunc("GET /v1/providers", s.customProviders)
 	mux.HandleFunc("PUT /v1/providers", s.customProviders)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.deleteCustomProvider)
@@ -303,6 +304,7 @@ func (s *Server) listSessionRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Skill           string `json:"skill"`
 		Message         string `json:"message"`
 		ModelID         string `json:"model_id"`
 		ReasoningEffort string `json:"reasoning_effort"`
@@ -312,7 +314,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if stringsTrim(body.Message) == "" {
+	if stringsTrim(body.Message) == "" && body.Skill == "" {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "message is required"))
 		return
 	}
@@ -358,6 +360,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	opts := agent.RunOptions{
 		ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel,
 		ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort,
+	}
+	if body.Skill != "" {
+		opts.ExplicitSkill, body.Message, err = s.loadRequestedSkill(body.Skill, body.Message)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	next := prefs
 	next.ModelID, next.ApprovalMode, next.ReasoningEffort = body.ModelID, body.ApprovalMode, body.ReasoningEffort

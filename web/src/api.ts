@@ -1,6 +1,7 @@
 // Same-origin API client. Requests carry the optional bearer token used by serve.
 
 import { EventStreamDecoder, parseEventStream } from './sse';
+import type { SkillSummary } from './skills';
 import type { HarnessEvent } from './sse';
 export { parseEventStream } from './sse';
 export type { HarnessEvent } from './sse';
@@ -239,6 +240,7 @@ export const api = {
   getPreferences: (sessionId: string) => req<SessionPreferences>('/v1/sessions/' + encodeURIComponent(sessionId) + '/preferences'),
   savePreferences: (sessionId: string, value: SessionPreferences) => req<SessionPreferences>('/v1/sessions/' + encodeURIComponent(sessionId) + '/preferences', { method: 'PUT', body: JSON.stringify(value) }),
   listModels: () => req<ModelOption[]>('/v1/models'),
+  listSkills: (signal?: AbortSignal) => req<SkillSummary[]>('/v1/skills', { signal }),
   listProviders: () => req<CustomProvider[]>('/v1/providers'),
   saveProvider: (value: { id: string; name: string; base_url: string; model: string; api_key?: string; protocol?: ProviderProtocol; protocol_source?: 'auto' | 'manual'; models?: string[]; catalog?: CatalogModel[]; catalog_fetched_at?: string }) => req<CustomProvider>('/v1/providers', { method: 'PUT', body: JSON.stringify(value) }),
   deleteProvider: (id: string) => req<void>('/v1/providers/' + encodeURIComponent(id), { method: 'DELETE' }),
@@ -255,7 +257,7 @@ export const api = {
   syncMessages: (sessionId: string, cursor: string, signal: AbortSignal) =>
     req<MessageSyncPage | SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages?sync=${encodeURIComponent(cursor)}&limit=200`, { signal }),
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
-  createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string; reasoning_effort?: ReasoningEffort }) =>
+  createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string; reasoning_effort?: ReasoningEffort; skill?: string }) =>
     req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
       method: 'POST',
       body: JSON.stringify({ message, ...options }),
