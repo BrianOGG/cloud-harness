@@ -382,7 +382,11 @@ func TestRuleTargetsPollHonorsOuterAndInnerToolAccess(t *testing.T) {
 }
 
 func TestExplicitFileReferenceUsesTargetDirectoryRules(t *testing.T) {
-	isolateRuleConfig(t)
+	global := isolateRuleConfig(t)
+	putAgentPolicy(t, filepath.Join(global, "policy.json"), `{"rules":[
+		{"tool":"read_file","path_glob":"version","effect":"allow"},
+		{"tool":"read_file","path_glob":"api/version.txt","effect":"deny"}
+	]}`)
 	mock := &provider.Mock{Responses: []domain.ModelResponse{textOnly("done")}}
 	m, _, root := testManager(t, mock)
 	writeAgentRule(t, filepath.Join(root, "api/AGENTS.md"), "API formatting rule")

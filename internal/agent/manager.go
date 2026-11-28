@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -413,15 +412,12 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 	var ruleTargets []string
 	expandedMessage, references, refErr := contextpkg.ExpandReferences(message, m.Workspace,
 		func(absPath string) ([]byte, error) {
-			target, err := filepath.EvalSymlinks(absPath)
+			target, decision, err := policy.ResolveFileRead(absPath)
 			if err != nil {
 				return nil, err
 			}
-			if policy != nil {
-				decision := policy.Evaluate(security.PolicyRequest{Tool: "read_file", Paths: []string{absPath, target}, FileRead: true})
-				if decision.Effect == security.EffectDeny {
-					return nil, domain.E(domain.CodeAuthDenied, decision.Reason())
-				}
+			if decision.Effect == security.EffectDeny {
+				return nil, domain.E(domain.CodeAuthDenied, decision.Reason())
 			}
 			if m.Broker == nil {
 				return nil, domain.E(domain.CodeToolError, "workspace file reader is unavailable")
