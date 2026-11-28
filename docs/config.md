@@ -64,6 +64,7 @@ baseline denials, examples, and run snapshot behavior.
 {
   "servers": [
     {"name": "local", "command": "/usr/local/bin/local-mcp"},
+    {"name": "learn", "url": "https://learn.microsoft.com/api/mcp", "readonly": true},
     {"name": "catalog", "url": "https://catalog.example/mcp", "token_env": "CATALOG_MCP_TOKEN", "readonly": true},
     {"name": "tasks", "url": "https://tasks.example/mcp", "oauth": {
       "issuer": "https://auth.example/tenant",
@@ -73,6 +74,8 @@ baseline denials, examples, and run snapshot behavior.
   ]
 }
 ```
+
+The public Microsoft Learn entry works without credentials. With only that entry configured, `cloud-harness doctor --json` reports the discovered documentation tools. [Microsoft Learn MCP](https://learn.microsoft.com/en-us/training/support/mcp)
 
 Register the exact callback URI with the issuer and open Settings on the same
 origin. Choose **MCP 服务 → 授权**. The client checks RFC 9728 resource metadata,
@@ -455,7 +458,7 @@ and end.
 ## HTTP authentication and non-loopback rule
 
 - `http_token` (or `CLOUD_HARNESS_HTTP_TOKEN`) defaults to `""`. When set, it must be at least 16 characters long; shorter tokens are rejected at config load time.
-- When `http_token` is set, every `/v1/` endpoint requires `Authorization: Bearer <token>` (verified in constant time); `/healthz` remains open without authentication.
+- When `http_token` is set, API requests under `/v1/` require `Authorization: Bearer <token>` (verified in constant time). The browser redirect at `GET /v1/mcp/oauth/callback` authenticates the flow with OAuth state, a matching cookie and PKCE. `/healthz` remains open.
 - Loopback binds (`127.0.0.1`, `localhost`, `::1`) work without `http_token`.
 - A loopback bind refuses requests whose `Host` header is not `localhost` or a loopback IP address (HTTP 403). `http_allowed_hosts` (or `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS`, or `serve --http-allowed-hosts`) lists extra accepted values, each a host name or IP address with an optional port and no scheme or path, for example `["harness.example", "proxy.example:8443"]`. An entry without a port matches every port. Invalid entries are rejected at config load time. On a non-loopback bind the `Host` header is unrestricted unless this list is set.
 - Every bind refuses a request whose `Origin` header differs from its `Host`, and requires `Content-Type: application/json` on write requests with a body. See [request checks](api.md#request-checks).

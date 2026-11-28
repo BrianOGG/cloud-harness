@@ -1,7 +1,7 @@
 # HTTP API
 
 `cloud-harness serve` listens on `127.0.0.1:19421` by default. The `/v1/` API
-uses JSON except for the event stream at `GET /v1/runs/{id}/events` (SSE).
+uses JSON for data, SSE for `GET /v1/runs/{id}/events`, and a browser page for the MCP OAuth callback.
 Successful JSON responses contain the requested object or array directly.
 Errors use an `error` object with `code`, `message`, and an optional `ref`.
 
@@ -10,9 +10,9 @@ Errors use an `error` object with `code`, `message`, and an optional `ref`.
 Configure an HTTP bearer token with `serve --http-token TOKEN`, the
 `CLOUD_HARNESS_HTTP_TOKEN` environment variable, or `http_token` in the JSON
 configuration file. A configured token must contain at least 16 characters.
-Every `/v1/` route, including `/v1/sessions`, `/v1/approvals`,
+API routes under `/v1/`, including `/v1/sessions`, `/v1/approvals`,
 `/v1/runs/{id}`, and its `/events` stream, uses the same authentication middleware and constant-time
-token comparison. `/healthz`, the legacy `/approval` redirect, and `/ui` and its
+token comparison. The browser redirect at `GET /v1/mcp/oauth/callback` uses a one-time OAuth state and matching HttpOnly cookie, together with a PKCE code exchange. `/healthz`, the legacy `/approval` redirect, and `/ui` and its
 static resources are available without authentication.
 
 When a token is configured, supply `Authorization: Bearer <token>`. A missing
@@ -1064,3 +1064,15 @@ same other group; unfamiliar manual IDs default to chat. Reasoning=false
 is authoritative, while unmatched IDs retain the existing thinking heuristic
 and the runtime HTTP 400 fallback. Default unit tests use a small local
 fixture and loopback HTTP servers, with no external requests.
+
+
+## MCP connections
+
+| Request | Result |
+| --- | --- |
+| `GET /v1/mcp/servers` | Lists configured servers with transport, authorization method, status, diagnostics and tool names. |
+| `POST /v1/mcp/servers/{name}/connect` | Opens the configured connection and refreshes its tools. Returns 204 on success. |
+| `POST /v1/mcp/servers/{name}/disconnect` | Removes the tools and clears the connection and its credentials. Returns 204 on success. |
+| `POST /v1/mcp/servers/{name}/authorize` | Starts an OAuth flow for a configured public client. Sets the state cookie and returns a JSON object with the browser authorization URL in `url`. |
+
+The settings page opens the authorization URL in the same browser. The issuer redirects back to `GET /v1/mcp/oauth/callback`. A successful exchange reconnects the server and displays a link back to the workspace.
