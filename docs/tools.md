@@ -116,7 +116,9 @@ every discovered tool in the broker as `mcp.<server>.<tool>`.
 Streamable HTTP clients POST JSON-RPC messages, accept JSON or SSE responses,
 and carry the negotiated protocol version and session ID across requests.
 Connection controls in Settings open, close and refresh the inventory. A
-session-expired response requires reconnecting. The client supports MCP tool
+session-expired response withdraws that connection's tools from all workspace
+brokers. Pending approvals remain retryable after Settings reconnects and
+rediscovers the tools. The client supports MCP tool
 requests over POST and server session termination over DELETE. It does not
 subscribe to a standalone GET notification stream or the legacy SSE transport.
 
