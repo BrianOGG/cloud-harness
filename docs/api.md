@@ -879,6 +879,20 @@ contains that selected catalog record's effort values. `category` is `chat`
 or `other`. Optional fields also appear in saved/detected catalog entries.
 Credentials are never returned. Unknown or disabled model IDs return 400.
 
+## Project memories
+
+`GET /v1/project-memories` returns the server workspace's confirmed facts and decisions, newest edit first. Each entry contains `id`, `kind`, `content`, `source_session_id`, `source_run_id`, `source_available` and `updated_at` (UTC). The project comes from the configured workspace. With a shared database, sessions and linked Git worktrees of that project share its entries. A separate clone or workspace has its own entries.
+
+| Method | Path | JSON body | Success |
+|---|---|---|---|
+| POST | `/v1/project-memories` | `{"kind":"decision","content":"Use SQLite","source_session_id":"ses_…","source_run_id":"run_…"}` | 201 with the saved entry |
+| PUT | `/v1/project-memories/{id}` | `{"kind":"fact","content":"SQLite stores local history"}` | 204 |
+| DELETE | `/v1/project-memories/{id}` | — | 204 |
+
+`kind` accepts `fact` or `decision`. The trimmed text must contain 1–500 Unicode characters. Creation checks the source run against both its session and the server's project. A missing or mismatched source or an entry outside the project returns 404. Source IDs stay attached through corrections. Opening `/ui/?session={source_session_id}&run={source_run_id}` follows the source. If retention has pruned the run, its memory remains editable and `source_available` becomes false.
+
+Each new root run reads up to 12 recently confirmed or corrected entries within a 4 KiB budget, presented as reference data ahead of the user's current message. Saving a project memory requires an explicit POST with user-confirmed text.
+
 ## GET /v1/sessions/{id}/preferences
 ## PUT /v1/sessions/{id}/preferences
 

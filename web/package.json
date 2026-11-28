@@ -14,7 +14,7 @@
     "check:dist": "bash scripts/check-dist.sh",
     "preview": "vite preview",
     "test:session-restore": "tsx --tsconfig tsconfig.app.json scripts/test-session-restore.tsx",
-    "test:transcript": "tsx --tsconfig tsconfig.app.json scripts/test-transcript.tsx",
+    "test:transcript": "tsx --tsconfig tsconfig.app.json scripts/test-transcript.tsx && tsx --tsconfig tsconfig.app.json scripts/test-project-memory.tsx",
     "test:approval-mode": "tsx --tsconfig tsconfig.app.json scripts/test-approval-mode.tsx",
     "test:chat-preferences": "tsx --tsconfig tsconfig.app.json scripts/test-chat-preferences.tsx",
     "test:model-config": "tsx --tsconfig tsconfig.app.json scripts/test-model-config.tsx",
