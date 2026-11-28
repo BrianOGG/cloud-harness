@@ -79,6 +79,17 @@ OPENAI_BASE_URL=http://127.0.0.1:19422/v1 ./cloud-harness serve
 `/skill review 检查新接口的错误处理`。也可以直接输入完整命令。
 发送时使用 CLI 的加载规则读取所选技能，保留当前模型与审批设置。
 
+### 技能管理
+
+设置页可以挂载 `import { SkillSettings } from './SkillSettings'` 导出的
+`<SkillSettings />`。组件会读取当前工作区与全局配置目录，分别显示同名技能及覆盖关系。
+新建时填写名称、简介与 Markdown 指令，或选择本机的 SKILL.md 预览后导入。
+作用域决定文件写到运行服务的哪一层。导入支持单个 UTF-8 文件，最大 64 KiB。
+
+点击列表条目可查看原始元数据、编辑简介与指令，或确认删除该作用域的定义。
+编辑会保留其他元数据，删除后目录中的脚本、参考资料仍然保留。
+保存后再次输入 `/` 即可看到最新技能。打开的选择器也会随本页的修改刷新。
+
 ## How a run is followed
 
 - `POST /v1/sessions/{id}/runs` can return only when the run stops. While it

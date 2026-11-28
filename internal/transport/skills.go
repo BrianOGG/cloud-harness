@@ -10,6 +10,7 @@ import (
 // List only frontmatter. DiscoverSkills resolves names across both layers,
 // skips invalid files and sorts the summaries before returning.
 func (s *Server) skills(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if s.Manager != nil {
 		catalog := contextpkg.DiscoverSkills(s.Manager.Workspace)
 		if len(catalog.Skills) > 0 {

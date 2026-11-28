@@ -1,0 +1,28 @@
+.skill-settings { min-width: 0; }
+.skill-settings h2 { margin: 0; font-size: 18px; }
+.skill-settings h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.skill-settings p { font-size: 14px; }
+.skill-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.skill-settings ul { list-style: none; margin: 14px 0 0; padding: 0; }
+.skill-settings li + li { border-top: 1px solid var(--line); }
+.skill-settings li > button {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px;
+  width: 100%; padding: 12px 8px; border: 0; border-radius: 6px; text-align: start;
+  background: transparent; color: var(--text); cursor: pointer; font: inherit; overflow-wrap: anywhere;
+}
+.skill-settings li > button:hover { background: var(--surface-muted); }
+.skill-settings li span { width: 100%; font-size: 13px; color: var(--text-secondary); }
+.skill-settings li small { color: var(--text-tertiary); }
+.skill-settings-form {
+  display: grid; gap: 12px; padding: 14px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
+.skill-settings-form fieldset { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.skill-settings-form label { display: grid; gap: 4px; min-width: 0; font-size: 13px; }
+.skill-settings-form :is(input, select, textarea) {
+  min-width: 0; width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--line-strong);
+  border-radius: 6px; background: var(--surface); color: var(--text); font: inherit;
+}
+.skill-settings-form textarea { resize: vertical; line-height: 1.5; }
+.skill-settings-form pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
+.skill-settings-form summary { cursor: pointer; font-size: 13px; }

@@ -1,3 +1,5 @@
+export const skillCatalogChanged = 'cloud-harness:skills-changed';
+
 export interface SkillSummary {
   name: string;
   description: string;

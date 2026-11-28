@@ -203,12 +203,18 @@ func readSkill(root, name string) (LoadedSkill, error) {
 		return LoadedSkill{}, err
 	}
 	defer func() { _ = f.Close() }()
+	loaded, _, err := readSkillFile(f, name)
+	return loaded, err
+}
+
+func readSkillFile(f io.Reader, name string) (LoadedSkill, Skill, error) {
 	data, err := io.ReadAll(io.LimitReader(f, MaxSkillBytes+1))
 	if err != nil {
-		return LoadedSkill{}, err
+		return LoadedSkill{}, Skill{}, err
 	}
-	if _, err := parseSkill(name, bytes.NewReader(data)); err != nil {
-		return LoadedSkill{}, fmt.Errorf("%s: %w", filepath.Join(dir.Name(), name, "SKILL.md"), err)
+	summary, err := parseSkill(name, bytes.NewReader(data))
+	if err != nil {
+		return LoadedSkill{}, Skill{}, fmt.Errorf("%s/SKILL.md: %w", name, err)
 	}
 	truncated := len(data) > MaxSkillBytes
 	if truncated {
@@ -219,9 +225,9 @@ func readSkill(root, name string) (LoadedSkill, error) {
 		data = append(data[:cut], skillTruncated...)
 	}
 	if !utf8.Valid(data) {
-		return LoadedSkill{}, errors.New("SKILL.md must be UTF-8 text")
+		return LoadedSkill{}, Skill{}, errors.New("SKILL.md must be UTF-8 text")
 	}
-	return LoadedSkill{Name: name, Content: string(data), Truncated: truncated}, nil
+	return LoadedSkill{Name: name, Content: string(data), Truncated: truncated}, summary, nil
 }
 
 func parseSkill(directoryName string, r io.Reader) (Skill, error) {
@@ -233,7 +239,10 @@ func parseSkill(directoryName string, r io.Reader) (Skill, error) {
 	seen := make(map[string]bool)
 	for line := 2; scanner.Scan(); line++ {
 		if scanner.Text() == "---" {
-			if skill.Name != directoryName {
+			if !skillName.MatchString(skill.Name) {
+				return Skill{}, errors.New("invalid skill name")
+			}
+			if directoryName != "" && skill.Name != directoryName {
 				return Skill{}, fmt.Errorf("name must match skill directory %q", directoryName)
 			}
 			if skill.Description == "" {

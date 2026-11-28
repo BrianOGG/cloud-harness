@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, RefObject } from 'react';
 import { api } from './api';
-import { skillQuery, type SkillSummary } from './skills';
+import { skillCatalogChanged, skillQuery, type SkillSummary } from './skills';
 
 interface Props {
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -20,6 +20,7 @@ export function SkillInput({ inputRef, value, placeholder, enabled = true, onCha
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [active, setActive] = useState(0);
   const selectedRow = useRef<HTMLButtonElement>(null);
+  const [catalogVersion, setCatalogVersion] = useState(0);
   const query = skillQuery(value);
   const open = enabled && focused && !dismissed && query !== null;
   const matches = open && status === 'ready' ? catalog.filter(skill => skill.name.toLowerCase().includes(query)) : [];
@@ -40,7 +41,17 @@ export function SkillInput({ inputRef, value, placeholder, enabled = true, onCha
       if (!controller.signal.aborted) setStatus('error');
     });
     return () => controller.abort();
-  }, [open]);
+  }, [open, catalogVersion]);
+
+  useEffect(() => {
+    const refresh = () => {
+      setActive(0);
+      setStatus('loading');
+      setCatalogVersion(version => version + 1);
+    };
+    window.addEventListener(skillCatalogChanged, refresh);
+    return () => window.removeEventListener(skillCatalogChanged, refresh);
+  }, []);
 
   useEffect(() => {
     selectedRow.current?.scrollIntoView?.({ block: 'nearest' });
@@ -85,7 +96,13 @@ export function SkillInput({ inputRef, value, placeholder, enabled = true, onCha
     <textarea ref={inputRef} rows={1} value={value} placeholder={placeholder} aria-label={placeholder}
       aria-autocomplete={enabled ? 'list' : undefined} aria-controls={open ? listId : undefined}
       aria-activedescendant={current ? `${listId}-${active}` : undefined}
-      onFocus={() => { setFocused(true); setDismissed(false); setActive(0); setStatus('loading'); }}
+      onFocus={() => {
+        setFocused(true);
+        setDismissed(false);
+        setActive(0);
+        setStatus('loading');
+        setCatalogVersion(version => version + 1);
+      }}
       onBlur={() => setFocused(false)} onKeyDown={handleKey}
       onChange={event => {
         if (!open) setStatus('loading');

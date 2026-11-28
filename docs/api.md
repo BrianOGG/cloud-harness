@@ -895,6 +895,39 @@ precedence over global entries. Discovery skips invalid files and returns
 `[]` for an empty catalog. If discovery fails to read any valid summaries,
 the response is HTTP 503. This endpoint works before a session is created.
 
+## Skill definitions
+
+Scope is `project` for the server workspace or `global` for the CLI config directory
+(the directory containing `CLOUD_HARNESS_CONFIG` when set). Both use
+`.agents/skills/<name>/SKILL.md`. The management catalog includes both copies of
+a name. The project copy takes precedence when both pass CLI discovery.
+
+| Method | Path | JSON body | Success |
+|---|---|---|---|
+| GET | `/v1/skill-definitions` | | 200 with `[{name, description, scope, effective}]` |
+| GET | `/v1/skill-definitions/{scope}/{name}` | | 200 with the selected document |
+| POST | `/v1/skill-definitions/{scope}` | `{"content":"---\nname: review\ndescription: Review code\n---\nCheck the change.\n"}` | 201 with the created document |
+| PUT | `/v1/skill-definitions/{scope}/{name}` | `{"content":"…","revision":"…"}` | 200 with the updated document |
+| DELETE | `/v1/skill-definitions/{scope}/{name}` | `{"revision":"…"}` | 204 |
+
+A document has `name`, `description`, `scope`, `content` (the full Markdown source),
+`truncated` and, for editable documents, a SHA-256 `revision`. Create and import use
+the same POST. The server derives the directory name from frontmatter and accepts
+only CLI-compatible UTF-8 files up to 64 KiB. Existing larger files have a
+read-only preview. As in CLI discovery, malformed frontmatter and symbolic links
+are skipped. Edit and delete address exactly one scope and preserve sibling files.
+Deleting a project definition makes a valid same-name global definition effective immediately.
+
+A workspace and global config that resolve to the same directory are read-only in
+management because a scoped mutation would affect both entries. Writes return 409.
+A duplicate create, stale revision or busy writer also returns 409. Open the latest document
+before retrying an edit. An invalid scope, name, content or missing revision returns 400.
+A missing document returns 404. Mutations serialize across cooperating server processes
+and stage complete files in the target directory. Create uses a hard link to publish
+without overwriting existing entries. Direct filesystem editors do not participate in
+the advisory lock. A change already visible at revision check time is detected, but an
+external write racing the final replacement or removal cannot be made conditional.
+
 ## GET /v1/models
 
 Returns an array of `{id, name, model, fallback_model?, provider, provider_id?, provider_name?, legacy_id?, display_name?, thinking?, reasoning_type?, reasoning_values?, category?}`.

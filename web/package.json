@@ -18,7 +18,7 @@
     "test:approval-mode": "tsx --tsconfig tsconfig.app.json scripts/test-approval-mode.tsx",
     "test:chat-preferences": "tsx --tsconfig tsconfig.app.json scripts/test-chat-preferences.tsx",
     "test:model-config": "tsx --tsconfig tsconfig.app.json scripts/test-model-config.tsx",
-    "test:skills": "tsx --tsconfig tsconfig.app.json scripts/test-skills.tsx",
+    "test:skills": "tsx --tsconfig tsconfig.app.json scripts/test-skills.tsx && tsx --tsconfig tsconfig.app.json scripts/test-skill-settings.tsx",
     "test:run-changes": "tsx --tsconfig tsconfig.app.json scripts/test-run-changes.tsx",
     "test:composer-controls": "tsx --tsconfig tsconfig.app.json scripts/test-composer-controls.tsx"
   },
