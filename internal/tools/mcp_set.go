@@ -61,7 +61,19 @@ type MCPConnection interface {
 
 type mcpRegistry struct {
 	mu    sync.RWMutex
-	specs map[string]Spec
+	specs map[string]registeredMCPTool
+}
+
+// A registration belongs to exactly one discovery generation. Stdio can
+// restart on dispatch; remote tools need the session that discovered them.
+type registeredMCPTool struct {
+	Spec
+	remote *remoteInventory
+}
+type remoteInventory struct{ connection MCPConnection }
+
+func (r *remoteInventory) available() bool {
+	return r == nil || r.connection.Alive()
 }
 
 type mcpServer struct {
@@ -199,6 +211,10 @@ func (s *MCPSet) connectLocked(ctx context.Context, srv *mcpServer) error {
 		s.broker.mcp.mu.Lock()
 		defer s.broker.mcp.mu.Unlock()
 	}
+	var remote *remoteInventory
+	if srv.status.Transport != "stdio" {
+		remote = &remoteInventory{connection: a}
+	}
 	seen := map[string]bool{}
 	for _, spec := range specs {
 		if spec.Name == "mcp."+srv.cfg.Name+"." || !mcpToolNameRE.MatchString(spec.Name) {
@@ -211,7 +227,7 @@ func (s *MCPSet) connectLocked(ctx context.Context, srv *mcpServer) error {
 		}
 		seen[spec.Name] = true
 		if s.broker != nil {
-			s.broker.mcp.specs[spec.Name] = spec
+			s.broker.mcp.specs[spec.Name] = registeredMCPTool{Spec: spec, remote: remote}
 		}
 		srv.status.Tools = append(srv.status.Tools, spec.Name)
 	}
@@ -232,6 +248,8 @@ func (s *MCPSet) Status() []MCPServerStatus {
 			st.State = MCPStateFailed
 			if st.Transport == "stdio" {
 				st.Error = "server process exited after startup"
+			} else {
+				st.Tools = nil
 			}
 			if err := srv.adapter.Err(); err != nil {
 				if st.Error != "" {

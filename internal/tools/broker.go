@@ -104,7 +104,7 @@ type Broker struct {
 
 // NewBroker builds a broker. charge and grants are required so a call cannot skip them.
 func NewBroker(charge Charger, grants GrantSource) *Broker {
-	return &Broker{reg: map[string]Spec{}, mcp: &mcpRegistry{specs: map[string]Spec{}}, charge: charge, grants: grants, now: time.Now}
+	return &Broker{reg: map[string]Spec{}, mcp: &mcpRegistry{specs: map[string]registeredMCPTool{}}, charge: charge, grants: grants, now: time.Now}
 }
 
 // SetCommandEnvAllow sets the extra environment variable names passed to run_command subprocesses.
@@ -140,7 +140,10 @@ func (b *Broker) spec(name string) (Spec, bool) {
 	b.mu.RUnlock()
 	if !ok && b.mcp != nil && strings.HasPrefix(name, "mcp.") {
 		b.mcp.mu.RLock()
-		spec, ok = b.mcp.specs[name]
+		entry, found := b.mcp.specs[name]
+		if found && entry.remote.available() {
+			spec, ok = entry.Spec, true
+		}
 		b.mcp.mu.RUnlock()
 	}
 	return spec, ok
@@ -201,7 +204,18 @@ func (b *Broker) Descriptors() []PublicSpec {
 	}
 	if b.mcp != nil {
 		b.mcp.mu.RLock()
+		// Check each generation once, so expiry cannot publish a partial
+		// inventory and a large server incurs only one liveness check.
+		live := map[*remoteInventory]bool{nil: true}
 		for name, spec := range b.mcp.specs {
+			available, checked := live[spec.remote]
+			if !checked {
+				available = spec.remote.available()
+				live[spec.remote] = available
+			}
+			if !available {
+				continue
+			}
 			if _, shadowed := b.reg[name]; !shadowed {
 				out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
 			}
