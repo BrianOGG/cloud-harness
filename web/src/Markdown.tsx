@@ -16,9 +16,22 @@ interface CopyChoice { label: string; text: string }
 function CopyAction({ label, choices }: { label: string; choices: () => CopyChoice[] }) {
   const [options, setOptions] = useState<CopyChoice[]>([]);
   const [feedback, setFeedback] = useState('');
+  const group = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!options.length) return;
+    const dismissOutside = (event: Event) => {
+      if (!group.current?.contains(event.target as Node)) setOptions([]);
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('focusin', dismissOutside);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside);
+      document.removeEventListener('focusin', dismissOutside);
+    };
+  }, [options]);
 
   const copy = async (value: string) => {
     trigger.current?.focus();
@@ -33,9 +46,7 @@ function CopyAction({ label, choices }: { label: string; choices: () => CopyChoi
     timer.current = window.setTimeout(() => setFeedback(''), 2200);
   };
 
-  return <div className="copy-action" onBlur={event => {
-    if (!event.currentTarget.contains(event.relatedTarget)) setOptions([]);
-  }} onKeyDown={event => {
+  return <div className="copy-action" ref={group} onKeyDown={event => {
     if (options.length && event.key === 'Escape') {
       event.stopPropagation();
       setOptions([]);

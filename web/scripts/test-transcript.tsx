@@ -86,6 +86,9 @@ try {
       await show(mixed);
       const options = () => Array.from(container.querySelectorAll<HTMLButtonElement>('.turn-final .copy-options button'));
       assert.deepEqual(options().map(button => button.textContent), ['完整回复', '代码 1 · sh', '代码 2']);
+      // Safari blurs a clicked button without necessarily focusing the next one.
+      await act(async () => container.querySelector<HTMLButtonElement>(copy)!.blur());
+      assert.equal(options().length, 3);
       await act(async () => options()[2].click());
       assert.equal(clipboard.at(-1), 'echo done');
       assert.equal(options().length, 0);
