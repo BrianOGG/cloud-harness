@@ -194,6 +194,7 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 
 // RunOptions applies to one run. Plan restricts the model to read-only tools.
 type RunOptions struct {
+	ExplicitSkill     *contextpkg.LoadedSkill
 	PreferencesUpdate *storage.SessionPreferencesUpdate
 	Images            []provider.Image
 	Plan              bool
@@ -490,6 +491,14 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		}
 		if memory != "" {
 			recent = append([]contextpkg.Message{{Role: "user", Content: memory}}, recent...)
+		}
+	}
+	if skill := opts.ExplicitSkill; skill != nil {
+		// Keep the file at user authority and outside @file/@diff expansion.
+		task := strings.TrimPrefix(userMessage, "/skill "+skill.Name)
+		userMessage = "Apply the explicitly requested skill " + skill.Name + ":\n\n" + skill.Content
+		if task = strings.TrimPrefix(task, " "); task != "" {
+			userMessage += "\n\nUser task:\n" + task
 		}
 	}
 	asm := contextpkg.Assemble(system, digest, mem.Prompt(), recent, userMessage)

@@ -71,6 +71,14 @@ CLOUD_HARNESS_PROVIDER=openai OPENAI_API_KEY=demo OPENAI_MODEL=demo \
 OPENAI_BASE_URL=http://127.0.0.1:19422/v1 ./cloud-harness serve
 ```
 
+## 在对话中使用技能
+
+在新对话或已有对话的输入框中键入 `/`，查看工作区与全局技能的名称和简介。
+继续输入名称可筛选技能。用 ↑、↓ 移动，Enter、Tab 或点击条目可将
+`/skill 名称 ` 插入草稿。按 Esc 收起列表。补充任务后点击发送，例如
+`/skill review 检查新接口的错误处理`。也可以直接输入完整命令。
+发送时使用 CLI 的加载规则读取所选技能，保留当前模型与审批设置。
+
 ## How a run is followed
 
 - `POST /v1/sessions/{id}/runs` can return only when the run stops. While it

@@ -120,6 +120,12 @@ approval mode and reasoning effort; changing session preferences does not change
 The body is `{"message":"..."}`. The response is HTTP 201 with the run view
 described under [GET /v1/sessions/{id}/runs](#get-v1sessionsidruns).
 
+To invoke a skill, send `{"skill":"review","message":"Check the new handler"}`.
+The server loads the named file with the CLI skill loader and supplies it as
+user context for this run. With a skill, the message is its task argument and
+may be empty. The recorded user input is `/skill review Check the new handler`.
+A missing, invalid or unreadable skill returns HTTP 400 before run creation.
+
 A run executes in the server, not in the request that created it. Closing the
 connection does not stop the run: it keeps executing and its result is read
 with `GET /v1/runs/{id}` or the event stream. The only way to stop a run from
@@ -864,6 +870,14 @@ with `GET /v1/runs/{id}`. Submit approval decisions through the existing
 `{"decision":"deny"}`); submit user answers through that endpoint or
 `POST /v1/runs/{id}/answer` (`{"answer":"..."}`). Open the `approval_url` in
 a browser to handle the wait on the embedded approval page.
+
+## GET /v1/skills
+
+Returns the CLI skill catalog as a name-sorted array of summaries, for example
+`[{"name":"review","description":"Review a change"}]`. Workspace entries take
+precedence over global entries. Discovery skips invalid files and returns
+`[]` for an empty catalog. If discovery fails to read any valid summaries,
+the response is HTTP 503. This endpoint works before a session is created.
 
 ## GET /v1/models
 

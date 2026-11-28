@@ -7,6 +7,7 @@ import { ReasoningEffortPicker } from './ReasoningEffort';
 import { approvalModeLabel, approvalOperation, approvalWaitReason, approvalWorkingDirectory } from './approval';
 import { MessageList } from './MessageList';
 import { ConfirmMemory } from './ProjectMemory';
+import { SkillInput } from './SkillInput';
 import { turnSummary } from './transcript';
 import type { TranscriptTurn } from './transcript';
 import { budgetExtension } from './budget';
@@ -216,7 +217,7 @@ export function PendingTurn({ text }: { text: string }) {
   );
 }
 
-export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, hint, autoFocus, approvalMode, onApprovalModeChange, preferencesBusy, models, selectedModel, modelsLoading, modelSelectionDisabled, onModelChange, reasoningEffort, onReasoningChange }: {
+export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, placeholder, skillsEnabled, hint, autoFocus, approvalMode, onApprovalModeChange, preferencesBusy, models, selectedModel, modelsLoading, modelSelectionDisabled, onModelChange, reasoningEffort, onReasoningChange }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -224,6 +225,7 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   busy: boolean;
   stopping?: boolean;
   placeholder: string;
+  skillsEnabled?: boolean;
   hint?: string;
   autoFocus?: boolean;
   approvalMode: string;
@@ -256,7 +258,7 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stopping, pl
   };
   return (
     <div className="composer">
-      <textarea ref={ref} rows={1} value={value} placeholder={placeholder} aria-label={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
+      <SkillInput inputRef={ref} value={value} placeholder={placeholder} enabled={skillsEnabled} onChange={onChange} onKeyDown={onKeyDown} />
       <div className="composer-bar">
         <ApprovalModeMenu value={approvalMode} onChange={onApprovalModeChange} disabled={preferencesBusy} />
         {hint && <span className="composer-hint">{hint}</span>}

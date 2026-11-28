@@ -18,7 +18,9 @@
     "test:approval-mode": "tsx --tsconfig tsconfig.app.json scripts/test-approval-mode.tsx",
     "test:chat-preferences": "tsx --tsconfig tsconfig.app.json scripts/test-chat-preferences.tsx",
     "test:model-config": "tsx --tsconfig tsconfig.app.json scripts/test-model-config.tsx",
-    "test:composer-controls": "tsx --tsconfig tsconfig.app.json scripts/test-composer-controls.tsx"
+    "test:composer-controls": "tsx --tsconfig tsconfig.app.json scripts/test-composer-controls.tsx",
+    "test:skills": "tsx --tsconfig tsconfig.app.json scripts/test-skills.tsx",
+    "posttest": "npm run test:skills"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",

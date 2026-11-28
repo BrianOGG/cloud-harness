@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isNotFound } from './api';
 import type { ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn } from './Chat';
+import { skillInvocation } from './skills';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
@@ -528,7 +529,8 @@ export default function App() {
       }).catch(() => undefined);
     }, 500);
     try {
-      adopt(await api.createRun(target, text, selectedPreferences));
+      const skill = skillInvocation(text);
+      adopt(await api.createRun(target, skill?.task ?? text, { ...selectedPreferences, skill: skill?.name }));
     } catch (reason) {
       if (adopted) {
         refreshRuns(target).catch(() => undefined);
@@ -692,6 +694,7 @@ export default function App() {
       busy={Boolean(busy || (!answering && modelBlocked))}
       stopping={latestRun ? acting[latestRun.id] : false}
       placeholder={answering ? '回答问题…' : '发消息…'}
+      skillsEnabled={!answering}
       hint={online === false ? '未连接' : answering ? '回复后继续本轮' : undefined}
       autoFocus={view === 'chat'}
       models={models}
