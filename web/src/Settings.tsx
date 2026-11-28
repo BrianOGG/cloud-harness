@@ -4,6 +4,7 @@ import type { CatalogModel, CustomProvider, ProviderProtocol } from './api';
 import { errorText } from './format';
 import { Icon } from './Icon';
 import { ProjectMemories } from './ProjectMemory';
+import { MCPSettings } from './MCPSettings';
 
 const protocolNames: Record<ProviderProtocol, string> = { openai: 'OpenAI 兼容', anthropic: 'Anthropic', gemini: 'Gemini' };
 
@@ -95,6 +96,7 @@ export function Settings({ onModelsChanged, onBack }: { onModelsChanged: () => P
       </li>)}
     </ul>
     <ProjectMemories />
+    <MCPSettings />
   </section>;
 }
 

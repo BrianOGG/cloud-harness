@@ -94,6 +94,7 @@ var requestKey requestKeyType
 type Broker struct {
 	mu              sync.RWMutex
 	reg             map[string]Spec
+	mcp             *mcpRegistry
 	charge          Charger
 	grants          GrantSource
 	now             func() time.Time
@@ -103,7 +104,7 @@ type Broker struct {
 
 // NewBroker builds a broker. charge and grants are required so a call cannot skip them.
 func NewBroker(charge Charger, grants GrantSource) *Broker {
-	return &Broker{reg: map[string]Spec{}, charge: charge, grants: grants, now: time.Now}
+	return &Broker{reg: map[string]Spec{}, mcp: &mcpRegistry{specs: map[string]Spec{}}, charge: charge, grants: grants, now: time.Now}
 }
 
 // SetCommandEnvAllow sets the extra environment variable names passed to run_command subprocesses.
@@ -137,6 +138,11 @@ func (b *Broker) spec(name string) (Spec, bool) {
 	b.mu.RLock()
 	spec, ok := b.reg[name]
 	b.mu.RUnlock()
+	if !ok && b.mcp != nil && strings.HasPrefix(name, "mcp.") {
+		b.mcp.mu.RLock()
+		spec, ok = b.mcp.specs[name]
+		b.mcp.mu.RUnlock()
+	}
 	return spec, ok
 }
 
@@ -149,6 +155,7 @@ type Fact struct {
 	Idempotent bool
 	Pollable   bool
 	SideEffect string
+	Egress     bool
 }
 
 // Lookup returns the authorization facts for a registered tool.
@@ -159,7 +166,7 @@ func (b *Broker) Lookup(name string) (Fact, bool) {
 	}
 	return Fact{
 		Name: spec.Name, Readonly: spec.Readonly, Idempotent: spec.Idempotent,
-		Pollable: spec.Pollable, SideEffect: spec.SideEffectClass,
+		Pollable: spec.Pollable, SideEffect: spec.SideEffectClass, Egress: spec.EgressScope != "",
 	}, true
 }
 
@@ -177,18 +184,32 @@ type PublicSpec struct {
 
 // List returns registered tools in name order with provider-safe JSON schemas.
 func (b *Broker) List() []PublicSpec {
-	b.mu.RLock()
-	names := make([]string, 0, len(b.reg))
-	for name := range b.reg {
-		names = append(names, name)
+	specs := b.Descriptors()
+	for i := range specs {
+		specs[i].Parameters = CleanSchema(specs[i].Parameters)
 	}
-	sortStrings(names)
-	out := make([]PublicSpec, 0, len(names))
-	for _, name := range names {
-		spec := b.reg[name]
-		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: CleanSchema(spec.Parameters)})
+	return specs
+}
+
+// Descriptors is a name-sorted snapshot of raw descriptors. Callers treat the
+// schema bytes as immutable and clean only those sent to the provider.
+func (b *Broker) Descriptors() []PublicSpec {
+	b.mu.RLock()
+	out := make([]PublicSpec, 0, len(b.reg))
+	for _, spec := range b.reg {
+		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+	}
+	if b.mcp != nil {
+		b.mcp.mu.RLock()
+		for name, spec := range b.mcp.specs {
+			if _, shadowed := b.reg[name]; !shadowed {
+				out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+			}
+		}
+		b.mcp.mu.RUnlock()
 	}
 	b.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -370,8 +391,6 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	})
 	return spec, decision, nil
 }
-
-func sortStrings(in []string) { sort.Strings(in) }
 
 // Invoke validates, authorizes, charges, and only then executes.
 // A denied or invalid call does not charge and does not execute.

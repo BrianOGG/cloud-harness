@@ -91,8 +91,8 @@ within one process; do not run concurrent lifecycle CLI processes against one
 repository. `doctor` reports orphans and `retain --prune-runs-days` can reclaim
 them. See [worktree lifecycle](docs/cli.md#worktrees) for states and recovery.
 
-Local stdio MCP servers listed under `servers` in the configuration file are
-started by `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Their tools
+Local stdio and remote Streamable HTTP MCP servers listed under `servers` are
+connected by `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Their tools
 appear to the model as `mcp.<server>.<tool>` and go through the same policy,
 approval, budget, hook, and audit path as built-in tools; by default every call
 waits for approval. A server that fails to start is skipped with a warning, and

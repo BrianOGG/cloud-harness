@@ -47,15 +47,46 @@ baseline denials, examples, and run snapshot behavior.
 
 ## MCP servers
 
-`servers` (alias `mcp_servers`; when both are set `servers` wins) lists local
-stdio MCP servers. There is no environment variable or flag for it.
+`servers` (alias `mcp_servers`; when both are set `servers` wins) lists local stdio and remote Streamable HTTP MCP servers.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique label made of letters, digits, `_`, and `-`. Tools are registered as `mcp.<name>.<tool>`. |
-| `command` | yes | Executable to start, resolved through `PATH` when it has no slash. It is not run through a shell. |
+| `command` | stdio | Executable to start, resolved through `PATH` when it has no slash. It is not run through a shell. |
 | `args` | no | Arguments passed to the command. |
 | `readonly` | no | Default `false`: every call waits for approval unless `policy.json` decides otherwise. `true` declares that the server's tools have no side effects; such tools are denied unless a `policy.json` rule allows them. |
+| `url` | HTTP | MCP endpoint. Use HTTPS, or HTTP on loopback. Credentials, query strings and fragments are rejected. |
+| `transport` | no | Defaults to `streamable_http` with a URL or `stdio` with a command. |
+| `token_env` | no | Name of a process environment variable holding the resource bearer token. |
+| `oauth` | no | Pre-registered public PKCE client's `issuer`, `client_id`, `redirect_uri` and optional array of `scopes`. Select one authentication method per server. |
+
+```json
+{
+  "servers": [
+    {"name": "local", "command": "/usr/local/bin/local-mcp"},
+    {"name": "catalog", "url": "https://catalog.example/mcp", "token_env": "CATALOG_MCP_TOKEN", "readonly": true},
+    {"name": "tasks", "url": "https://tasks.example/mcp", "oauth": {
+      "issuer": "https://auth.example/tenant",
+      "client_id": "cloud-harness",
+      "redirect_uri": "http://127.0.0.1:19421/v1/mcp/oauth/callback"
+    }}
+  ]
+}
+```
+
+Register the exact callback URI with the issuer and open Settings on the same
+origin. Choose **MCP 服务 → 授权**. The client checks RFC 9728 resource metadata,
+discovers the pinned issuer using OAuth or OpenID metadata, and requires S256.
+The resource metadata URL must share the resource's origin. The authorization
+and token endpoints must share the configured issuer's origin. HTTP redirects
+are disabled for authenticated and discovery requests.
+
+Access and refresh tokens stay in the serving process. The client refreshes
+expiring tokens and requests a fresh authorization when the grant expires.
+Disconnect clears both credentials and any pending authorization. After a
+process restart, authorize again in Settings. For separate CLI or unattended
+processes use `token_env`. Settings can reconnect either transport and reload
+its inventory. Changing server definitions requires restarting the process.
 
 `serve`, `run`, `chat`, `runs resume`, and `runs recover` start the servers,
 discover their tools, and stop them on exit. A server that fails to start is

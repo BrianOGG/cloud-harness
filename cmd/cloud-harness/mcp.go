@@ -10,6 +10,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/agent"
 	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/tools"
+	"github.com/BrianOGG/cloud-harness/internal/transport"
 )
 
 // mcpStartTimeout bounds one server's startup and discovery for commands that execute runs.
@@ -18,15 +19,7 @@ var mcpStartTimeout = tools.DefaultMCPStartTimeout
 // doctorMCPProbeTimeout bounds one server's startup and discovery when doctor probes it.
 var doctorMCPProbeTimeout = 10 * time.Second
 
-func mcpServerConfigs(servers []config.MCPServerConfig) []tools.StdioMCPConfig {
-	out := make([]tools.StdioMCPConfig, 0, len(servers))
-	for _, s := range servers {
-		out = append(out, tools.StdioMCPConfig{Name: s.Name, Command: s.Command, Args: s.Args, Readonly: s.Readonly})
-	}
-	return out
-}
-
-// startMCP starts the configured stdio MCP servers and registers their tools on
+// startMCP connects the configured MCP servers and registers their tools on
 // the manager's broker, so every call goes through the same validation, budget,
 // policy, approval, hook, and audit path as a built-in tool. A server that
 // fails is reported on stderr and skipped. The caller must Close the result.
@@ -34,7 +27,7 @@ func startMCP(ctx context.Context, cfg config.Config, mgr *agent.Manager, stderr
 	if len(cfg.Servers) == 0 || mgr == nil || mgr.Broker == nil {
 		return nil
 	}
-	set := tools.StartMCPServers(ctx, mgr.Broker, mcpServerConfigs(cfg.Servers), mcpStartTimeout)
+	set := tools.StartMCPConnections(ctx, mgr.Broker, cfg.Servers, mcpStartTimeout, transport.NewRemoteMCPServer)
 	for _, st := range set.Status() {
 		if st.State != tools.MCPStateRunning {
 			_, _ = fmt.Fprintf(stderr, "warning: mcp server %q is unavailable, its tools are not registered: %s\n", st.Name, scrubDoctor(st.Error))
@@ -62,7 +55,7 @@ func checkMCP(ctx context.Context, servers []config.MCPServerConfig, live func()
 		status = live()
 	} else {
 		source = "probed and stopped"
-		set := tools.StartMCPServers(ctx, nil, mcpServerConfigs(servers), doctorMCPProbeTimeout)
+		set := tools.StartMCPConnections(ctx, nil, servers, doctorMCPProbeTimeout, transport.NewRemoteMCPServer)
 		status = set.Status()
 		_ = set.Close()
 	}

@@ -111,8 +111,22 @@ run: `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Each server is a
 subprocess that speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. The
 harness sends `initialize`, `notifications/initialized`, and `tools/list`
 (following `nextCursor` until the last page, at most 100 pages), then registers
-every discovered tool in the broker as `mcp.<server>.<tool>`. Only the stdio
-transport exists; HTTP and SSE servers are not supported.
+every discovered tool in the broker as `mcp.<server>.<tool>`.
+
+Streamable HTTP clients POST JSON-RPC messages, accept JSON or SSE responses,
+and carry the negotiated protocol version and session ID across requests.
+Connection controls in Settings open, close and refresh the inventory. A
+session-expired response requires reconnecting. The client supports MCP tool
+requests over POST and server session termination over DELETE. It does not
+subscribe to a standalone GET notification stream or the legacy SSE transport.
+
+For up to 32 MCP tools in a run's filtered catalog, the provider sees the
+individual schemas immediately. Above that threshold it sees
+`search_mcp_tools` when the run permits that tool. Search by name or
+description and page with `offset`. Up to eight matching schemas are offered
+on the next step. Checkpoints save the selected names. Resume intersects them
+with the current catalog, plan mode and child allowlist. Search is a charged
+local metadata call. Invoking a selected tool still goes through the broker.
 
 Lifecycle:
 
@@ -158,9 +172,9 @@ than being recorded as an ordinary failure or replayed automatically.
 | Server setting | Tool class | Default without a policy rule |
 | --- | --- | --- |
 | `readonly: false` (default) | reversible, egress scope = server name | waits for approval on every call |
-| `readonly: true` | no side effect, no egress scope | denied; needs a `policy.json` `allow` rule |
+| `readonly: true` | no side effect, HTTP still counts as egress | denied; needs a `policy.json` `allow` rule |
 
-A tool from a non-readonly server counts as egress: after the run has read
+Every remote HTTP tool and each non-readonly stdio tool counts as egress: after the run has read
 sensitive data it is denied unless an explicit egress grant exists.
 `readonly` is a declaration by whoever wrote the configuration; the harness
 cannot verify it.

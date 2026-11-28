@@ -464,6 +464,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	srv := (&transport.Server{
 		ModelsDev: catalog,
 		Manager:   mgr, Models: configuredModelOptions(cfg), ProviderSettings: providerStore, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
+		MCP:          mcpSet,
 		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
 	}).NewHTTPServer(cfg.ListenAddr)
 	errCh := make(chan error, 1)

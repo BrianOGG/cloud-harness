@@ -56,6 +56,7 @@ func RegisterLocal(b *Broker, root string) error {
 func (b *Broker) ForkWorkspace(root string, reset ...string) (*Broker, error) {
 	b.mu.RLock()
 	fork := NewBroker(b.charge, b.grants)
+	fork.mcp = b.mcp // Connections and inventory belong to the process, including live disconnects.
 	fork.now = b.now
 	fork.CommandEnvAllow = append([]string(nil), b.CommandEnvAllow...)
 	fork.commandLimits = b.commandLimits

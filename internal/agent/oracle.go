@@ -23,6 +23,9 @@ const (
 )
 
 func (m *Manager) oracleDefaultAllow(name string) []string {
+	if name == searchMCPName {
+		return []string{searchMCPName}
+	}
 	if m.Depth == 0 && name == tools.ToolAskOracle {
 		return []string{tools.ToolAskOracle}
 	}

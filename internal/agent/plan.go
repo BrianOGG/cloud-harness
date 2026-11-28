@@ -11,7 +11,7 @@ func (m *Manager) registerPlanTools() planToolRegistry {
 	if m.Broker == nil {
 		return registry
 	}
-	for _, spec := range m.Broker.List() {
+	for _, spec := range m.Broker.Descriptors() {
 		switch spec.Name {
 		// Existing permission metadata treats these as readonly. They can
 		// still execute commands, start runs, or replace a run's plan.
