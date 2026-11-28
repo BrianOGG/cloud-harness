@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/BrianOGG/cloud-harness/internal/config"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 )
 
@@ -30,12 +31,7 @@ const (
 )
 
 // StdioMCPConfig declares one local stdio MCP server subprocess configuration.
-type StdioMCPConfig struct {
-	Name     string   `json:"name"`
-	Command  string   `json:"command"`
-	Args     []string `json:"args"`
-	Readonly bool     `json:"readonly"`
-}
+type StdioMCPConfig = config.MCPServerConfig
 
 // StdioMCP adapts a local MCP server subprocess over stdio JSON-RPC 2.0 into Spec descriptors.
 // StdioMCP strictly implements MCPAdapter and does not execute tools itself; execution is
@@ -506,89 +502,10 @@ func (s *StdioMCP) Discover(ctx context.Context) ([]Spec, error) {
 		return nil, err
 	}
 
-	type listedTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		InputSchema json.RawMessage `json:"inputSchema"`
-	}
-	var listed []listedTool
-	// tools/list is paginated: keep asking while the server returns a cursor.
-	cursor := ""
-	for page := 0; ; page++ {
-		if page >= maxMCPListPages {
-			return nil, domain.E(domain.CodeToolError, fmt.Sprintf("mcp tools/list did not end within %d pages", maxMCPListPages))
-		}
-		params := map[string]any{}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		listResp, _, err := s.callDetailed(ctx, conn, "tools/list", params)
-		if err != nil {
-			return nil, domain.E(domain.CodeToolError, "mcp tools/list failed: "+err.Error())
-		}
-		var listResult struct {
-			Tools      []listedTool `json:"tools"`
-			NextCursor string       `json:"nextCursor"`
-		}
-		if err := json.Unmarshal(listResp, &listResult); err != nil {
-			return nil, domain.E(domain.CodeToolError, "invalid tools/list response: "+err.Error())
-		}
-		listed = append(listed, listResult.Tools...)
-		if listResult.NextCursor == "" {
-			break
-		}
-		cursor = listResult.NextCursor
-	}
-
-	specs := make([]Spec, 0, len(listed))
-	for _, t := range listed {
-		origName := t.Name
-		toolName := fmt.Sprintf("mcp.%s.%s", s.name, origName)
-
-		var reqFields []string
-		if len(t.InputSchema) > 0 {
-			var schemaMap map[string]any
-			if err := json.Unmarshal(t.InputSchema, &schemaMap); err == nil {
-				if reqArr, ok := schemaMap["required"].([]any); ok {
-					for _, r := range reqArr {
-						if str, ok := r.(string); ok {
-							reqFields = append(reqFields, str)
-						}
-					}
-				}
-			}
-		}
-
-		readonly := s.readonly
-		sideEffect := "reversible"
-		egressScope := s.name
-		if readonly {
-			sideEffect = "none"
-			egressScope = ""
-		}
-
-		schema := CleanSchema(t.InputSchema)
-		if len(schema) == 0 {
-			schema = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
-
-		spec := Spec{
-			Name:            toolName,
-			Description:     t.Description,
-			Required:        reqFields,
-			Timeout:         s.timeout,
-			Readonly:        readonly,
-			Idempotent:      readonly,
-			SideEffectClass: sideEffect,
-			EgressScope:     egressScope,
-			Parameters:      schema,
-			Execute: func(execCtx context.Context, args json.RawMessage) (json.RawMessage, error) {
-				return s.executeTool(execCtx, origName, args)
-			},
-		}
-		specs = append(specs, spec)
-	}
-	return specs, nil
+	return DiscoverMCPTools(ctx, s.name, s.readonly, false, s.timeout, func(ctx context.Context, params map[string]any) (json.RawMessage, error) {
+		raw, _, err := s.callDetailed(ctx, conn, "tools/list", params)
+		return raw, err
+	}, s.executeTool)
 }
 
 func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.RawMessage) (json.RawMessage, error) {
@@ -634,58 +551,7 @@ func (s *StdioMCP) executeTool(ctx context.Context, origName string, args json.R
 		return nil, asDomain(err)
 	}
 
-	var callRes struct {
-		Content []json.RawMessage `json:"content"`
-		IsError bool              `json:"isError"`
-	}
-	_ = json.Unmarshal(respRaw, &callRes)
-
-	truncated := false
-	totalLen := 0
-	var truncatedContent []MCPText
-
-	if len(callRes.Content) > 0 {
-		for _, raw := range callRes.Content {
-			block := mcpContentText(raw)
-			if rem := MaxMCPResultBytes - totalLen; len(block.Text) > rem {
-				if rem > 0 {
-					block.Text = block.Text[:rem]
-					truncatedContent = append(truncatedContent, block)
-				}
-				truncated = true
-				break
-			}
-			truncatedContent = append(truncatedContent, block)
-			totalLen += len(block.Text)
-		}
-	} else if len(respRaw) > 0 {
-		text := string(respRaw)
-		if len(text) > MaxMCPResultBytes {
-			text = text[:MaxMCPResultBytes]
-			truncated = true
-		}
-		truncatedContent = []MCPText{{Type: "text", Text: text}}
-	}
-
-	out := map[string]any{
-		"content":   truncatedContent,
-		"isError":   callRes.IsError,
-		"untrusted": true,
-		"truncated": truncated,
-	}
-	if truncated {
-		out["notice"] = fmt.Sprintf("truncated: mcp output capped at %d bytes (64KiB limit)", MaxMCPResultBytes)
-	}
-
-	outRaw, _ := json.Marshal(out)
-	if callRes.IsError {
-		errMsg := "mcp tool reported error"
-		if len(truncatedContent) > 0 && truncatedContent[0].Text != "" {
-			errMsg = truncatedContent[0].Text
-		}
-		return outRaw, domain.E(domain.CodeToolError, errMsg)
-	}
-	return outRaw, nil
+	return FormatMCPResult(respRaw)
 }
 
 // mcpContentText turns one tools/call content block into text for the model.

@@ -337,6 +337,7 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		policy:    snap.Policy,
 		hooks:     engine,
 	}
+	st.mcpSelected = snap.MCPSelected
 	if snap.PlanMode {
 		st.planTools = m.registerPlanTools()
 	}

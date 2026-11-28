@@ -54,6 +54,9 @@ func (m *Manager) ensureTools() {
 	} else if !m.Broker.Has("edit_file") || !m.Broker.Has("list_dir") || !m.Broker.Has("list_files") || !m.Broker.Has("grep") || !m.Broker.Has("git_status") || !m.Broker.Has("git_diff") || !m.Broker.Has("git_log") {
 		_ = tools.EnsureLocal(m.Broker, ".")
 	}
+	if !m.Broker.Has(searchMCPName) {
+		m.Broker.Register(searchMCPSpec())
+	}
 	if !m.Broker.Has(tools.ToolAskOracle) {
 		m.Broker.Register(tools.AskOracleSpec())
 	}
@@ -189,6 +192,7 @@ type loopState struct {
 	policyRecorded map[string]bool
 	policyDenials  map[string]string
 	planTools      planToolRegistry
+	mcpSelected    []string
 	policyErr      error
 	hooks          *hooks.Engine
 	hookPre        map[string]bool
@@ -331,7 +335,7 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 			},
 			Messages:             requestMessages,
 			Prefix:               prefix,
-			Tools:                m.toolDefsFor(st.planTools),
+			Tools:                m.offerMCPTools(st.planTools, st.mcpSelected),
 			Continuation:         continuation,
 			ContinuationProvider: contProvider,
 			OnDelta:              m.deltaSink(run.ID),
@@ -645,7 +649,11 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 		if m.CrashOnTool != "" && m.CrashOnTool == inv.Name {
 			return nil, domain.ErrUnknownOutcome
 		}
-		res, err := m.invokeHooked(ctx, run, st, inv, tools.Request{
+		callCtx := ctx
+		if inv.Name == searchMCPName {
+			callCtx = context.WithValue(ctx, mcpCatalogKey{}, m.filteredRegistry(st.planTools))
+		}
+		res, err := m.invokeHooked(callCtx, run, st, inv, tools.Request{
 			RunID: run.ID, SessionID: run.SessionID, InvocationID: inv.ID, Tool: inv.Name, Args: inv.Arguments,
 			DefaultAllow:     m.oracleDefaultAllow(inv.Name),
 			IdempotencyKey:   jsonString(inv.Arguments, "idempotency_key"),
@@ -672,6 +680,12 @@ func (m *Manager) execute(ctx context.Context, run storage.Run, st *loopState) d
 			return nil, res.Error
 		}
 		data := res.Data
+		if inv.Name == searchMCPName {
+			var page mcpPage
+			if json.Unmarshal(data, &page) == nil {
+				st.mcpSelected = page.Names
+			}
+		}
 		if len(data) == 0 {
 			data = json.RawMessage(`{}`)
 		}
@@ -871,10 +885,10 @@ func (m *Manager) parentHasWorkspaceToolGrant(ctx context.Context, run storage.R
 }
 
 func (m *Manager) toolDefs() []provider.ToolDefinition {
-	return m.toolDefsFor(nil)
+	return m.offerMCPTools(nil, nil)
 }
 
-func (m *Manager) toolDefsFor(planTools planToolRegistry) []provider.ToolDefinition {
+func (m *Manager) filteredRegistry(planTools planToolRegistry) []tools.PublicSpec {
 	if m.Broker == nil {
 		return nil
 	}
@@ -884,8 +898,8 @@ func (m *Manager) toolDefsFor(planTools planToolRegistry) []provider.ToolDefinit
 	for _, name := range m.AllowedTools {
 		allowed[name] = true
 	}
-	var out []provider.ToolDefinition
-	for _, spec := range m.Broker.List() {
+	var out []tools.PublicSpec
+	for _, spec := range m.Broker.Descriptors() {
 		if planTools.unknown(spec.Name) != nil {
 			continue
 		}
@@ -895,11 +909,7 @@ func (m *Manager) toolDefsFor(planTools planToolRegistry) []provider.ToolDefinit
 		if hasAllowed && spec.Name != domain.ToolFinishTurn && !allowed[spec.Name] {
 			continue
 		}
-		params := tools.CleanSchema(spec.Parameters)
-		if len(params) == 0 {
-			params = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
-		out = append(out, provider.ToolDefinition{Name: spec.Name, Description: spec.Description, Parameters: params})
+		out = append(out, spec)
 	}
 	return out
 }
@@ -990,7 +1000,7 @@ func isEgressTool(b *tools.Broker, name string) bool {
 		return true
 	}
 	if strings.HasPrefix(name, "mcp.") && b != nil {
-		if fact, ok := b.Lookup(name); ok && !fact.Readonly {
+		if fact, ok := b.Lookup(name); ok && (!fact.Readonly || fact.Egress) {
 			return true
 		}
 	}

@@ -22,7 +22,7 @@ Live provider calls are not part of CI. Rows marked "httptest" are covered by st
 - Unknown tool, bad JSON, or a missing required field never reaches the executor and does not charge budget.
 - A grant for the same tool does not authorize a different resource path.
 - Expired grants do not match.
-- The `MCPAdapter` interface only discovers and returns tool specs. The current `StdioMCP` runtime starts configured local stdio servers, registers discovered tools on the broker as `mcp.<server>.<tool>`, and supplies each registered spec with a `tools/call` executor; calls are broker-dispatched. Remote HTTP/SSE MCP transports are not implemented.
+- The `MCPAdapter` interface only discovers and returns tool specs. The current `StdioMCP` runtime starts configured local stdio servers, registers discovered tools on the broker as `mcp.<server>.<tool>`, and supplies each registered spec with a `tools/call` executor; calls are broker-dispatched. The Streamable HTTP adapter uses the same broker path for JSON and SSE responses.
 
 ## Not checked against a live model
 

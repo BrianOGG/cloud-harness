@@ -20,6 +20,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 	"github.com/BrianOGG/cloud-harness/internal/trace"
 )
 
@@ -57,6 +58,7 @@ type Server struct {
 	PollInterval      time.Duration
 	Stats             http.HandlerFunc
 	Doctor            http.HandlerFunc
+	MCP               *tools.MCPSet
 	// LoopbackBind is set when the listener is bound to a loopback address.
 	// The Host header must then name a loopback address or an AllowedHosts entry.
 	LoopbackBind bool
@@ -180,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 	if s.Stats != nil {
 		mux.HandleFunc("GET /v1/stats", s.Stats)
 	}
+	s.mcpRoutes(mux)
 	if s.Doctor != nil {
 		mux.HandleFunc("GET /v1/doctor", s.Doctor)
 	}
@@ -192,6 +195,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 
 	return s.guard(withUI(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OAuth redirects come from the authorization server without an API bearer.
+		// Only the callback accepts them, with PKCE, one-time state and a browser cookie.
+		if r.Method == http.MethodGet && r.URL.Path == mcpCallbackPath {
+			s.mcpCallback(w, r)
+			return
+		}
 		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" && r.URL.Path != "/approval" {
 			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)

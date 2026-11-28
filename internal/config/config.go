@@ -28,12 +28,24 @@ const (
 	MinHTTPTokenLen        = 16
 )
 
-// MCPServerConfig declares one local stdio MCP server subprocess.
+// MCPServerConfig selects a local subprocess or a Streamable HTTP endpoint.
 type MCPServerConfig struct {
-	Name     string   `json:"name"`
-	Command  string   `json:"command"`
-	Args     []string `json:"args"`
-	Readonly bool     `json:"readonly"`
+	Transport string          `json:"transport,omitempty"`
+	URL       string          `json:"url,omitempty"`
+	TokenEnv  string          `json:"token_env,omitempty"`
+	OAuth     *MCPOAuthConfig `json:"oauth,omitempty"`
+	Name      string          `json:"name"`
+	Command   string          `json:"command"`
+	Args      []string        `json:"args"`
+	Readonly  bool            `json:"readonly"`
+}
+
+// MCPOAuthConfig identifies a pre-registered public PKCE client. Tokens are process-local.
+type MCPOAuthConfig struct {
+	Issuer      string   `json:"issuer"`
+	ClientID    string   `json:"client_id"`
+	RedirectURI string   `json:"redirect_uri"`
+	Scopes      []string `json:"scopes,omitempty"`
 }
 
 // ModelPrice contains prices in currency units per one million tokens. Input
