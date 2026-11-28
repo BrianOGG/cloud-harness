@@ -530,6 +530,7 @@ func scriptedProvider(task, incidentURL string) (provider.Provider, bool) {
 		return rulesScript(), true
 	case catalogTask:
 		return &provider.Mock{Responses: []domain.ModelResponse{
+			toolCalls(call("find", "search_mcp_tools", `{"query":"payments queue depth"}`)),
 			toolCalls(call("metric", catalogTool, `{}`)), textResp("604"),
 		}}, true
 	case "dev-fix-failing-test":

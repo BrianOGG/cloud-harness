@@ -10,7 +10,7 @@
     "total_tokens": null,
     "success_rate": 1,
     "tool_choice_accuracy": 1,
-    "latency_ms": 674,
+    "latency_ms": 1036,
     "tool_choice_scored_tasks": 15,
     "tool_choice_correct_tasks": 15,
     "token_complete_tasks": 2
@@ -20,7 +20,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 34,
+      "latency_ms": 44,
       "expected_tools": {
         "required_any": [
           [
@@ -41,7 +41,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 15,
+      "latency_ms": 21,
       "expected_tools": {
         "required_any": [
           [
@@ -58,7 +58,7 @@
       "input_tokens": 734,
       "output_tokens": 4,
       "total_tokens": 738,
-      "latency_ms": 20,
+      "latency_ms": 22,
       "expected_tools": {
         "required_any": [
           [
@@ -75,7 +75,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 15,
+      "latency_ms": 36,
       "expected_tools": {
         "required_any": [
           [
@@ -95,7 +95,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 338,
+      "latency_ms": 519,
       "expected_tools": {
         "required_any": [
           [
@@ -120,7 +120,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 46,
+      "latency_ms": 80,
       "expected_tools": {
         "required_any": [
           [
@@ -142,7 +142,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 12,
+      "latency_ms": 32,
       "expected_tools": {
         "required_any": [
           [
@@ -160,7 +160,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 14,
+      "latency_ms": 24,
       "expected_tools": {
         "required_any": [
           [
@@ -181,7 +181,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 15,
+      "latency_ms": 22,
       "expected_tools": {
         "required_any": [
           [
@@ -198,16 +198,20 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 15,
+      "latency_ms": 19,
       "expected_tools": {
         "required_any": [
+          [
+            "search_mcp_tools"
+          ],
           [
             "mcp.inventory.payments_queue_depth"
           ]
         ]
       },
       "chosen_tools": [
-        "mcp.inventory.payments_queue_depth"
+        "mcp.inventory.payments_queue_depth",
+        "search_mcp_tools"
       ],
       "tool_choice_correct": true
     },
@@ -215,7 +219,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 71,
+      "latency_ms": 95,
       "expected_tools": {
         "required_any": [
           [
@@ -239,7 +243,7 @@
       "input_tokens": 160,
       "output_tokens": 32,
       "total_tokens": 192,
-      "latency_ms": 23,
+      "latency_ms": 36,
       "expected_tools": {
         "required_any": [
           [
@@ -256,7 +260,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 29,
+      "latency_ms": 48,
       "expected_tools": {
         "required_any": [
           [
@@ -277,7 +281,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 11,
+      "latency_ms": 14,
       "expected_tools": {
         "required_any": [
           [
@@ -294,7 +298,7 @@
       "input_tokens": null,
       "output_tokens": null,
       "total_tokens": null,
-      "latency_ms": 16,
+      "latency_ms": 24,
       "expected_tools": {
         "required_any": [
           [
@@ -312,9 +316,9 @@
   "passed": 15,
   "completion_rate": 1,
   "correctness": 1,
-  "wall_ms": 674,
-  "model_calls": 39,
-  "tool_calls": 32,
+  "wall_ms": 1036,
+  "model_calls": 40,
+  "tool_calls": 31,
   "repeated_tool_calls": 0,
   "recovery_pass": true,
   "input_tokens": 894,
@@ -335,7 +339,7 @@
         "name": "planner_on",
         "quality": 1,
         "tool_calls": 0,
-        "wall_ms": 5
+        "wall_ms": 7
       },
       {
         "answer": "unknown",
@@ -348,7 +352,7 @@
         "name": "planner_off_fixed",
         "quality": 0,
         "tool_calls": 0,
-        "wall_ms": 4
+        "wall_ms": 5
       },
       {
         "answer": "harbor-42",
@@ -361,7 +365,7 @@
         "name": "planner_off_retrieve",
         "quality": 1,
         "tool_calls": 1,
-        "wall_ms": 7
+        "wall_ms": 15
       }
     ]
   },

@@ -133,7 +133,7 @@
       "area": "tool-selection",
       "goal": "Look up the payments queue depth among 64 read-only in-process MCP tools.",
       "success": "The target tool returns its value and the final answer is that number.",
-      "tools": ["mcp.inventory.payments_queue_depth"]
+      "tools": ["search_mcp_tools", "mcp.inventory.payments_queue_depth"]
     }
   ]
 }

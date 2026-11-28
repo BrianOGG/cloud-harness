@@ -18,7 +18,7 @@ type ToolExpectation struct {
 
 var expectedChoices = map[string]ToolExpectation{
 	nestedRulesTask:           {[][]string{{"edit_file", "write_file"}}, []string{"read_file", "list_files", "list_dir"}},
-	catalogTask:               {RequiredAny: [][]string{{catalogTool}}},
+	catalogTask:               {RequiredAny: [][]string{{"search_mcp_tools"}, {catalogTool}}},
 	"dev-fix-failing-test":    {[][]string{{"read_file"}, {"edit_file", "write_file"}}, []string{"run_command"}},
 	"dev-explain-call-site":   {RequiredAny: [][]string{{"read_file", "grep", "list_files"}}},
 	"file-summarize-log":      {RequiredAny: [][]string{{"read_file", "grep"}}},

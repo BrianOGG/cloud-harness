@@ -33,8 +33,8 @@ Two runs of `capabilities-v1` in fresh workspaces and databases produced the fol
 | --- | ---: | ---: | ---: |
 | Successful tasks | 15/15 | 15/15 | 0 |
 | Correct tool choices | 15/15 | 15/15 | 0 |
-| End-to-end latency | 674 ms | 680 ms | +6 ms |
+| End-to-end latency | 1,036 ms | 848 ms | −188 ms |
 | Full-suite tokens | unknown | unknown | unknown |
 | Tokens on 2 fully metered tasks | 930 | 930 | 0 |
 
-The planner arms supplied 192 scripted tokens. The cache probe supplied 738 tokens from its prefix estimator across both arms. The other 13 task scripts omitted usage. The two added tasks exercise different local release values under frontend and backend project rules, and selection of the payments queue depth from an in-process catalog of 8 services × 8 metrics. The catalog uses the runtime's MCP naming and broker dispatch. Stdio transport is outside this fixture.
+The planner arms supplied 192 scripted tokens. The cache probe supplied 738 tokens from its prefix estimator across both arms. The other 13 task scripts omitted usage. The two added tasks exercise different local release values under frontend and backend project rules, and selection of the payments queue depth from an in-process catalog of 8 services × 8 metrics. The model uses `search_mcp_tools` and selects a discovered tool. Both steps use the runtime broker. Stdio transport is outside this fixture.
