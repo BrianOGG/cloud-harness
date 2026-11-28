@@ -287,6 +287,22 @@ parameters, tool output, or recorded denial errors. Invocation status events
 do not carry these full arguments and results. The trace does not include
 provider opaque bytes, continuation records, or run checkpoints.
 
+## Run file changes and restore
+
+`GET /v1/runs/{id}/changes` returns `{terminal, incomplete, batches}`. Each batch contains its number, immutable `before` and `after` snapshot IDs, and `files: [{path, status}]` with Git name-status codes. The inspector compares a batch’s pre-dispatch capture with its last recorded post-dispatch capture. Changes made between batches or after the last capture do not enter the diff. An empty list means there is no reviewable pair with changes. Missing pairs and known overlaps with other captures in the workspace are omitted and set `incomplete`. As with CLI snapshots, edits by external programs during a capture interval can appear in that interval.
+
+`GET /v1/runs/{id}/changes/diff?before=…&after=…&path=…` returns `{diff, truncated}` for one listed path. URL-encode all three parameters. Git renders text as a unified diff and binary edits as a binary difference. The response retains the first 64 KiB of patch output.
+
+`POST /v1/runs/{id}/changes/restore` accepts a confirmed selection:
+
+```json
+{"before":"snap_pre","after":"snap_post","path":"src/example.go","confirm":true}
+```
+
+The operation restores that file to its pre-batch contents, type and Git mode. An addition is removed and a deletion is recreated. Success returns `{"safety_snapshot":"snap_…"}`. The inspector refreshes the historical review and displays this receipt. The safety snapshot works with the existing code-only CLI rewind, using the run’s actual workspace and database.
+
+Restore requires a terminal run, the original workspace or retained worktree, and the exact current batch pair. The server checks the live file against the saved post-batch image and preserves unrelated working files, the real Git index and chat. A missing confirmation returns 400. An unknown run or unlisted path returns 404. A stale pair, edited or staged target, merge conflict, busy workspace, or finalized worktree returns 409. File-to-directory transitions require manual resolution. HTTP restores and CLI worktree lifecycle operations coordinate through the run database. External editors are outside that lock.
+
 ## GET /approval (legacy redirect)
 
 Old `/approval?run=<run-id>` links return **303 See Other** to

@@ -8,6 +8,7 @@ import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statu
 import { Icon } from './Icon';
 import { RuleSources } from './RuleSources';
 import { Observability } from './Observability';
+import { RunChanges } from './RunChanges';
 import { RunBudget } from './RunBudget';
 import { syncSessionMessages, type TranscriptSnapshot } from './history';
 import { SessionHistory } from './SessionHistory';
@@ -826,6 +827,7 @@ export default function App() {
               <dt>审批模式</dt><dd>{approvalModeLabel(inspectedRun.approval_mode)}</dd>
               {inspectedRun.workspace && <><dt>工作区</dt><dd>{inspectedRun.workspace}</dd></>}
             </dl>
+            <RunChanges key={`${inspectedRun.id}:${inspectedRun.status}`} runId={inspectedRun.id} />
             <RunBudget budget={inspectedRun.budget} />
             <RuleSources events={events[inspectedRun.id] || []} />
             <div className="tabs" role="tablist">
