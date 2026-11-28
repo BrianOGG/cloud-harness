@@ -363,3 +363,20 @@ func TestRuleTargetsExactCommandUsesWorkingDirectory(t *testing.T) {
 		t.Fatalf("rule targets = %v, want %s", targets, work)
 	}
 }
+
+func TestRuleTargetsPollHonorsOuterAndInnerToolAccess(t *testing.T) {
+	m, _, root := testManager(t, &provider.Mock{})
+	m.Depth = 1
+	batch := domain.Batch{Invocations: []domain.Invocation{{Name: "poll_tool", Arguments: json.RawMessage(`{"target_tool":"read_file","target_args":{"path":"web/page.txt"},"max_attempts":1}`)}}}
+	for _, allowed := range [][]string{{"read_file"}, {"poll_tool"}, {"poll_tool", "read_file"}} {
+		m.AllowedTools = allowed
+		paths := m.ruleTargets(batch, &loopState{})
+		if len(allowed) == 2 {
+			if len(paths) != 1 || paths[0] != filepath.Join(root, "web/page.txt") {
+				t.Errorf("poll targets = %v", paths)
+			}
+		} else if len(paths) != 0 {
+			t.Errorf("restricted poll loaded %v", paths)
+		}
+	}
+}

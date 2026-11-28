@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"path/filepath"
 	"slices"
@@ -21,17 +22,31 @@ func (m *Manager) ruleTargets(batch domain.Batch, st *loopState) []string {
 	if m.Broker == nil {
 		return nil
 	}
+	available := func(inv domain.Invocation) bool {
+		if st.planTools.unknown(inv.Name) != nil || (m.Depth > 0 && (m.definitionToolLimit || len(m.AllowedTools) > 0) && !slices.Contains(m.AllowedTools, inv.Name)) {
+			return false
+		}
+		return st.policy == nil || st.policy.Evaluate(m.policyRequest(inv)).Effect != security.EffectDeny
+	}
 	var paths []string
 	for _, inv := range batch.Invocations {
+		if inv.Name == "poll_tool" {
+			var poll pollArguments
+			if !available(inv) || json.Unmarshal(inv.Arguments, &poll) != nil {
+				continue
+			}
+			fact, ok := m.Broker.Lookup(poll.TargetTool)
+			if !ok || !fact.Pollable || !fact.Readonly || fact.SideEffect != "none" {
+				continue
+			}
+			inv = domain.Invocation{Name: poll.TargetTool, Arguments: poll.TargetArgs}
+		}
 		switch inv.Name {
 		case "read_file", "write_file", "edit_file", "git_diff", "list_dir", "list_files", "grep", "run_command":
 		default:
 			continue
 		}
-		if st.planTools.unknown(inv.Name) != nil || (m.Depth > 0 && (m.definitionToolLimit || len(m.AllowedTools) > 0) && !slices.Contains(m.AllowedTools, inv.Name)) {
-			continue
-		}
-		if st.policy != nil && st.policy.Evaluate(m.policyRequest(inv)).Effect == security.EffectDeny {
+		if !available(inv) {
 			continue
 		}
 		resources, err := m.Broker.ExtractRequestResources(tools.Request{Tool: inv.Name, Args: inv.Arguments, ApprovalMode: st.approvalMode})
