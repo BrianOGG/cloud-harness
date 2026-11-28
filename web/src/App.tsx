@@ -6,6 +6,7 @@ import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
 import { Observability } from './Observability';
+import { RunChanges } from './RunChanges';
 import { RunBudget } from './RunBudget';
 import { syncSessionMessages, type TranscriptSnapshot } from './history';
 import { SessionHistory } from './SessionHistory';
@@ -822,6 +823,7 @@ export default function App() {
               <dt>审批模式</dt><dd>{approvalModeLabel(inspectedRun.approval_mode)}</dd>
               {inspectedRun.workspace && <><dt>工作区</dt><dd>{inspectedRun.workspace}</dd></>}
             </dl>
+            <RunChanges key={`${inspectedRun.id}:${inspectedRun.status}`} runId={inspectedRun.id} />
             <RunBudget budget={inspectedRun.budget} />
             <div className="tabs" role="tablist">
               <button type="button" role="tab" aria-selected={panel === 'trace'} onClick={() => setPanel('trace')}>执行步骤</button>
