@@ -5,6 +5,7 @@ import (
 	"log"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	contextpkg "github.com/BrianOGG/cloud-harness/internal/context"
 	"github.com/BrianOGG/cloud-harness/internal/domain"
@@ -35,6 +36,16 @@ func (m *Manager) ruleTargets(batch domain.Batch, st *loopState) []string {
 		}
 		resources, err := m.Broker.ExtractRequestResources(tools.Request{Tool: inv.Name, Args: inv.Arguments, ApprovalMode: st.approvalMode})
 		if err != nil {
+			continue
+		}
+		if inv.Name == "run_command" && len(resources) == 1 && resources[0] == strings.TrimSpace(jsonString(inv.Arguments, "command")) {
+			// An exact-command grant contains shell text, even when it starts
+			// with a slash. Only the validated cwd identifies a directory.
+			if root, err := filepath.Abs(m.Workspace); err == nil {
+				if cwd, err := tools.CommandWorkDir(root, jsonString(inv.Arguments, "cwd"), st.approvalMode); err == nil {
+					paths = append(paths, cwd)
+				}
+			}
 			continue
 		}
 		for _, resource := range resources {

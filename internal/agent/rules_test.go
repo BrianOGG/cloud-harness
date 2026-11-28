@@ -350,3 +350,16 @@ func TestNewDirectoryRulesReachModelBeforeWrite(t *testing.T) {
 		t.Fatalf("resumed run changed activated rules: %+v err=%v", run, err)
 	}
 }
+
+func TestRuleTargetsExactCommandUsesWorkingDirectory(t *testing.T) {
+	m, _, root := testManager(t, &provider.Mock{})
+	work := filepath.Join(root, "nested")
+	if err := os.Mkdir(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	args := json.RawMessage(`{"cwd":"nested","command":"printf ready | cat"}`)
+	targets := m.ruleTargets(domain.Batch{Invocations: []domain.Invocation{{Name: "run_command", Arguments: args}}}, &loopState{approvalMode: "full-auto"})
+	if len(targets) != 1 || targets[0] != work {
+		t.Fatalf("rule targets = %v, want %s", targets, work)
+	}
+}
