@@ -78,6 +78,11 @@ func setupChanges(t *testing.T, isolated bool) changesFixture {
 	f := changesFixture{t: t, h: h, m: m, db: db, run: run, path: path, snap: snap}
 	f.write("review [a].txt", "before\n")
 	f.write("removed", "gone\n")
+	for _, name := range []string{"review [a].txt", "removed"} {
+		if err := os.Chmod(filepath.Join(path, name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f.before = f.capture("pre")
 	f.write("review [a].txt", "after\n")
 	f.write("new", "created\n")
@@ -120,6 +125,33 @@ func (f changesFixture) diff(path string, status int) string {
 	f.t.Helper()
 	query := url.Values{"before": {f.before.ID}, "after": {f.after.ID}, "path": {path}}
 	return modelConfigRequest(f.t, f.h, "GET", f.base()+"/diff?"+query.Encode(), nil, status, "").Body.String()
+}
+
+func TestRunChangesRestorePrivatePermissions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"review [a].txt", 0600},
+		{"review [a].txt", 0400}, // Tightened by the owner after the batch.
+		{"removed", 0600},
+	} {
+		f := setupChanges(t, false)
+		path := filepath.Join(f.path, tc.name)
+		if tc.name != "removed" {
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.restore(tc.name, true, 200)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != tc.mode {
+			t.Errorf("%s restored mode %04o, want %04o", tc.name, got, tc.mode)
+		}
+	}
 }
 
 func TestRunChangesHistoryAndSafeRestore(t *testing.T) {

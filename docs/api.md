@@ -299,7 +299,7 @@ provider opaque bytes, continuation records, or run checkpoints.
 {"before":"snap_pre","after":"snap_post","path":"src/example.go","confirm":true}
 ```
 
-The operation restores that file to its pre-batch contents, type and Git mode. An addition is removed and a deletion is recreated. Success returns `{"safety_snapshot":"snap_…"}`. The inspector refreshes the historical review and displays this receipt. The safety snapshot works with the existing code-only CLI rewind, using the run’s actual workspace and database.
+The operation restores that file’s pre-batch contents, type and owner execute bit. Git does not store full Unix permissions. Reviewed regular files are restored owner-only, retaining existing owner read/write restrictions on a replacement. A deleted regular file is recreated with mode `0600` or `0700`. An addition is removed. Success returns `{"safety_snapshot":"snap_…"}`. The inspector refreshes the historical review and displays this receipt. The safety snapshot works with the existing code-only CLI rewind, using the run’s actual workspace and database.
 
 Restore requires a terminal run, the original workspace or retained worktree, and the exact current batch pair. The server checks the live file against the saved post-batch image and preserves unrelated working files, the real Git index and chat. A missing confirmation returns 400. An unknown run or unlisted path returns 404. A stale pair, edited or staged target, merge conflict, busy workspace, or finalized worktree returns 409. File-to-directory transitions require manual resolution. HTTP restores and CLI worktree lifecycle operations coordinate through the run database. External editors are outside that lock.
 
