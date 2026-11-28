@@ -623,3 +623,9 @@ code, pre, .mono { font-family: var(--mono); }
 .settings-page .model-choice:disabled { opacity: .55; cursor: not-allowed; }
 .provider-model-row label { cursor: pointer; }
 .provider-model-row label:has(input:disabled) { cursor: default; }
+
+.rule-sources { margin: 8px 0; font-size: 12px; color: var(--text); }
+.rule-sources summary { cursor: pointer; }
+.rule-sources ul { margin: 6px 0; padding-left: 16px; }
+.rule-sources li { margin: 4px 0; overflow-wrap: anywhere; }
+.rule-sources small { display: block; color: var(--text-tertiary); }

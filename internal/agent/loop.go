@@ -14,6 +14,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/imageinput"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
 	"github.com/BrianOGG/cloud-harness/internal/runtime"
 	"github.com/BrianOGG/cloud-harness/internal/security"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
@@ -168,6 +169,7 @@ func (m *Manager) ensureTools() {
 }
 
 type loopState struct {
+	ruleScope       *rules.Scope
 	modelID         string
 	model           string
 	fallbackModel   string
@@ -240,12 +242,6 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 	reloadExecutor := true
 	// A consultation can switch the planner and executor's shared profile.
 	ctx = m.withOracle(ctx, run.ID, leaseVersion, func() { reloadExecutor = true })
-	// New runs start at version 1; every resume has already committed a state
-	// transition and restores its frozen rules from the checkpoint instead.
-	if run.Version == 1 {
-		messages = m.injectProjectRules(ctx, run, messages, st)
-		messages = m.injectSkillCatalog(messages, st)
-	}
 	if hasImages(messages) {
 		if !provider.SupportsImages(providerFromContext(ctx, m.Provider)) {
 			return m.finish(ctx, run, domain.EventFatal, "", domain.E(domain.CodeProviderConfig, "configured provider/model does not support image input"))
@@ -389,6 +385,19 @@ func (m *Manager) loopFrom(ctx context.Context, run storage.Run, leaseVersion in
 		}
 		if err := m.event(ctx, run.ID, "model.completed", event); err != nil {
 			return storage.Run{}, err
+		}
+		// Let the model see newly applicable instructions before the proposed
+		// batch can write files or enter an approval wait. No call was dispatched.
+		if st.ruleScope != nil && planErr == nil && resp.Complete {
+			if paths := m.ruleTargets(batch, st); len(paths) > 0 {
+				oldPrefix := st.prefixN
+				messages = m.injectProjectRules(ctx, run, messages, st, paths)
+				if st.prefixN != oldPrefix {
+					_ = m.event(ctx, run.ID, "rules.replan", map[string]string{"response_id": responseID})
+					continuation, contProvider = nil, ""
+					continue
+				}
+			}
 		}
 		stored := storage.StoredBatch{
 			ID: batch.ID, ModelResponseID: responseID, RunID: run.ID,

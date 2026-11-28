@@ -13,7 +13,6 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/repomap"
-	"github.com/BrianOGG/cloud-harness/internal/rules"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
@@ -63,32 +62,6 @@ func (m *Manager) withRepoMap(ctx context.Context, run storage.Run, messages []p
 		requestMessages[i+1].Images = messages[i].Images
 	}
 	return requestMessages
-}
-
-// injectProjectRules runs only for a newly created run, before its first model
-// loop. Resumes use the messages and prefix count in the existing checkpoint.
-func (m *Manager) injectProjectRules(ctx context.Context, run storage.Run, messages []provider.Message, st *loopState) []provider.Message {
-	loaded := rules.Load(m.Workspace)
-	for _, diagnostic := range loaded.Diagnostics {
-		log.Printf("project rules skipped: %s: %s", diagnostic.Path, diagnostic.Error)
-		_ = m.event(ctx, run.ID, "rules.skipped", diagnostic)
-	}
-	if loaded.Content == "" {
-		return messages
-	}
-	asm := contextpkg.WithProjectRules(contextpkg.Assembly{
-		StaticPrefix: toContext(messages[:st.prefixN]),
-	}, loaded.Content)
-	assembled := append(fromContext(asm.StaticPrefix), messages[st.prefixN:]...)
-	st.prefixN++
-	st.userAt++
-	_ = m.event(ctx, run.ID, "rules.loaded", map[string]any{"files": loaded.Loaded})
-	if len(loaded.Omitted) > 0 {
-		_ = m.event(ctx, run.ID, "rules.truncated", map[string]any{"files": loaded.Omitted})
-	}
-	// Existing wait/budget checkpoints persist these messages and prefix count;
-	// no extra checkpoint is needed (or allowed to compete at the same version).
-	return assembled
 }
 
 // injectSkillCatalog adds only frontmatter summaries to the frozen prefix. A

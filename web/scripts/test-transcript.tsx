@@ -65,6 +65,20 @@ async function click(selector: string) {
 }
 
 try {
+  await test('inspector groups active and partial rule sources without exposing rule bodies', async () => {
+    const { RuleSources } = await import('../src/RuleSources');
+    const file = { path: '/workspace/web/AGENTS.md', source: 'web/AGENTS.md', bytes: 71 };
+    await render(<RuleSources events={[
+      { seq: 1, type: 'rules.truncated', data: JSON.stringify({ files: [file] }) },
+      { seq: 2, type: 'rules.loaded', data: JSON.stringify({ files: [{ ...file, bytes: 32 }] }) },
+      { seq: 3, type: 'rules.skipped', data: JSON.stringify({ path: '/workspace/lib/AGENTS.md', error: 'cannot read' }) },
+    ]} />);
+    assert.match(container.querySelector('summary')!.textContent!, /项目规则 · 2/);
+    assert.match(container.querySelector('li')!.textContent!, /web\/AGENTS.md32 B · 已达长度上限/);
+    assert.match(container.textContent!, /cannot read/);
+    await reset();
+  });
+
   await test('replies have one copy entry for text, a single block or mixed Markdown', async () => {
     await reset();
     const clipboard: string[] = [];

@@ -21,6 +21,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/notify"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
 	"github.com/BrianOGG/cloud-harness/internal/runtime"
 	"github.com/BrianOGG/cloud-harness/internal/security"
 	workspacesnapshot "github.com/BrianOGG/cloud-harness/internal/snapshot"
@@ -499,11 +500,21 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
 	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode, reasoningEffort: opts.ReasoningEffort}
+	var ruleTargets []string
 	for _, ref := range references {
-		if ref.Type == "file" && tools.SensitivePath(ref.Path) {
+		if ref.Type != "file" {
+			continue
+		}
+		if tools.SensitivePath(ref.Path) {
 			st.sensitive = true
 		}
+		if ref.Bytes > 0 {
+			ruleTargets = append(ruleTargets, ref.Path)
+		}
 	}
+	st.ruleScope = &rules.Scope{}
+	messages = m.injectProjectRules(ctx, run, messages, st, ruleTargets)
+	messages = m.injectSkillCatalog(messages, st)
 	if opts.Plan {
 		st.planTools = m.registerPlanTools()
 	}

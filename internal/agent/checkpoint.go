@@ -7,12 +7,14 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
 	"github.com/BrianOGG/cloud-harness/internal/runtime"
 	"github.com/BrianOGG/cloud-harness/internal/security"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
 type snapshot struct {
+	RuleScope          *rules.Scope           `json:"rule_scope,omitempty"`
 	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
 	ModelID            string                 `json:"model_id,omitempty"`
 	Model              string                 `json:"model,omitempty"`
@@ -41,6 +43,7 @@ func (m *Manager) saveCheckpoint(ctx context.Context, run storage.Run, messages 
 func (m *Manager) writeCheckpoint(ctx context.Context, run storage.Run, messages []provider.Message, continuation []domain.ResponseItem, contProvider string, st *loopState, initial bool) error {
 	snap := snapshot{Messages: messages, Continuation: continuation, ContProvider: contProvider}
 	if st != nil {
+		snap.RuleScope = st.ruleScope
 		snap.ModelID = st.modelID
 		snap.Model = st.model
 		snap.FallbackModel = st.fallbackModel

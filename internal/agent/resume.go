@@ -326,7 +326,8 @@ func (m *Manager) Resume(ctx context.Context, runID string, in ResumeInput) (res
 		}
 	}
 	st := &loopState{
-		modelID: snap.ModelID, model: snap.Model, fallbackModel: snap.FallbackModel, providerID: snap.ProviderID, approvalMode: snap.ApprovalMode, reasoningEffort: snap.ReasoningEffort,
+		ruleScope: snap.RuleScope,
+		modelID:   snap.ModelID, model: snap.Model, fallbackModel: snap.FallbackModel, providerID: snap.ProviderID, approvalMode: snap.ApprovalMode, reasoningEffort: snap.ReasoningEffort,
 		sensitive: snap.SensitiveRead,
 		reminded:  snap.Reminded,
 		obs:       snap.Observations,

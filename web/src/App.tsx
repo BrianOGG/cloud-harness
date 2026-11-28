@@ -5,6 +5,7 @@ import { Composer, PendingTurn } from './Chat';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
+import { RuleSources } from './RuleSources';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
 import { syncSessionMessages, type TranscriptSnapshot } from './history';
@@ -823,6 +824,7 @@ export default function App() {
               {inspectedRun.workspace && <><dt>工作区</dt><dd>{inspectedRun.workspace}</dd></>}
             </dl>
             <RunBudget budget={inspectedRun.budget} />
+            <RuleSources events={events[inspectedRun.id] || []} />
             <div className="tabs" role="tablist">
               <button type="button" role="tab" aria-selected={panel === 'trace'} onClick={() => setPanel('trace')}>执行步骤</button>
               <button type="button" role="tab" aria-selected={panel === 'events'} onClick={() => setPanel('events')}>事件 <span>{(events[inspectedRun.id] || []).length}</span></button>

@@ -17,15 +17,15 @@ import (
 // MaxBytes bounds the entire rendered project-rules section, including markers.
 const MaxBytes = 32 * 1024
 
-const heading = "Project rules (AGENTS.md; later sources are more specific):\n\n"
+const heading = "Project rules (AGENTS.md; global and root apply throughout; nested sources apply only within their own directory tree, deepest wins):\n\n"
 
 // File describes a rule source. Bytes is its size on disk in Files, and the
 // number of body bytes actually injected in Loaded. Source is a display label
-// (global or a workspace-relative path), excluded from diagnostic event payloads.
+// (global or a workspace-relative path).
 type File struct {
 	Path   string `json:"path"`
 	Bytes  int64  `json:"bytes"`
-	Source string `json:"-"`
+	Source string `json:"source,omitempty"`
 }
 
 // Diagnostic records a non-fatal discovery or read failure, without rule text.
@@ -78,8 +78,15 @@ type section struct {
 }
 
 func load(workspace, globalDir string, open func(string) (io.ReadCloser, error)) Result {
-	result := discover(workspace, globalDir)
+	return render(discover(workspace, globalDir), open, MaxBytes)
+}
+
+func render(result Result, open func(string) (io.ReadCloser, error), limit int) Result {
 	if len(result.Files) == 0 {
+		return result
+	}
+	if limit <= len(heading) {
+		result.Omitted = result.Files
 		return result
 	}
 	var text strings.Builder
@@ -88,7 +95,7 @@ func load(workspace, globalDir string, open func(string) (io.ReadCloser, error))
 	var tail []File
 	for i, file := range result.Files {
 		marker := "<!-- AGENTS.md: " + file.Source + " -->\n"
-		remaining := MaxBytes - text.Len() - len(marker) - 2
+		remaining := limit - text.Len() - len(marker) - 2
 		if remaining < 0 {
 			tail = result.Files[i:]
 			break
@@ -131,8 +138,12 @@ func load(workspace, globalDir string, open func(string) (io.ReadCloser, error))
 			result.Content = full
 			return result
 		}
-		footer := truncationMarker(result.Omitted)
-		next := min(cut, MaxBytes-len(footer))
+		footer := truncationMarker(result.Omitted, limit)
+		if len(heading)+len(footer) > limit {
+			result.Loaded, result.Omitted = nil, result.Files
+			return result
+		}
+		next := min(cut, limit-len(footer))
 		// Keep source markers whole, and never split a UTF-8 code point.
 		for _, part := range sections {
 			if next > part.start && next < part.bodyStart {
@@ -165,12 +176,12 @@ func describe(sections []section, tail []File, cut int) (loaded, omitted []File)
 	return loaded, append(omitted, tail...)
 }
 
-func truncationMarker(omitted []File) string {
+func truncationMarker(omitted []File, limit int) string {
 	const start = "\n<!-- AGENTS.md truncated (32 KiB limit); omitted or partial sources: "
 	const end = " -->\n"
 	// Extremely large source lists must not bypass the section's byte limit.
 	// doctor and the rules.truncated event retain the complete list of paths.
-	budget := MaxBytes - len(heading) - len(start) - len(end) - 96
+	budget := limit - len(heading) - len(start) - len(end) - 96
 	var labels strings.Builder
 	for i, file := range omitted {
 		label := strconv.Quote(file.Source)
@@ -189,36 +200,40 @@ func truncationMarker(omitted []File) string {
 	return start + labels.String() + end
 }
 
+func resolveRule(path, source string) (File, error) {
+	canonical, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		canonical, err = filepath.Abs(canonical)
+	}
+	if err != nil {
+		return File{}, err
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return File{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return File{}, errors.New("not a regular file")
+	}
+	return File{Path: canonical, Source: source, Bytes: info.Size()}, nil
+}
+
 func discover(workspace, globalDir string) Result {
 	var result Result
 	seen := make(map[string]bool)
 	add := func(path, source string) {
-		canonical, err := filepath.EvalSymlinks(path)
+		file, err := resolveRule(path, source)
 		if errors.Is(err, fs.ErrNotExist) {
 			return
 		}
-		if err == nil {
-			canonical, err = filepath.Abs(canonical)
-		}
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Path: path, Error: err.Error()})
 			return
 		}
-		canonical = filepath.Clean(canonical)
-		if seen[canonical] {
-			return
+		if !seen[file.Path] {
+			seen[file.Path] = true
+			result.Files = append(result.Files, file)
 		}
-		info, err := os.Stat(canonical)
-		if err != nil {
-			result.Diagnostics = append(result.Diagnostics, Diagnostic{Path: path, Error: err.Error()})
-			return
-		}
-		if !info.Mode().IsRegular() {
-			result.Diagnostics = append(result.Diagnostics, Diagnostic{Path: path, Error: "not a regular file"})
-			return
-		}
-		seen[canonical] = true
-		result.Files = append(result.Files, File{Path: canonical, Source: source, Bytes: info.Size()})
 	}
 	if globalDir != "" {
 		add(filepath.Join(globalDir, "AGENTS.md"), "global")
@@ -244,11 +259,8 @@ func discover(workspace, globalDir string) Result {
 			return nil
 		}
 		if entry.IsDir() {
-			if path != root {
-				switch entry.Name() {
-				case ".git", ".cloud-harness", "node_modules", "vendor":
-					return filepath.SkipDir
-				}
+			if path != root && ignoredRuleDir(entry.Name()) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
