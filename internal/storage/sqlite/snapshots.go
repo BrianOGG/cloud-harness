@@ -3,10 +3,36 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
+
+// SnapshotRunBounds returns the possible execution lifetime in this workspace.
+// Cancellation can precede the executor's last write. An outstanding invocation
+// leaves the end unknown even after lease release. Otherwise include events
+// committed as the worker unwound, which can postdate the cancellation.
+func (db *DB) SnapshotRunBounds(ctx context.Context, workspaceID, runID string) (start, end time.Time, err error) {
+	var created, ended string
+	err = db.sql.QueryRowContext(ctx, `SELECT r.created_at,
+		CASE WHEN l.expires_at > ? THEN ''
+		WHEN r.status IN ('COMPLETED','FAILED') THEN r.updated_at
+		WHEN r.status = 'CANCELLED' AND NOT EXISTS
+		  (SELECT 1 FROM tool_invocations WHERE run_id = r.id AND status = 'RUNNING')
+		THEN MAX(r.updated_at, COALESCE(l.expires_at, ''),
+		  COALESCE((SELECT MAX(created_at) FROM events WHERE run_id = r.id), ''))
+		ELSE '' END
+		FROM runs r LEFT JOIN run_leases l ON l.run_id = r.id
+		WHERE r.id = ? AND r.workspace_id = ?`, formatTime(db.now()), runID, workspaceID).Scan(&created, &ended)
+	if err != nil {
+		return
+	}
+	if start, err = parseTime(created); err == nil {
+		end, err = parseTime(ended)
+	}
+	return
+}
 
 // CreateWorkspaceSnapshot persists a captured shadow tree. Missing IDs and
 // timestamps are assigned using the store's standard conventions.

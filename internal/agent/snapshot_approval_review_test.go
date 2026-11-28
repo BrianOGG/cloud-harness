@@ -44,7 +44,7 @@ func TestSnapshotReviewExcludesEditsAcrossApprovalWaits(t *testing.T) {
 		t.Fatalf("run ended %s", run.Status)
 	}
 	s, records := workspaceRecords(t, db, root)
-	pairs, incomplete := workspacesnapshot.ReviewPairs(records, run.ID, run.WorkspaceID, root)
+	pairs, incomplete := workspacesnapshot.ReviewPairs(records, run.ID, run.WorkspaceID, root, nil)
 	if incomplete || len(pairs) != 2 {
 		t.Fatalf("want two complete execution intervals, got %d (incomplete=%v)", len(pairs), incomplete)
 	}
@@ -104,7 +104,7 @@ func TestSnapshotReviewRetryAfterPartialWrite(t *testing.T) {
 	allowSnapshotWrite(m, root)
 	run := runSnapshotMessage(t, m)
 	s, records := workspaceRecords(t, db, root)
-	pairs, incomplete := workspacesnapshot.ReviewPairs(records, run.ID, run.WorkspaceID, root)
+	pairs, incomplete := workspacesnapshot.ReviewPairs(records, run.ID, run.WorkspaceID, root, nil)
 	if run.Status != domain.RunCompleted || calls != 2 || !incomplete || len(pairs) != 1 {
 		t.Fatalf("run=%s calls=%d pairs=%+v incomplete=%v", run.Status, calls, pairs, incomplete)
 	}
