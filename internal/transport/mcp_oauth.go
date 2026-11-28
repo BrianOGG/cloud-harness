@@ -59,6 +59,18 @@ func (a *mcpOAuth) reject(challenges []string, used string, retry bool) bool {
 	}
 	a.metadataURL = ""
 	a.challengeScope = ""
+	a.recordChallengeLocked(challenges, used)
+	return retry && used != "" && a.refresh != ""
+}
+
+// A 403 can request step-up for one tool while the current grant remains valid.
+func (a *mcpOAuth) noteForbidden(challenges []string, used string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.recordChallengeLocked(challenges, used)
+}
+
+func (a *mcpOAuth) recordChallengeLocked(challenges []string, used string) {
 	for _, h := range challenges {
 		if used != "" && strings.Contains(h, used) {
 			continue
@@ -75,7 +87,6 @@ func (a *mcpOAuth) reject(challenges []string, used string, retry bool) bool {
 			}
 		}
 	}
-	return retry && used != "" && a.refresh != ""
 }
 func (a *mcpOAuth) Forget() {
 	a.mu.Lock()
