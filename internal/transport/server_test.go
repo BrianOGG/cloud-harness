@@ -64,6 +64,25 @@ func TestRunStartupPreservesLaterPreferenceEdit(t *testing.T) {
 	}
 }
 
+func TestRunInheritingPreferencesKeepsExistingRevision(t *testing.T) {
+	m, h := newServer(t)
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sessions/" + session.ID + "/runs?wait=1"
+	modelConfigRequest(t, h, "POST", path, map[string]string{"message": "hello", "approval_mode": "safe"}, 201, "")
+	before, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || before.ApprovalMode != "safe" {
+		t.Fatalf("explicit preferences: %+v, %v", before, err)
+	}
+	modelConfigRequest(t, h, "POST", path, map[string]string{"message": "hello again"}, 201, "")
+	after, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || before != after {
+		t.Fatalf("inheriting preferences invalidated an overlapping update: before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
 func TestMockRunOverHTTP(t *testing.T) {
 	_, h := newServer(t)
 	rec := httptest.NewRecorder()
