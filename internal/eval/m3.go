@@ -237,17 +237,9 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB, use
 		if err != nil {
 			return out, err
 		}
-		usage, err := sumUsage(ctx, db, run.ID)
+		usage, toolsN, err := out.observeRun(ctx, db, run)
 		if err != nil {
 			return out, err
-		}
-		batches, err := db.LoadBatches(ctx, run.ID)
-		if err != nil {
-			return out, err
-		}
-		toolsN := 0
-		for _, b := range batches {
-			toolsN += len(b.Invocations)
 		}
 		quality := 0
 		if arm.want != "" && strings.Contains(run.FinalAnswer, arm.want) {
@@ -300,11 +292,11 @@ func comparePlanner(ctx context.Context, base *agent.Manager, db *sqlite.DB, use
 
 func compareCache(ctx context.Context, db *sqlite.DB, workspace string, liveProv provider.Provider, useScripted bool) (Result, error) {
 	out := Result{Task: "cache-baseline", Status: "COMPLETED"}
-	stable, err := cacheArm(ctx, db, workspace, liveProv, useScripted, true)
+	stable, err := cacheArm(ctx, db, workspace, liveProv, useScripted, true, &out)
 	if err != nil {
 		return out, err
 	}
-	base, err := cacheArm(ctx, db, workspace, liveProv, useScripted, false)
+	base, err := cacheArm(ctx, db, workspace, liveProv, useScripted, false, &out)
 	if err != nil {
 		return out, err
 	}
@@ -332,7 +324,7 @@ func compareCache(ctx context.Context, db *sqlite.DB, workspace string, liveProv
 	return out, nil
 }
 
-func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv provider.Provider, useScripted, hits bool) (armReport, error) {
+func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv provider.Provider, useScripted, hits bool, out *Result) (armReport, error) {
 	var inner provider.Provider = liveProv
 	if useScripted || inner == nil {
 		inner = &provider.Mock{Responses: []domain.ModelResponse{
@@ -374,7 +366,7 @@ func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv pro
 	if err != nil {
 		return armReport{}, err
 	}
-	usage, err := sumUsage(ctx, db, run.ID)
+	usage, toolsN, err := out.observeRun(ctx, db, run)
 	if err != nil {
 		return armReport{}, err
 	}
@@ -385,28 +377,9 @@ func cacheArm(ctx context.Context, db *sqlite.DB, workspace string, liveProv pro
 	return armReport{
 		Name: name, Quality: 1, CostTokens: usage.InputTokens + usage.OutputTokens,
 		LatencyMS: usage.LatencyMS, WallMS: wall, ModelCalls: run.Budget.UsedModelCalls,
-		ToolCalls: 1, HitRate: rate, InputTokens: usage.InputTokens, CachedTokens: usage.CachedInputTokens,
+		ToolCalls: toolsN, HitRate: rate, InputTokens: usage.InputTokens, CachedTokens: usage.CachedInputTokens,
 		Answer: run.FinalAnswer,
 	}, nil
-}
-
-func sumUsage(ctx context.Context, db *sqlite.DB, runID string) (domain.Usage, error) {
-	rows, err := db.ListVisibleResponses(ctx, runID)
-	if err != nil {
-		return domain.Usage{}, err
-	}
-	var u domain.Usage
-	for _, row := range rows {
-		u.InputTokens += row.Usage.InputTokens
-		u.OutputTokens += row.Usage.OutputTokens
-		u.CachedInputTokens += row.Usage.CachedInputTokens
-		u.CacheCreationInputTokens += row.Usage.CacheCreationInputTokens
-		u.ReasoningTokens += row.Usage.ReasoningTokens
-		u.CacheReported = u.CacheReported || row.Usage.CacheReported
-		u.ReasoningReported = u.ReasoningReported || row.Usage.ReasoningReported
-		u.LatencyMS += row.Usage.LatencyMS
-	}
-	return u, nil
 }
 
 func textUsage(text string, in, out int, latency int64) domain.ModelResponse {

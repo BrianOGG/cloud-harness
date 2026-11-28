@@ -118,6 +118,9 @@ func TestBatchThreeReadsStreamingOpenAI(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("provider calls %d", n)
 	}
+	if m := result.Measurements; m.ChoiceCorrect == nil || !*m.ChoiceCorrect || m.Input != nil || m.Output != nil || m.Total != nil {
+		t.Fatalf("stream returned tool choices but no usage: %+v", m)
+	}
 }
 
 func TestEvalFiveNewScenariosScripted(t *testing.T) {
@@ -200,15 +203,17 @@ func TestEvalFiveNewScenariosScripted(t *testing.T) {
 		}
 	})
 
-	// Verify full 13-task Suite passes.
-	t.Run("full-suite-13-of-13", func(t *testing.T) {
+	t.Run("full-suite", func(t *testing.T) {
 		ws := t.TempDir()
 		report, err := Suite(ctx, config.Config{DBPath: filepath.Join(ws, "suite.db"), Provider: "mock"}, ws)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if report.Tasks != 13 || report.Passed != 13 || len(report.Failures) != 0 {
-			t.Fatalf("expected 13/13 pass, got tasks=%d passed=%d failures=%#v task_pass=%#v", report.Tasks, report.Passed, report.Failures, report.TaskPass)
+		if report.Tasks != len(SuiteTasks) || report.Passed != report.Tasks || len(report.Failures) != 0 {
+			t.Fatalf("expected full suite to pass, got tasks=%d passed=%d failures=%#v task_pass=%#v", report.Tasks, report.Passed, report.Failures, report.TaskPass)
+		}
+		if report.Measurements.ToolChoiceAccuracy == nil || *report.Measurements.ToolChoiceAccuracy != 1 || report.Measurements.Total != nil || report.Measurements.TokenTasks != 2 {
+			t.Fatalf("unexpected scripted metric coverage: %+v", report.Measurements)
 		}
 	})
 }
@@ -239,7 +244,7 @@ func (f *fakeOpenAIProvider) Complete(_ context.Context, req provider.Request) (
 func TestEvalOpenAIProviderNeverScripted(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Verify that for every single one of the 13 tasks, when Config.Provider == "openai",
+	// 1. Verify that for every task, when Config.Provider == "openai",
 	// an injected provider is called and scriptedProvider is never injected.
 	for _, task := range SuiteTasks {
 		root := t.TempDir()
@@ -301,6 +306,9 @@ func TestEvalOpenAIProviderNeverScripted(t *testing.T) {
 		if len(res.ToolCalls) != 0 || res.Pass {
 			t.Fatalf("expected unscripted text response to have 0 tool calls and fail dev-explain-call-site scorer, got %+v", res)
 		}
+		if m := res.Measurements; m.Total == nil || *m.Total != 16 || m.ChoiceCorrect == nil || *m.ChoiceCorrect {
+			t.Fatalf("live trace reported 12 input, 4 output and no tool choices: %+v", m)
+		}
 
 		// Verify recover-mid-batch harness hook (CrashOnTool + Recover) still works under Provider="openai".
 		recoverRoot := t.TempDir()
@@ -359,8 +367,8 @@ func TestEvalSuiteRerunnable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Suite run %d returned error: %v", i, err)
 		}
-		if report.Tasks != 13 || report.Passed != 13 || len(report.Failures) != 0 {
-			t.Fatalf("Suite run %d expected 13/13 pass, got tasks=%d passed=%d failures=%#v task_pass=%#v",
+		if report.Tasks != len(SuiteTasks) || report.Passed != report.Tasks || len(report.Failures) != 0 {
+			t.Fatalf("Suite run %d expected all tasks to pass, got tasks=%d passed=%d failures=%#v task_pass=%#v",
 				i, report.Tasks, report.Passed, report.Failures, report.TaskPass)
 		}
 	}
@@ -570,7 +578,7 @@ func TestEvalScriptedGrantsUnchanged(t *testing.T) {
 		t.Fatalf("expected batch-approval-skip to pass in live mode, got %+v", skipRes)
 	}
 
-	// 3. Scripted mode grants and behavior remain 13/13 unchanged.
+	// 3. Verify scripted mode grants and behavior.
 	scriptedRoot := t.TempDir()
 	scriptedRes, err := Run(ctx, Options{
 		Task:      "file-safe-edit",
@@ -619,8 +627,8 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 		baseWithFail.TaskPass[k] = v
 	}
 	baseWithFail.TaskPass["dev-fix-failing-test"] = false
-	baseWithFail.Passed = 12
-	baseWithFail.CompletionRate = 12.0 / 13.0
+	baseWithFail.Passed--
+	baseWithFail.CompletionRate = float64(baseWithFail.Passed) / float64(baseWithFail.Tasks)
 	fixCmp := CompareSuiteReports(baseWithFail, report)
 	if fixCmp.HasRegression || len(fixCmp.Fixed) != 1 || fixCmp.Fixed[0] != "dev-fix-failing-test" {
 		t.Fatalf("expected only fixed dev-fix-failing-test, got %+v", fixCmp)
@@ -633,8 +641,8 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 		curWithReg.TaskPass[k] = v
 	}
 	curWithReg.TaskPass["dev-fix-failing-test"] = false
-	curWithReg.Passed = 12
-	curWithReg.CompletionRate = 12.0 / 13.0
+	curWithReg.Passed--
+	curWithReg.CompletionRate = float64(curWithReg.Passed) / float64(curWithReg.Tasks)
 	regCmp := CompareSuiteReports(loaded, curWithReg)
 	if !regCmp.HasRegression || len(regCmp.Regressed) != 1 || regCmp.Regressed[0] != "dev-fix-failing-test" {
 		t.Fatalf("expected regression on dev-fix-failing-test, got %+v", regCmp)

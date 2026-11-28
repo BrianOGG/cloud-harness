@@ -1,9 +1,13 @@
 {
-  "version": "m5",
+  "version": "capabilities-v1",
   "executed": true,
   "metrics": [
     "completed",
     "score",
+    "success_rate",
+    "tool_choice_accuracy",
+    "total_tokens",
+    "latency_ms",
     "wall_time_ms",
     "model_calls",
     "tool_calls",
@@ -21,7 +25,9 @@
     "incident-service-down",
     "batch-three-reads",
     "retrieve-chinese-term",
-    "retrieve-path-and-id"
+    "retrieve-path-and-id",
+    "nested-project-rules",
+    "large-mcp-catalog"
   ],
   "tasks": [
     {
@@ -29,28 +35,28 @@
       "area": "software-development",
       "goal": "A tiny Go package has one failing test. Change the implementation so the test passes and do not edit the test.",
       "success": "go test of that package passes and the test file is unchanged.",
-      "tools": ["read_file", "write_file", "go_test"]
+      "tools": ["read_file", "edit_file", "write_file", "run_command"]
     },
     {
       "id": "dev-explain-call-site",
       "area": "software-development",
       "goal": "Name the function that handles POST /v1/runs/{id}/cancel and the status it writes.",
       "success": "The answer cites the function and the CANCELLED status.",
-      "tools": ["read_file", "grep"]
+      "tools": ["read_file", "grep", "list_files"]
     },
     {
       "id": "file-summarize-log",
       "area": "file-analysis",
       "goal": "Read a local log and list the distinct error codes with counts.",
       "success": "Counts match a deterministic scan of the file.",
-      "tools": ["read_file"]
+      "tools": ["read_file", "grep"]
     },
     {
       "id": "file-safe-edit",
       "area": "file-analysis",
       "goal": "Update a config value inside an allowed directory and refuse the same edit outside that directory.",
       "success": "The in-scope file changes once. The out-of-scope path is denied and unchanged.",
-      "tools": ["read_file", "write_file"]
+      "tools": ["read_file", "edit_file", "write_file"]
     },
     {
       "id": "incident-service-down",
@@ -114,6 +120,20 @@
       "goal": "Measure prompt-cache hit rate for a stable prefix against a baseline that reports no cached tokens.",
       "success": "The stable arm's hit rate is above zero and the baseline hit rate is zero.",
       "tools": ["read_file"]
+    },
+    {
+      "id": "nested-project-rules",
+      "area": "project-rules",
+      "goal": "Apply the root and directory-specific release labels in a workspace with frontend/src and backend/api files.",
+      "success": "Both release files contain exactly their own local value in the root one-line format.",
+      "tools": ["edit_file", "write_file", "read_file", "list_files", "list_dir"]
+    },
+    {
+      "id": "large-mcp-catalog",
+      "area": "tool-selection",
+      "goal": "Look up the payments queue depth among 64 read-only in-process MCP tools.",
+      "success": "The target tool returns its value and the final answer is that number.",
+      "tools": ["mcp.inventory.payments_queue_depth"]
     }
   ]
 }

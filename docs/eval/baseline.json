@@ -1,15 +1,326 @@
 {
-  "tasks": 13,
-  "passed": 13,
+  "benchmark": {
+    "version": "capabilities-v1",
+    "mode": "scripted",
+    "provider": "mock"
+  },
+  "measurements": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "success_rate": 1,
+    "tool_choice_accuracy": 1,
+    "latency_ms": 674,
+    "tool_choice_scored_tasks": 15,
+    "tool_choice_correct_tasks": 15,
+    "token_complete_tasks": 2
+  },
+  "task_metrics": {
+    "batch-approval-skip": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 34,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file"
+          ],
+          [
+            "write_file"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "read_file",
+        "write_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "batch-three-reads": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 15,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "cache-baseline": {
+      "input_tokens": 734,
+      "output_tokens": 4,
+      "total_tokens": 738,
+      "latency_ms": 20,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "dev-explain-call-site": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 15,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file",
+            "grep",
+            "list_files"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "grep",
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "dev-fix-failing-test": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 338,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file"
+          ],
+          [
+            "edit_file",
+            "write_file"
+          ]
+        ],
+        "optional": [
+          "run_command"
+        ]
+      },
+      "chosen_tools": [
+        "edit_file",
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "file-safe-edit": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 46,
+      "expected_tools": {
+        "required_any": [
+          [
+            "edit_file",
+            "write_file"
+          ]
+        ],
+        "optional": [
+          "read_file"
+        ]
+      },
+      "chosen_tools": [
+        "edit_file",
+        "write_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "file-summarize-log": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 12,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file",
+            "grep"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "incident-service-down": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 14,
+      "expected_tools": {
+        "required_any": [
+          [
+            "http_fetch"
+          ],
+          [
+            "read_file"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "http_fetch",
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "incident-wait-for-ready": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 15,
+      "expected_tools": {
+        "required_any": [
+          [
+            "poll_tool"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "poll_tool"
+      ],
+      "tool_choice_correct": true
+    },
+    "large-mcp-catalog": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 15,
+      "expected_tools": {
+        "required_any": [
+          [
+            "mcp.inventory.payments_queue_depth"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "mcp.inventory.payments_queue_depth"
+      ],
+      "tool_choice_correct": true
+    },
+    "nested-project-rules": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 71,
+      "expected_tools": {
+        "required_any": [
+          [
+            "edit_file",
+            "write_file"
+          ]
+        ],
+        "optional": [
+          "read_file",
+          "list_files",
+          "list_dir"
+        ]
+      },
+      "chosen_tools": [
+        "edit_file",
+        "read_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "planner-compare": {
+      "input_tokens": 160,
+      "output_tokens": 32,
+      "total_tokens": 192,
+      "latency_ms": 23,
+      "expected_tools": {
+        "required_any": [
+          [
+            "retrieve_history"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "retrieve_history"
+      ],
+      "tool_choice_correct": true
+    },
+    "recover-mid-batch": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 29,
+      "expected_tools": {
+        "required_any": [
+          [
+            "read_file"
+          ],
+          [
+            "write_file"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "read_file",
+        "write_file"
+      ],
+      "tool_choice_correct": true
+    },
+    "retrieve-chinese-term": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 11,
+      "expected_tools": {
+        "required_any": [
+          [
+            "retrieve_history"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "retrieve_history"
+      ],
+      "tool_choice_correct": true
+    },
+    "retrieve-path-and-id": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "latency_ms": 16,
+      "expected_tools": {
+        "required_any": [
+          [
+            "retrieve_history"
+          ]
+        ]
+      },
+      "chosen_tools": [
+        "retrieve_history"
+      ],
+      "tool_choice_correct": true
+    }
+  },
+  "tasks": 15,
+  "passed": 15,
   "completion_rate": 1,
   "correctness": 1,
-  "wall_ms": 902,
+  "wall_ms": 674,
+  "model_calls": 39,
+  "tool_calls": 32,
   "repeated_tool_calls": 0,
   "recovery_pass": true,
-  "input_tokens": 451,
-  "output_tokens": 34,
-  "cached_input_tokens": 111,
-  "cache_hit_rate": 0.38144329896907214,
+  "input_tokens": 894,
+  "output_tokens": 36,
+  "cached_input_tokens": 149,
+  "cache_hit_rate": 0.40599455040871935,
   "baseline_hit_rate": 0,
   "planner": {
     "arms": [
@@ -24,7 +335,7 @@
         "name": "planner_on",
         "quality": 1,
         "tool_calls": 0,
-        "wall_ms": 11
+        "wall_ms": 5
       },
       {
         "answer": "unknown",
@@ -37,7 +348,7 @@
         "name": "planner_off_fixed",
         "quality": 0,
         "tool_calls": 0,
-        "wall_ms": 8
+        "wall_ms": 4
       },
       {
         "answer": "harbor-42",
@@ -50,7 +361,7 @@
         "name": "planner_off_retrieve",
         "quality": 1,
         "tool_calls": 1,
-        "wall_ms": 13
+        "wall_ms": 7
       }
     ]
   },
@@ -64,6 +375,8 @@
     "file-summarize-log": true,
     "incident-service-down": true,
     "incident-wait-for-ready": true,
+    "large-mcp-catalog": true,
+    "nested-project-rules": true,
     "planner-compare": true,
     "recover-mid-batch": true,
     "retrieve-chinese-term": true,
