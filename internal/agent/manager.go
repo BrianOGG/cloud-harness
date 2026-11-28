@@ -193,15 +193,15 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 
 // RunOptions applies to one run. Plan restricts the model to read-only tools.
 type RunOptions struct {
-	SaveSessionPreferences bool
-	Images                 []provider.Image
-	Plan                   bool
-	ModelID                string
-	Model                  string
-	FallbackModel          string
-	ProviderID             string
-	ApprovalMode           string
-	ReasoningEffort        string
+	PreferencesAtRequest *storage.SessionPreferences
+	Images               []provider.Image
+	Plan                 bool
+	ModelID              string
+	Model                string
+	FallbackModel        string
+	ProviderID           string
+	ApprovalMode         string
+	ReasoningEffort      string
 }
 
 // RunMessageWithOptions creates a run with the supplied inputs and mode.
@@ -265,9 +265,12 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 	if err := m.Store.CreateTurn(ctx, turn); err != nil {
 		return storage.Run{}, err
 	}
-	var prefs *storage.SessionPreferences
-	if opts.SaveSessionPreferences {
-		prefs = &storage.SessionPreferences{SessionID: sessionID, ModelID: opts.ModelID, ApprovalMode: opts.ApprovalMode, ReasoningEffort: opts.ReasoningEffort}
+	var prefs *storage.SessionPreferencesUpdate
+	if opts.PreferencesAtRequest != nil {
+		prefs = &storage.SessionPreferencesUpdate{
+			Previous: *opts.PreferencesAtRequest,
+			Next:     storage.SessionPreferences{SessionID: sessionID, ModelID: opts.ModelID, ApprovalMode: opts.ApprovalMode, ReasoningEffort: opts.ReasoningEffort},
+		}
 	}
 	if err := m.Store.CreateRunWithPreferences(ctx, run, prefs); err != nil {
 		return storage.Run{}, err

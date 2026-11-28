@@ -104,7 +104,7 @@ func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
 	return db.CreateRunWithPreferences(ctx, r, nil)
 }
 
-func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, prefs *storage.SessionPreferences) error {
+func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, change *storage.SessionPreferencesUpdate) error {
 	budget, err := json.Marshal(r.Budget)
 	if err != nil {
 		return err
@@ -129,9 +129,15 @@ func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, prefs
 			return err
 		}
 	}
-	if prefs != nil {
-		if err := db.saveSessionPreferences(ctx, tx, *prefs); err != nil {
+	if change != nil {
+		current, err := readSessionPreferences(ctx, tx, r.SessionID)
+		if err != nil {
 			return err
+		}
+		if current == change.Previous {
+			if err := db.saveSessionPreferences(ctx, tx, change.Next); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()

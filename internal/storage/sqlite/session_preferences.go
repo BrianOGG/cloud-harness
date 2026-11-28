@@ -11,9 +11,17 @@ func (db *DB) GetSessionPreferences(ctx context.Context, sessionID string) (stor
 	if _, err := db.GetSession(ctx, sessionID); err != nil {
 		return storage.SessionPreferences{}, err
 	}
+	return readSessionPreferences(ctx, db.sql, sessionID)
+}
+
+type preferencesReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func readSessionPreferences(ctx context.Context, reader preferencesReader, sessionID string) (storage.SessionPreferences, error) {
 	p := storage.SessionPreferences{SessionID: sessionID, ApprovalMode: "ask", ModelID: "default", ReasoningEffort: "default"}
 	var updated string
-	err := db.sql.QueryRowContext(ctx, `SELECT approval_mode, model_id, reasoning_effort, updated_at FROM session_preferences WHERE session_id = ?`, sessionID).Scan(&p.ApprovalMode, &p.ModelID, &p.ReasoningEffort, &updated)
+	err := reader.QueryRowContext(ctx, `SELECT approval_mode, model_id, reasoning_effort, updated_at FROM session_preferences WHERE session_id = ?`, sessionID).Scan(&p.ApprovalMode, &p.ModelID, &p.ReasoningEffort, &updated)
 	if err == sql.ErrNoRows {
 		return p, nil
 	}

@@ -356,7 +356,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.execute(w, r, http.StatusCreated, func(ctx context.Context) (*agent.Execution, error) {
-		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{SaveSessionPreferences: true, ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort})
+		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{PreferencesAtRequest: &prefs, ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort})
 	})
 }
 

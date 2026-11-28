@@ -26,6 +26,12 @@ type SessionPreferences struct {
 	UpdatedAt       time.Time
 }
 
+// SessionPreferencesUpdate applies Next only if Previous still matches the stored settings.
+type SessionPreferencesUpdate struct {
+	Previous SessionPreferences
+	Next     SessionPreferences
+}
+
 // SessionSummary is a session and its run aggregates for read-only listings.
 type SessionSummary struct {
 	ID              string
@@ -248,7 +254,7 @@ type Store interface {
 	ListMessages(ctx context.Context, sessionID string, after *MessageCursor, limit int) (MessagePage, error)
 	SyncMessages(ctx context.Context, sessionID string, generation, revision int64, limit int) (MessageSyncPage, error)
 	CreateRun(ctx context.Context, r Run) error
-	CreateRunWithPreferences(ctx context.Context, r Run, p *SessionPreferences) error
+	CreateRunWithPreferences(ctx context.Context, r Run, change *SessionPreferencesUpdate) error
 	GetRun(ctx context.Context, id string) (Run, error)
 	ListRuns(ctx context.Context, sessionID string) ([]Run, error)
 	ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]Run, error)
