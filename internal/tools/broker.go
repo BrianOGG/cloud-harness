@@ -90,10 +90,19 @@ type requestKeyType struct{}
 
 var requestKey requestKeyType
 
+type dispatchObserverKey struct{}
+
+// WithDispatchObserver brackets actual executor calls, after authorization,
+// idempotency lookup and budget checks. A nil completion skips observation.
+func WithDispatchObserver(ctx context.Context, begin func(context.Context, Request) func()) context.Context {
+	return context.WithValue(ctx, dispatchObserverKey{}, begin)
+}
+
 // Broker is the single tool entry point.
 type Broker struct {
 	mu              sync.RWMutex
 	reg             map[string]Spec
+	mcp             *mcpRegistry
 	charge          Charger
 	grants          GrantSource
 	now             func() time.Time
@@ -103,7 +112,7 @@ type Broker struct {
 
 // NewBroker builds a broker. charge and grants are required so a call cannot skip them.
 func NewBroker(charge Charger, grants GrantSource) *Broker {
-	return &Broker{reg: map[string]Spec{}, charge: charge, grants: grants, now: time.Now}
+	return &Broker{reg: map[string]Spec{}, mcp: &mcpRegistry{specs: map[string]registeredMCPTool{}}, charge: charge, grants: grants, now: time.Now}
 }
 
 // SetCommandEnvAllow sets the extra environment variable names passed to run_command subprocesses.
@@ -137,6 +146,14 @@ func (b *Broker) spec(name string) (Spec, bool) {
 	b.mu.RLock()
 	spec, ok := b.reg[name]
 	b.mu.RUnlock()
+	if !ok && b.mcp != nil && strings.HasPrefix(name, "mcp.") {
+		b.mcp.mu.RLock()
+		entry, found := b.mcp.specs[name]
+		if found && entry.remote.available() {
+			spec, ok = entry.Spec, true
+		}
+		b.mcp.mu.RUnlock()
+	}
 	return spec, ok
 }
 
@@ -149,6 +166,7 @@ type Fact struct {
 	Idempotent bool
 	Pollable   bool
 	SideEffect string
+	Egress     bool
 }
 
 // Lookup returns the authorization facts for a registered tool.
@@ -159,7 +177,7 @@ func (b *Broker) Lookup(name string) (Fact, bool) {
 	}
 	return Fact{
 		Name: spec.Name, Readonly: spec.Readonly, Idempotent: spec.Idempotent,
-		Pollable: spec.Pollable, SideEffect: spec.SideEffectClass,
+		Pollable: spec.Pollable, SideEffect: spec.SideEffectClass, Egress: spec.EgressScope != "",
 	}, true
 }
 
@@ -177,18 +195,43 @@ type PublicSpec struct {
 
 // List returns registered tools in name order with provider-safe JSON schemas.
 func (b *Broker) List() []PublicSpec {
-	b.mu.RLock()
-	names := make([]string, 0, len(b.reg))
-	for name := range b.reg {
-		names = append(names, name)
+	specs := b.Descriptors()
+	for i := range specs {
+		specs[i].Parameters = CleanSchema(specs[i].Parameters)
 	}
-	sortStrings(names)
-	out := make([]PublicSpec, 0, len(names))
-	for _, name := range names {
-		spec := b.reg[name]
-		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: CleanSchema(spec.Parameters)})
+	return specs
+}
+
+// Descriptors is a name-sorted snapshot of raw descriptors. Callers treat the
+// schema bytes as immutable and clean only those sent to the provider.
+func (b *Broker) Descriptors() []PublicSpec {
+	b.mu.RLock()
+	out := make([]PublicSpec, 0, len(b.reg))
+	for _, spec := range b.reg {
+		out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+	}
+	if b.mcp != nil {
+		b.mcp.mu.RLock()
+		// Check each generation once, so expiry cannot publish a partial
+		// inventory and a large server incurs only one liveness check.
+		live := map[*remoteInventory]bool{nil: true}
+		for name, spec := range b.mcp.specs {
+			available, checked := live[spec.remote]
+			if !checked {
+				available = spec.remote.available()
+				live[spec.remote] = available
+			}
+			if !available {
+				continue
+			}
+			if _, shadowed := b.reg[name]; !shadowed {
+				out = append(out, PublicSpec{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters})
+			}
+		}
+		b.mcp.mu.RUnlock()
 	}
 	b.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -371,8 +414,6 @@ func (b *Broker) decide(ctx context.Context, req Request) (Spec, security.Decisi
 	return spec, decision, nil
 }
 
-func sortStrings(in []string) { sort.Strings(in) }
-
 // Invoke validates, authorizes, charges, and only then executes.
 // A denied or invalid call does not charge and does not execute.
 // Budget is checked after permission so a rejection does not burn the ledger,
@@ -409,8 +450,7 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 	if spec.Execute == nil {
 		return Result{Error: domain.E(domain.CodeToolError, "tool has no executor")}, nil
 	}
-	execCtx := context.WithValue(ctx, requestKey, req)
-	data, err := spec.Execute(execCtx, req.Args)
+	data, err := executeTool(context.WithValue(ctx, requestKey, req), spec, req)
 	if err != nil {
 		return Result{Dispatched: true, Data: data, Error: asDomain(err), UncertainOutcome: errors.Is(err, domain.ErrUncertainOutcome)}, nil
 	}
@@ -424,6 +464,15 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	return Result{OK: true, Data: data, Dispatched: true}, nil
+}
+
+func executeTool(ctx context.Context, spec Spec, req Request) (json.RawMessage, error) {
+	if begin, ok := ctx.Value(dispatchObserverKey{}).(func(context.Context, Request) func()); ok {
+		if end := begin(ctx, req); end != nil {
+			defer end()
+		}
+	}
+	return spec.Execute(ctx, req.Args)
 }
 
 type idempotencyStore interface {

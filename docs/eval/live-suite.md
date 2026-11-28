@@ -1,28 +1,25 @@
-# Live-model eval suite
+# Real-model evaluation
 
-`cloud-harness eval suite --live` runs the real-model subset of the eval tasks against the configured provider. It refuses the mock provider so a live run cannot be mistaken for scripted coverage.
+`eval suite --live` runs the 10 tasks listed in `live_tasks` using the selected real provider. Approval skipping, recovery, polling and the planner/cache probes remain in the full suite. [Task catalog](tasks.json)
 
-```bash
-export OPENAI_API_KEY=sk-...
+Supply `OPENAI_API_KEY` through the environment. For an OpenAI-compatible service, set its API URL and a tool-capable model ID. Use the same endpoint, model and runtime configuration for both runs when comparing harness revisions.
+
+```sh
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export OPENAI_MODEL=gpt-4.1-mini
-cloud-harness eval suite --live --provider openai --out docs/eval/live.json
-cloud-harness eval suite --live --provider openai --compare docs/eval/live-baseline.json
+go build -o /tmp/cloud-harness ./cmd/cloud-harness
+d=$(mktemp -d)
+/tmp/cloud-harness eval suite --live --provider openai --db "$d/a/runs.db" --workspace "$d/a/work" --out "$d/a.json"
+/tmp/cloud-harness eval suite --live --provider openai --db "$d/b/runs.db" --workspace "$d/b/work" --out "$d/b.json"
+/tmp/cloud-harness eval compare "$d/a.json" "$d/b.json" > "$d/comparison.json"
+jq '{benchmark, measurements, task_metrics}' "$d/a.json"
+jq '.metrics' "$d/comparison.json"
 ```
 
-The live set is the `live_tasks` list in [tasks.json](tasks.json):
+Each run writes its report even when individual task checkers fail and the suite exits nonzero. The report includes the configured provider/model, per-task success in `task_pass`, expected and observed tool names in `task_metrics`, token coverage and wall times. Keep both JSON reports with the revisions under test. Provider usage omissions survive serialization as null measurements. [Metric definitions](baseline.md)
 
-- `dev-fix-failing-test`
-- `dev-explain-call-site`
-- `file-summarize-log`
-- `file-safe-edit`
-- `incident-service-down`
-- `batch-three-reads`
-- `retrieve-chinese-term`
-- `retrieve-path-and-id`
+Two examples of the live success criteria are a safe edit that leaves the forbidden file unchanged, and a retrieval answer that identifies both `evt_9f3a2c` and `server.go`. Either task may pass through different call sequences. The tool-choice rubric is scored independently.
 
-Harness-mechanics probes stay in the scripted suite: `batch-approval-skip`, `recover-mid-batch`, `incident-wait-for-ready`, `planner-compare`, and `cache-baseline` have scripted call-shape or multi-arm expectations that do not measure real-model behavior.
+## Available live data
 
-Live scoring keeps the same pass/fail report shape but relaxes scripted call-order assumptions where a real model can satisfy the goal differently. For example, `file-safe-edit` passes when the allowed file changes, the forbidden file is unchanged, and any forbidden write attempt is denied; a compliant model that refuses without attempting the write also passes. `retrieve-path-and-id` checks that retrieval returns `evt_9f3a2c` and the answer names `server.go`, not a fixed number of retrieval calls.
-
-Reports include `model_calls`, `tool_calls`, token totals, cache hit rate when the provider reports cached tokens, per-task pass/fail, and the usual suite comparison fields when `--compare` is used.
+The M8-3 measurements used `deepseek-v4.1-flash-free` via an OpenAI-compatible gateway. The historical full 13-task set passed 2/13 before the authorization fix, with 1–5 model calls per run. That report predates the per-task tool-choice rubric and the new rules and catalog fixtures. It contains no paired token or latency comparison for the current 10-task set. The checked-in `capabilities-v1` baseline uses scripted data. A new real-model pair requires provider credentials. [Historical calibration](live-calibration.md) · [Scripted measurements](baseline.md)

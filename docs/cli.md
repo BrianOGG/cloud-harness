@@ -978,3 +978,19 @@ Unbound or ambiguous runs are rejected. Old checkpoints without an event seq
 remain readable by existing resume behavior, but cannot be selected by rewind;
 timestamps and run versions are not treated as event seqs. Such a run can still
 use `--code-only` when its workspace binding is known.
+
+### Project rule scope
+
+Every run loads the global and workspace-root `AGENTS.md`. A successful
+`@file:path` reference also activates rules from the file’s ancestor directories.
+When a built-in file, search, diff or command tool resolves additional workspace
+paths, the executor loads the applicable ancestor rules. If this adds instructions,
+the model receives them before dispatch and can revise the proposed batch.
+Nested instructions apply only to files in that directory tree. Unrelated
+directories are not scanned for run context.
+
+Each visited source stays frozen across compaction and resume. All sources
+share the run’s 32 KiB instruction limit. The Web run inspector lists the
+applied paths, bytes and any skipped or truncated sources. Older checkpoints
+retain their original instructions. The doctor command still inventories
+available rules across the workspace.

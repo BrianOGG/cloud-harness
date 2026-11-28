@@ -119,9 +119,9 @@ func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, chang
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `
-		INSERT INTO runs(id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.WorkspaceID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), r.WorktreeBaseSHA, r.WorktreeBranch, r.WorktreePath, r.WorktreeState); err != nil {
+		INSERT INTO runs(id, parent_run_id, session_id, turn_id, workspace_id, project_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.ParentRunID, r.SessionID, r.TurnID, r.WorkspaceID, r.ProjectID, r.Status, r.WaitReason, string(budget), r.Version, r.FinalAnswer, errJSON, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), r.WorktreeBaseSHA, r.WorktreeBranch, r.WorktreePath, r.WorktreeState); err != nil {
 		return err
 	}
 	if r.ParentRunID == "" && r.TurnID != "" {
@@ -145,13 +145,13 @@ func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, chang
 
 func (db *DB) GetRun(ctx context.Context, id string) (storage.Run, error) {
 	row := db.sql.QueryRowContext(ctx, `
-		SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state
+		SELECT id, parent_run_id, session_id, turn_id, workspace_id, project_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state
 		FROM runs WHERE id = ?`, id)
 	return scanRun(row, id)
 }
 
 func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, error) {
-	q := `SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state FROM runs`
+	q := `SELECT id, parent_run_id, session_id, turn_id, workspace_id, project_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state FROM runs`
 	var (
 		rows *sql.Rows
 		err  error
@@ -180,7 +180,7 @@ func (db *DB) ListRuns(ctx context.Context, sessionID string) ([]storage.Run, er
 // ListRuns limit. It does not change run state or acquire leases.
 func (db *DB) ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]storage.Run, error) {
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state
+		SELECT id, parent_run_id, session_id, turn_id, workspace_id, project_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state
 		FROM runs WHERE status = ? ORDER BY created_at ASC, id ASC`, status)
 	if err != nil {
 		return nil, err
@@ -199,7 +199,7 @@ func (db *DB) ListRunsByStatus(ctx context.Context, status domain.RunStatus) ([]
 
 func (db *DB) ListExpiredRunningRuns(ctx context.Context, now time.Time) ([]storage.Run, error) {
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.workspace_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at, r.worktree_base_sha, r.worktree_branch, r.worktree_path, r.worktree_state
+		SELECT r.id, r.parent_run_id, r.session_id, r.turn_id, r.workspace_id, r.project_id, r.status, r.wait_reason, r.budget_json, r.version, r.final_answer, r.error_json, r.created_at, r.updated_at, r.worktree_base_sha, r.worktree_branch, r.worktree_path, r.worktree_state
 		FROM runs r
 		LEFT JOIN run_leases l ON l.run_id = r.id
 		WHERE r.status = ? AND (l.run_id IS NULL OR l.expires_at <= ?)
@@ -794,7 +794,7 @@ func scanRun(sc scanner, id string) (storage.Run, error) {
 	var r storage.Run
 	var budget, errJSON, created, updated string
 	var status, reason string
-	err := sc.Scan(&r.ID, &r.ParentRunID, &r.SessionID, &r.TurnID, &r.WorkspaceID, &status, &reason, &budget, &r.Version, &r.FinalAnswer, &errJSON, &created, &updated, &r.WorktreeBaseSHA, &r.WorktreeBranch, &r.WorktreePath, &r.WorktreeState)
+	err := sc.Scan(&r.ID, &r.ParentRunID, &r.SessionID, &r.TurnID, &r.WorkspaceID, &r.ProjectID, &status, &reason, &budget, &r.Version, &r.FinalAnswer, &errJSON, &created, &updated, &r.WorktreeBaseSHA, &r.WorktreeBranch, &r.WorktreePath, &r.WorktreeState)
 	if err != nil {
 		return storage.Run{}, mapErr(err, id)
 	}

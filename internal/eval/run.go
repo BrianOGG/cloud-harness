@@ -95,16 +95,18 @@ type Call struct {
 
 // Result is the JSON document printed by `cloud-harness eval run`.
 type Result struct {
-	Task       string          `json:"task"`
-	Status     string          `json:"status"`
-	RunID      string          `json:"run_id"`
-	WaitReason string          `json:"wait_reason,omitempty"`
-	Pass       bool            `json:"pass"`
-	ToolCalls  []Call          `json:"tool_calls"`
-	Failures   []string        `json:"failures,omitempty"`
-	Metrics    json.RawMessage `json:"metrics,omitempty"`
-	ModelCalls int             `json:"model_calls,omitempty"`
-	Usage      domain.Usage    `json:"usage"`
+	Task         string          `json:"task"`
+	Status       string          `json:"status"`
+	RunID        string          `json:"run_id"`
+	WaitReason   string          `json:"wait_reason,omitempty"`
+	Pass         bool            `json:"pass"`
+	ToolCalls    []Call          `json:"tool_calls"`
+	Failures     []string        `json:"failures,omitempty"`
+	Metrics      json.RawMessage `json:"metrics,omitempty"`
+	ModelCalls   int             `json:"model_calls,omitempty"`
+	Usage        domain.Usage    `json:"usage"`
+	Measurements TaskMetrics     `json:"measurements"`
+	coverage     coverage
 }
 
 // Options selects the task and the provider configuration.
@@ -165,6 +167,13 @@ func appendLiveDefaultGrants(grants []domain.Grant, abs string) []domain.Grant {
 
 // Run prepares the task fixture, runs the loop, and scores the trace.
 func Run(ctx context.Context, opt Options) (Result, error) {
+	start := time.Now()
+	out, err := runTask(ctx, opt)
+	out.Measurements = out.measurements(time.Since(start).Milliseconds(), err)
+	return out, err
+}
+
+func runTask(ctx context.Context, opt Options) (Result, error) {
 	out := Result{Task: opt.Task}
 	root := opt.Workspace
 	var err error
@@ -227,6 +236,15 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		return out, err
 	}
 	switch opt.Task {
+	case nestedRulesTask:
+		mgr.System = "Follow the workspace project instructions and update the requested release labels."
+		mgr.Grants = append(mgr.Grants, domain.Grant{Tool: "edit_file", Op: "call", ResourceScope: abs, State: "active", Subject: "eval"})
+	case catalogTask:
+		mgr.System = "Use the inventory tools to answer the user's metric question."
+		mgr.Grants, err = registerCatalog(ctx, broker)
+		if err != nil {
+			return out, err
+		}
 	case "recover-mid-batch":
 		mgr.CrashOnTool = "write_file"
 		mgr.Grants = append(mgr.Grants, domain.Grant{
@@ -296,41 +314,16 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 			}
 		}
 	}
-	_ = prov
 	out.Status = string(run.Status)
 	out.WaitReason = string(run.WaitReason)
 	out.RunID = run.ID
-	usage, err := sumUsage(ctx, db, run.ID)
-	if err != nil {
+	if _, _, err := out.observeRun(ctx, db, run); err != nil {
 		return out, err
-	}
-	out.ModelCalls = run.Budget.UsedModelCalls
-	out.Usage = usage
-	batches, err := db.LoadBatches(ctx, run.ID)
-	if err != nil {
-		return out, err
-	}
-	for _, batch := range batches {
-		for _, inv := range batch.Invocations {
-			call := Call{
-				Ordinal: inv.Ordinal, ProviderCallID: inv.ProviderCallID, Name: inv.Name,
-				Arguments: inv.Arguments, Status: string(inv.Status),
-			}
-			if inv.Result != nil {
-				call.OK = inv.Result.OK
-				if len(inv.Result.Data) > 0 {
-					call.ResultText = string(inv.Result.Data)
-				} else if inv.Result.Error != nil {
-					call.ResultText = inv.Result.Error.Error()
-				}
-				if inv.Result.Error != nil {
-					call.ErrorCode = inv.Result.Error.Code
-				}
-			}
-			out.ToolCalls = append(out.ToolCalls, call)
-		}
 	}
 	out.Failures = score(ctx, opt.Task, abs, run.Status, run.FinalAnswer, out.ToolCalls, !useScripted)
+	if mock, ok := prov.(*provider.Mock); useScripted && ok {
+		out.Failures = append(out.Failures, scoreScriptedContext(opt.Task, mock.Requests)...)
+	}
 	if extra := scoreHistory(ctx, db, ses.ID, opt.Task, out.ToolCalls); len(extra) > 0 {
 		out.Failures = append(out.Failures, extra...)
 	}
@@ -431,6 +424,10 @@ func build(cfg config.Config) (provider.Provider, error) {
 
 func prepare(task, root string) error {
 	switch task {
+	case nestedRulesTask:
+		return writeFiles(root, ruleFixture)
+	case catalogTask:
+		return nil
 	case "dev-fix-failing-test":
 		return writeFiles(root, map[string]string{
 			"go.mod":       devFixGoMod,
@@ -486,6 +483,10 @@ func prepare(task, root string) error {
 
 func promptFor(task, incidentURL string) string {
 	switch task {
+	case nestedRulesTask:
+		return "Apply the project release label rules to frontend/src/release.txt and backend/api/release.txt. Use the appropriate local value for each file."
+	case catalogTask:
+		return "Look up the current queue depth for the payments service in the inventory catalog. Reply with the number alone."
 	case "dev-fix-failing-test":
 		return "Read calc.go and calc_test.go, then fix the bug in calc.go so go test passes without editing calc_test.go."
 	case "dev-explain-call-site":
@@ -528,6 +529,13 @@ func writeFiles(root string, files map[string]string) error {
 
 func scriptedProvider(task, incidentURL string) (provider.Provider, bool) {
 	switch task {
+	case nestedRulesTask:
+		return rulesScript(), true
+	case catalogTask:
+		return &provider.Mock{Responses: []domain.ModelResponse{
+			toolCalls(call("find", "search_mcp_tools", `{"query":"payments queue depth"}`)),
+			toolCalls(call("metric", catalogTool, `{}`)), textResp("604"),
+		}}, true
 	case "dev-fix-failing-test":
 		return &provider.Mock{Responses: []domain.ModelResponse{
 			toolCalls(
@@ -632,6 +640,10 @@ func textResp(text string) domain.ModelResponse {
 
 func score(ctx context.Context, task, abs string, status domain.RunStatus, answer string, calls []Call, live bool) []string {
 	switch task {
+	case nestedRulesTask:
+		return scoreNestedRules(abs, status)
+	case catalogTask:
+		return scoreCatalog(status, answer, calls)
 	case "dev-fix-failing-test":
 		if live {
 			return scoreLiveDevFixFailingTest(ctx, abs, status, calls)

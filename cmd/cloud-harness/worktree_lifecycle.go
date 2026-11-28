@@ -255,6 +255,20 @@ func cmdWorktrees(args []string, stdout, stderr io.Writer) int {
 			return err
 		}
 		defer func() { _ = db.Close() }()
+		// Serialize Git mutation with reviewed-file restores in other processes.
+		owner := domain.NewID("lifecycle_")
+		now := time.Now().UTC()
+		if _, err := db.AcquireLease(ctx, runID, owner, now, now.Add(1*time.Hour)); err != nil {
+			return err
+		}
+		defer func() { _ = db.ReleaseLease(context.WithoutCancel(ctx), runID, owner) }()
+		current, err := db.GetRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if current.Version != run.Version {
+			return errors.New("worktree lifecycle changed; retry")
+		}
 		if action == "discard" {
 			if selected.State != "merged" && selected.State != "discarded" && !force {
 				return errors.New("unmerged worktree; discard requires explicit --force (including committed or empty pending runs)")

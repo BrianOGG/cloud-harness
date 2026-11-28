@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/hooks"
 	"github.com/BrianOGG/cloud-harness/internal/notify"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
+	"github.com/BrianOGG/cloud-harness/internal/rules"
 	"github.com/BrianOGG/cloud-harness/internal/runtime"
 	"github.com/BrianOGG/cloud-harness/internal/security"
 	workspacesnapshot "github.com/BrianOGG/cloud-harness/internal/snapshot"
@@ -193,6 +193,7 @@ func (m *Manager) RunMessageWithImages(ctx context.Context, sessionID, message s
 
 // RunOptions applies to one run. Plan restricts the model to read-only tools.
 type RunOptions struct {
+	ExplicitSkill     *contextpkg.LoadedSkill
 	PreferencesUpdate *storage.SessionPreferencesUpdate
 	Images            []provider.Image
 	Plan              bool
@@ -261,6 +262,9 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 			return storage.Run{}, err
 		}
 		run.WorkspaceID = workspaceID
+		// Runs may proceed without an accessible workspace. In that case
+		// leave project memory unbound rather than loading another scope.
+		run.ProjectID, _ = m.MemoryProjectID(ctx)
 	}
 	if err := m.Store.CreateTurn(ctx, turn); err != nil {
 		return storage.Run{}, err
@@ -405,22 +409,20 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		}
 	}
 	userMessage := message
+	var ruleTargets []string
 	expandedMessage, references, refErr := contextpkg.ExpandReferences(message, m.Workspace,
 		func(absPath string) ([]byte, error) {
-			if policy != nil {
-				decision := policy.Evaluate(security.PolicyRequest{Tool: "read_file", Paths: []string{absPath}, FileRead: true})
-				if decision.Effect == security.EffectDeny {
-					return nil, domain.E(domain.CodeAuthDenied, decision.Reason())
-				}
+			target, decision, err := policy.ResolveFileRead(absPath)
+			if err != nil {
+				return nil, err
+			}
+			if decision.Effect == security.EffectDeny {
+				return nil, domain.E(domain.CodeAuthDenied, decision.Reason())
 			}
 			if m.Broker == nil {
 				return nil, domain.E(domain.CodeToolError, "workspace file reader is unavailable")
 			}
-			rel, err := filepath.Rel(m.Workspace, absPath)
-			if err != nil {
-				return nil, err
-			}
-			args, _ := json.Marshal(map[string]string{"path": filepath.ToSlash(rel)})
+			args, _ := json.Marshal(map[string]string{"path": target})
 			result, err := m.Broker.Invoke(ctx, tools.Request{
 				RunID: run.ID, SessionID: run.SessionID, InvocationID: domain.NewID("inv_ref_"),
 				Tool: "read_file", Args: args, Now: m.now(),
@@ -437,6 +439,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 			if err := json.Unmarshal(result.Data, &body); err != nil {
 				return nil, err
 			}
+			ruleTargets = append(ruleTargets, target)
 			return []byte(body.Content), nil
 		},
 		func(staged bool) (string, error) {
@@ -479,6 +482,23 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 	for _, ref := range references {
 		_ = m.event(ctx, run.ID, "context.reference", ref)
 	}
+	if run.ParentRunID == "" && run.ProjectID != "" {
+		memory, err := m.confirmedMemoryContext(ctx, run.ProjectID)
+		if err != nil {
+			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		}
+		if memory != "" {
+			recent = append([]contextpkg.Message{{Role: "user", Content: memory}}, recent...)
+		}
+	}
+	if skill := opts.ExplicitSkill; skill != nil {
+		// Keep the file at user authority and outside @file/@diff expansion.
+		task := strings.TrimPrefix(userMessage, "/skill "+skill.Name)
+		userMessage = "Apply the explicitly requested skill " + skill.Name + ":\n\n" + skill.Content
+		if task = strings.TrimPrefix(task, " "); task != "" {
+			userMessage += "\n\nUser task:\n" + task
+		}
+	}
 	asm := contextpkg.Assemble(system, digest, mem.Prompt(), recent, userMessage)
 	prefixN := len(asm.StaticPrefix)
 	userAt := prefixN + len(asm.DynamicSuffix) - 1
@@ -499,11 +519,18 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
 	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode, reasoningEffort: opts.ReasoningEffort}
+	st.sensitive = slices.ContainsFunc(ruleTargets, tools.SensitivePath)
 	for _, ref := range references {
-		if ref.Type == "file" && tools.SensitivePath(ref.Path) {
+		if ref.Type != "file" {
+			continue
+		}
+		if tools.SensitivePath(ref.Path) {
 			st.sensitive = true
 		}
 	}
+	st.ruleScope = &rules.Scope{}
+	messages = m.injectProjectRules(ctx, run, messages, st, ruleTargets)
+	messages = m.injectSkillCatalog(messages, st)
 	if opts.Plan {
 		st.planTools = m.registerPlanTools()
 	}

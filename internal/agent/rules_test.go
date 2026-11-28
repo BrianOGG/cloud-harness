@@ -89,13 +89,16 @@ func TestProjectRulesFrozenAcrossCompactionAndRestartedResume(t *testing.T) {
 	}
 	ruleText := first.Prefix[2].Content
 	previous := -1
-	for _, source := range []string{"global", "AGENTS.md", "z/AGENTS.md", "a/b/AGENTS.md"} {
+	for _, source := range []string{"global", "AGENTS.md"} {
 		marker := "<!-- AGENTS.md: " + source + " -->"
 		at := strings.Index(ruleText, marker)
 		if at <= previous || strings.Count(ruleText, marker) != 1 {
 			t.Fatalf("source order/dedup failed for %q: %s", source, ruleText)
 		}
 		previous = at
+	}
+	if strings.Contains(ruleText, "shallow rule") || strings.Contains(ruleText, "deep rule") {
+		t.Fatal("unrelated directory injected at startup")
 	}
 	wantPrefix, err := json.Marshal(first.Prefix)
 	if err != nil {
@@ -134,7 +137,7 @@ func TestProjectRulesFrozenAcrossCompactionAndRestartedResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded := assertRulesLoadedEvent(t, events, 4)
+	loaded := assertRulesLoadedEvent(t, events, 2)
 	for i, file := range loaded {
 		if file.Path != paths[i] || file.Bytes != int64(len(bodies[i])) {
 			t.Fatalf("loaded source %d=%+v", i, file)
@@ -144,7 +147,7 @@ func TestProjectRulesFrozenAcrossCompactionAndRestartedResume(t *testing.T) {
 	if next, err := restarted.RunMessage(ctx, session.ID, "next turn"); err != nil || next.Status != domain.RunCompleted {
 		t.Fatalf("next run=%+v err=%v", next, err)
 	}
-	if nextPrefix := messageText(restartedProvider.Requests[1].Prefix); !strings.Contains(nextPrefix, "changed after run startup") || !strings.Contains(nextPrefix, "newly discovered rule") {
+	if nextPrefix := messageText(restartedProvider.Requests[1].Prefix); !strings.Contains(nextPrefix, "changed after run startup") || strings.Contains(nextPrefix, "newly discovered rule") {
 		t.Fatalf("new run did not refresh rules: %s", nextPrefix)
 	}
 }
@@ -166,8 +169,8 @@ func assertRulesLoadedEvent(t *testing.T, events []storage.Event, wantFiles int)
 			t.Fatalf("loaded payload=%s", event.Payload)
 		}
 		for _, file := range payload["files"] {
-			if len(file) != 2 || file["path"] == nil || file["bytes"] == nil {
-				t.Fatalf("rules.loaded exposed more than paths and sizes: %s", event.Payload)
+			if len(file) != 3 || file["path"] == nil || file["bytes"] == nil || file["source"] == nil {
+				t.Fatalf("rules.loaded invalid source metadata: %s", event.Payload)
 			}
 		}
 		var decoded struct {
@@ -245,11 +248,12 @@ func TestUnreadableProjectRulesDoNotFailRun(t *testing.T) {
 		t.Skip("this user can bypass filesystem read permissions; deterministic permission-error coverage is in internal/rules")
 	}
 	writeAgentRule(t, filepath.Join(root, "src/AGENTS.md"), "readable rule")
+	writeAgentRule(t, filepath.Join(root, "src/file.txt"), "data")
 	session, err := m.CreateSession(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := m.RunMessage(ctx, session.ID, "hello")
+	run, err := m.RunMessage(ctx, session.ID, "@file:src/file.txt")
 	if err != nil || run.Status != domain.RunCompleted {
 		t.Fatalf("unreadable rule failed run=%+v err=%v", run, err)
 	}
@@ -275,20 +279,21 @@ func TestProjectRulesTruncationEventAndBudgetResume(t *testing.T) {
 	mock := &provider.Mock{Responses: []domain.ModelResponse{textOnly("done")}}
 	m, db, root := testManager(t, mock)
 	m.UseBudget = true
-	m.InitialBudget = domain.Budget{MaxModelCalls: 0}
+	m.InitialBudget = domain.Budget{MaxModelCalls: 0, MaxToolCalls: 1}
 	m.ContextTokenLimit = 1
 	writeAgentRule(t, filepath.Join(root, "AGENTS.md"), strings.Repeat("rule ", 10*1024))
 	writeAgentRule(t, filepath.Join(root, "src/AGENTS.md"), "omitted rule body")
+	writeAgentRule(t, filepath.Join(root, "src/file.txt"), "data")
 	session, err := m.CreateSession(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := m.RunMessage(ctx, session.ID, "hello")
+	run, err := m.RunMessage(ctx, session.ID, "@file:src/file.txt")
 	if err != nil || run.WaitReason != domain.WaitBudget || len(mock.Requests) != 0 {
 		t.Fatalf("initial budget wait=%+v err=%v", run, err)
 	}
 	snap, err := m.loadCheckpoint(ctx, run.ID)
-	if err != nil || len(snap.Messages) != 4 || len(snap.Messages[2].Content) > rules.MaxBytes || !strings.Contains(snap.Messages[2].Content, "AGENTS.md truncated") || !strings.Contains(snap.Messages[2].Content, "src/AGENTS.md") {
+	if err != nil || len(snap.Messages) != 5 || len(snap.Messages[2].Content) > rules.MaxBytes || !strings.Contains(snap.Messages[2].Content, "AGENTS.md truncated") || !strings.Contains(snap.Messages[2].Content, "src/AGENTS.md") {
 		t.Fatalf("truncated rules not checkpointed: err=%v", err)
 	}
 	writeAgentRule(t, filepath.Join(root, "AGENTS.md"), "changed while waiting for budget")
@@ -310,4 +315,95 @@ func TestProjectRulesTruncationEventAndBudgetResume(t *testing.T) {
 		}
 	}
 	t.Fatal("missing truncated-source diagnostic")
+}
+
+func TestNewDirectoryRulesReachModelBeforeWrite(t *testing.T) {
+	isolateRuleConfig(t)
+	ctx := context.Background()
+	mock := &provider.Mock{Responses: []domain.ModelResponse{
+		toolResp(domain.ToolCall{ProviderCallID: "first", Name: "write_file", Arguments: []byte(`{"path":"web/app.txt","content":"wrong"}`)}),
+		toolResp(domain.ToolCall{ProviderCallID: "confirm", Name: "ask_user", Arguments: []byte(`{"question":"Continue?"}`)}),
+		textOnly("read the rule"),
+	}}
+	m, _, root := testManager(t, mock)
+	m.SkipPlanner = true
+	writeAgentRule(t, filepath.Join(root, "web/AGENTS.md"), "consult design before writing")
+	writeAgentRule(t, filepath.Join(root, "api/AGENTS.md"), "backend only")
+	session, err := m.CreateSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(ctx, session.ID, "update the app")
+	if err != nil || run.WaitReason != domain.WaitUser || len(mock.Requests) != 2 {
+		t.Fatalf("run=%+v err=%v requests=%d", run, err, len(mock.Requests))
+	}
+	if _, err := os.Stat(filepath.Join(root, "web/app.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected write or stat failure: %v", err)
+	}
+	before, after := messageText(mock.Requests[0].Prefix), messageText(mock.Requests[1].Prefix)
+	if strings.Contains(before, "consult design") || !strings.Contains(after, "consult design") || strings.Contains(after, "backend only") || len(mock.Requests[1].Continuation) > 0 {
+		t.Fatalf("wrong directory scope before/after replan: %s", after)
+	}
+	writeAgentRule(t, filepath.Join(root, "web/AGENTS.md"), "changed on disk")
+	run, err = m.Resume(ctx, run.ID, ResumeInput{Answer: "yes"})
+	if err != nil || run.Status != domain.RunCompleted || messageText(mock.Requests[2].Prefix) != after {
+		t.Fatalf("resumed run changed activated rules: %+v err=%v", run, err)
+	}
+}
+
+func TestRuleTargetsExactCommandUsesWorkingDirectory(t *testing.T) {
+	m, _, root := testManager(t, &provider.Mock{})
+	work := filepath.Join(root, "nested")
+	if err := os.Mkdir(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	args := json.RawMessage(`{"cwd":"nested","command":"printf ready | cat"}`)
+	targets := m.ruleTargets(domain.Batch{Invocations: []domain.Invocation{{Name: "run_command", Arguments: args}}}, &loopState{approvalMode: "full-auto"})
+	if len(targets) != 1 || targets[0] != work {
+		t.Fatalf("rule targets = %v, want %s", targets, work)
+	}
+}
+
+func TestRuleTargetsPollHonorsOuterAndInnerToolAccess(t *testing.T) {
+	m, _, root := testManager(t, &provider.Mock{})
+	m.Depth = 1
+	batch := domain.Batch{Invocations: []domain.Invocation{{Name: "poll_tool", Arguments: json.RawMessage(`{"target_tool":"read_file","target_args":{"path":"web/page.txt"},"max_attempts":1}`)}}}
+	for _, allowed := range [][]string{{"read_file"}, {"poll_tool"}, {"poll_tool", "read_file"}} {
+		m.AllowedTools = allowed
+		paths := m.ruleTargets(batch, &loopState{})
+		if len(allowed) == 2 {
+			if len(paths) != 1 || paths[0] != filepath.Join(root, "web/page.txt") {
+				t.Errorf("poll targets = %v", paths)
+			}
+		} else if len(paths) != 0 {
+			t.Errorf("restricted poll loaded %v", paths)
+		}
+	}
+}
+
+func TestExplicitFileReferenceUsesTargetDirectoryRules(t *testing.T) {
+	global := isolateRuleConfig(t)
+	putAgentPolicy(t, filepath.Join(global, "policy.json"), `{"rules":[
+		{"tool":"read_file","path_glob":"version","effect":"allow"},
+		{"tool":"read_file","path_glob":"api/version.txt","effect":"deny"}
+	]}`)
+	mock := &provider.Mock{Responses: []domain.ModelResponse{textOnly("done")}}
+	m, _, root := testManager(t, mock)
+	writeAgentRule(t, filepath.Join(root, "api/AGENTS.md"), "API formatting rule")
+	writeAgentRule(t, filepath.Join(root, "api/version.txt"), "release number 9")
+	if err := os.Symlink("api/version.txt", filepath.Join(root, "version")); err != nil {
+		t.Fatal(err)
+	}
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(t.Context(), session.ID, "@file:version")
+	if err != nil || run.Status != domain.RunCompleted {
+		t.Fatalf("run=%v err=%v", run.Status, err)
+	}
+	req := mock.Requests[0]
+	if !strings.Contains(messageText(req.Prefix), "API formatting rule") || !strings.Contains(messageText(req.Messages), "release number 9") {
+		t.Fatal("file reference missing target rule or content")
+	}
 }

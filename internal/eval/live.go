@@ -23,6 +23,8 @@ var LiveTasks = []string{
 	"batch-three-reads",
 	"retrieve-chinese-term",
 	"retrieve-path-and-id",
+	nestedRulesTask,
+	catalogTask,
 }
 
 // LiveSuite runs the real-model task subset. It requires a non-mock provider so

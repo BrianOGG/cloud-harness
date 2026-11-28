@@ -91,8 +91,8 @@ within one process; do not run concurrent lifecycle CLI processes against one
 repository. `doctor` reports orphans and `retain --prune-runs-days` can reclaim
 them. See [worktree lifecycle](docs/cli.md#worktrees) for states and recovery.
 
-Local stdio MCP servers listed under `servers` in the configuration file are
-started by `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Their tools
+Local stdio and remote Streamable HTTP MCP servers listed under `servers` are
+connected by `serve`, `run`, `chat`, `runs resume`, and `runs recover`. Their tools
 appear to the model as `mcp.<server>.<tool>` and go through the same policy,
 approval, budget, hook, and audit path as built-in tools; by default every call
 waits for approval. A server that fails to start is skipped with a warning, and
@@ -200,6 +200,8 @@ Web 会话按 `turn_id` / `run_id` 投影为一轮：用户输入与根运行终
 `final_answer` 默认显示，已处理审批、工具细节、中间文本与子运行收进默认关闭的过程摘要。
 历史审计仍完整保留；刷新、重连和恢复使用相同规则。真正待审批的操作、用户提问、
 预算暂停与结果待确认继续在折叠区外显示，失败或无最终答复时如实显示状态。
+
+在历史答复下点「存为项目记忆」，填写事实或决定并确认保存。也可以先选中答复中的一句话作为草稿。打开「设置 → 项目记忆」可以查看来源、修改或删除。同库同项目的后续对话会收到最近确认的记忆，最多 12 条、共 4 KiB。只有确认的文本进入项目记忆。
 
 Composer 的审批选择明确作用于**下一轮**；进行中的回合展示自己的运行快照，
 切换偏好不会放行或重放当前调用。模式 ID 与后端权限不变：`ask` 显示“按策略确认”，

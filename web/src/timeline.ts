@@ -19,7 +19,7 @@ export interface Work {
 
 type Payload = Record<string, unknown>;
 
-function payload(data: string): Payload {
+export function eventPayload(data: string): Payload {
   try {
     const value = JSON.parse(data) as unknown;
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Payload) : {};
@@ -60,7 +60,7 @@ export function buildWork(events: HarnessEvent[]): Work {
   };
 
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
-    const data = payload(event.data);
+    const data = eventPayload(event.data);
     if (event.type === 'model.completed') {
       response += 1;
       const item = {
@@ -102,7 +102,7 @@ export function buildWork(events: HarnessEvent[]): Work {
 
 // The text a `stream.delta` block carries.
 export function deltaText(data: string): string {
-  const value = payload(data);
+  const value = eventPayload(data);
   return text(value.text) || text(value.delta) || text(value.content);
 }
 

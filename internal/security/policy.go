@@ -265,7 +265,31 @@ func parseRules(file string, raw []byte) ([]Rule, error) {
 	return rules, nil
 }
 
+type policyTarget struct {
+	lexical, resolved string
+}
+
+// ResolveFileRead evaluates an explicit workspace reference as one file under
+// both names and returns the destination to use for the authorized read.
+func (p *Policy) ResolveFileRead(absPath string) (string, PolicyDecision, error) {
+	target, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", PolicyDecision{}, err
+	}
+	req := PolicyRequest{Tool: "read_file", FileRead: true}
+	return target, p.evaluate(req, []policyTarget{{lexical: absPath, resolved: target}}), nil
+}
+
 func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
+	targets := make([]policyTarget, 0, len(req.Paths))
+	for _, path := range req.Paths {
+		lexical, resolved := p.targetPaths(path)
+		targets = append(targets, policyTarget{lexical, resolved})
+	}
+	return p.evaluate(req, targets)
+}
+
+func (p *Policy) evaluate(req PolicyRequest, targets []policyTarget) PolicyDecision {
 	d := PolicyDecision{Effect: EffectAsk, Source: "default", Tool: req.Tool, Rule: "no matching policy rule; use existing permissions"}
 	if req.Command != "" {
 		d.CommandSHA256 = policyHash(req.Command)
@@ -273,9 +297,8 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 	// Harness control files are not configurable: a rule that allowed them
 	// would let the agent rewrite the rules, hooks and audit data it runs under.
 	if req.FileRead || req.FileWrite {
-		for _, target := range req.Paths {
-			lexical, resolved := p.targetPaths(target)
-			if ControlPath(p.Workspace, lexical) || ControlPath(p.Workspace, resolved) {
+		for _, target := range targets {
+			if ControlPath(p.Workspace, target.lexical) || ControlPath(p.Workspace, target.resolved) {
 				d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, "builtin", 3, "file access to .cloud-harness/** (harness control files)"
 				return d
 			}
@@ -292,7 +315,7 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 	if strings.ContainsAny(req.Command, ";&|\n\r()`") {
 		for _, layer := range layers {
 			for i, rule := range layer.rules {
-				if rule.Effect == EffectDeny && rule.CommandPrefix != "" && p.matches(rule, req) {
+				if rule.Effect == EffectDeny && rule.CommandPrefix != "" && p.matches(rule, req, targets) {
 					d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, layer.name, i+1, ruleSummary(rule)
 					return d
 				}
@@ -306,22 +329,21 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 			if layer.name == "workspace" && !trusted && rule.Effect != EffectDeny {
 				continue
 			}
-			if p.matches(rule, req) {
+			if p.matches(rule, req, targets) {
 				d.Effect, d.Source, d.RuleIndex, d.Rule = rule.Effect, layer.name, i+1, ruleSummary(rule)
 				return d
 			}
 		}
 	}
-	for _, target := range req.Paths {
-		lexical, resolved := p.targetPaths(target)
-		for _, name := range []string{lexical, resolved} {
+	for _, target := range targets {
+		for _, name := range []string{target.lexical, target.resolved} {
 			base := filepath.Base(name)
 			if req.FileRead && base != ".env.example" && (base == ".env" || strings.HasPrefix(base, ".env.")) {
 				d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, "builtin", 1, "file read matches **/.env or **/.env.* (except .env.example)"
 				return d
 			}
 		}
-		if req.FileWrite && (!inside(p.Workspace, lexical) || !inside(resolvePolicyPath(p.Workspace), resolved)) {
+		if req.FileWrite && (!inside(p.Workspace, target.lexical) || !inside(resolvePolicyPath(p.Workspace), target.resolved)) {
 			d.Effect, d.Source, d.RuleIndex, d.Rule = EffectDeny, "builtin", 2, "file write target is outside the workspace"
 			return d
 		}
@@ -329,7 +351,7 @@ func (p *Policy) Evaluate(req PolicyRequest) PolicyDecision {
 	return d
 }
 
-func (p *Policy) matches(rule Rule, req PolicyRequest) bool {
+func (p *Policy) matches(rule Rule, req PolicyRequest, targets []policyTarget) bool {
 	if rule.Tool != "*" && rule.Tool != req.Tool {
 		return false
 	}
@@ -341,12 +363,11 @@ func (p *Policy) matches(rule Rule, req PolicyRequest) bool {
 	if rule.PathGlob == "" {
 		return true
 	}
-	if len(req.Paths) == 0 {
+	if len(targets) == 0 {
 		return false
 	}
-	for _, target := range req.Paths {
-		lexical, resolved := p.targetPaths(target)
-		matched := p.matchesPath(rule.PathGlob, lexical) || p.matchesPath(rule.PathGlob, resolved)
+	for _, target := range targets {
+		matched := p.matchesPath(rule.PathGlob, target.lexical) || p.matchesPath(rule.PathGlob, target.resolved)
 		// An allow for one resource must not authorize other targets in the call.
 		if rule.Effect == EffectAllow && !matched {
 			return false

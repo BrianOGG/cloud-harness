@@ -38,6 +38,11 @@ type runSnapshotStore struct {
 }
 
 func (s runSnapshotStore) CreateWorkspaceSnapshot(ctx context.Context, rec storage.WorkspaceSnapshot) (storage.WorkspaceSnapshot, error) {
+	// During Execute the invocation is RUNNING. These review points capture
+	// code only and cannot serve as chat rewind boundaries.
+	if strings.Contains(rec.Label, "/exec_") {
+		return s.RecordStore.CreateWorkspaceSnapshot(ctx, rec)
+	}
 	if events, err := s.events.ListEvents(ctx, s.runID, 0); err == nil {
 		for _, ev := range events {
 			if ev.Persistent && ev.Seq > 0 && (rec.EventSeq == nil || ev.Seq > *rec.EventSeq) {
@@ -152,14 +157,6 @@ func (m *Manager) batchHasSideEffects(batch *domain.Batch) bool {
 	return false
 }
 
-type snapshotDispatchKey struct{}
-
-func (m *Manager) recordSnapshotDispatch(ctx context.Context, inv domain.Invocation, res tools.Result) {
-	if executed, ok := ctx.Value(snapshotDispatchKey{}).(*bool); ok && res.Dispatched && m.invocationHasSideEffects(inv) {
-		*executed = true
-	}
-}
-
 // Both initial dispatch and approval resume pass here. Only actual broker
 // execution triggers post: denials, validation errors and cached results do not.
 func (m *Manager) driveBatch(ctx context.Context, run storage.Run, batch *domain.Batch, st *loopState) error {
@@ -181,7 +178,18 @@ func (m *Manager) driveBatch(ctx context.Context, run storage.Run, batch *domain
 		m.takeWorkspaceSnapshot(ctx, run, st, "pre")
 	}
 	executed := false
-	ctx = context.WithValue(ctx, snapshotDispatchKey{}, &executed)
+	// Keep batch checkpoints for CLI rewind. Review needs a fresh baseline
+	// for each actual mutation, including nested script calls and retries
+	// that reuse an invocation ID after a wait or process restart.
+	ctx = tools.WithDispatchObserver(ctx, func(callCtx context.Context, req tools.Request) func() {
+		if req.RunID != run.ID || !m.invocationHasSideEffects(domain.Invocation{Name: req.Tool, Arguments: req.Args}) {
+			return nil
+		}
+		executed = true
+		attempt := domain.NewID("exec_")
+		m.takeWorkspaceSnapshot(callCtx, run, st, attempt+"/pre")
+		return func() { m.takeWorkspaceSnapshot(context.WithoutCancel(callCtx), run, st, attempt+"/post") }
+	})
 	defer func() {
 		if executed {
 			m.takeWorkspaceSnapshot(context.WithoutCancel(ctx), run, st, "post")

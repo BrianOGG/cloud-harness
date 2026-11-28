@@ -128,6 +128,7 @@ const usage = `Cloud Harness M5
   cloud-harness compact --session ID [--db path] [--workspace dir] [--provider mock|openai|openai-responses|anthropic]
   cloud-harness eval run --task TASK [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir]
   cloud-harness eval suite [--live] [--provider mock|openai|openai-responses|anthropic] [--db path] [--workspace dir] [--out path] [--compare path]
+  cloud-harness eval compare BASELINE.json CURRENT.json
   cloud-harness runs list [--session ID] [--db path]
   cloud-harness runs inspect RUN_ID
   cloud-harness runs cancel RUN_ID
@@ -463,6 +464,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	srv := (&transport.Server{
 		ModelsDev: catalog,
 		Manager:   mgr, Models: configuredModelOptions(cfg), ProviderSettings: providerStore, Token: cfg.HTTPToken, Stats: diagnostics.stats, Doctor: diagnostics.doctor,
+		MCP:          mcpSet,
 		LoopbackBind: loopback, AllowedHosts: cfg.HTTPAllowedHosts,
 	}).NewHTTPServer(cfg.ListenAddr)
 	errCh := make(chan error, 1)
@@ -1011,8 +1013,11 @@ def main():
 }
 
 func cmdEval(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "compare" {
+		return cmdEvalCompare(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || (args[0] != "run" && args[0] != "suite") {
-		_, _ = fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite [--live]")
+		_, _ = fmt.Fprintln(stderr, "eval run --task TASK [--provider openai] | eval suite [--live] | eval compare BASELINE.json CURRENT.json")
 		return 2
 	}
 	if args[0] == "suite" {

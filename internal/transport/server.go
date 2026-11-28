@@ -20,6 +20,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/domain"
 	"github.com/BrianOGG/cloud-harness/internal/provider"
 	"github.com/BrianOGG/cloud-harness/internal/storage"
+	"github.com/BrianOGG/cloud-harness/internal/tools"
 	"github.com/BrianOGG/cloud-harness/internal/trace"
 )
 
@@ -57,6 +58,7 @@ type Server struct {
 	PollInterval      time.Duration
 	Stats             http.HandlerFunc
 	Doctor            http.HandlerFunc
+	MCP               *tools.MCPSet
 	// LoopbackBind is set when the listener is bound to a loopback address.
 	// The Host header must then name a loopback address or an AllowedHosts entry.
 	LoopbackBind bool
@@ -160,6 +162,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /v1/models", s.models)
+	mux.HandleFunc("GET /v1/skills", s.skills)
 	mux.HandleFunc("GET /v1/providers", s.customProviders)
 	mux.HandleFunc("PUT /v1/providers", s.customProviders)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.deleteCustomProvider)
@@ -168,6 +171,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/providers/{id}/refresh-models", s.refreshCustomProviderModels)
 	mux.HandleFunc("GET /v1/sessions/{id}/settings", s.sessionSettings)
 	mux.HandleFunc("PUT /v1/sessions/{id}/settings", s.sessionSettings)
+	mux.HandleFunc("GET /v1/project-memories", s.projectMemories)
+	mux.HandleFunc("POST /v1/project-memories", s.projectMemories)
+	mux.HandleFunc("PUT /v1/project-memories/{id}", s.projectMemories)
+	mux.HandleFunc("DELETE /v1/project-memories/{id}", s.projectMemories)
 	mux.HandleFunc("GET /approval", serveApprovalPage)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -180,18 +187,28 @@ func (s *Server) Handler() http.Handler {
 	if s.Stats != nil {
 		mux.HandleFunc("GET /v1/stats", s.Stats)
 	}
+	s.mcpRoutes(mux)
 	if s.Doctor != nil {
 		mux.HandleFunc("GET /v1/doctor", s.Doctor)
 	}
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /v1/runs/{id}/events", s.events)
 	mux.HandleFunc("GET /v1/runs/{id}/trace", s.traceRun)
+	mux.HandleFunc("GET /v1/runs/{id}/changes", s.runChanges)
+	mux.HandleFunc("GET /v1/runs/{id}/changes/diff", s.runFileDiff)
+	mux.HandleFunc("POST /v1/runs/{id}/changes/restore", s.restoreRunFile)
 	mux.HandleFunc("POST /v1/runs/{id}/responses", s.respond)
 	mux.HandleFunc("POST /v1/runs/{id}/answer", s.answer)
 	mux.HandleFunc("POST /v1/runs/{id}/budget", s.budget)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 
 	return s.guard(withUI(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OAuth redirects come from the authorization server without an API bearer.
+		// Only the callback accepts them, with PKCE, one-time state and a browser cookie.
+		if r.Method == http.MethodGet && r.URL.Path == mcpCallbackPath {
+			s.mcpCallback(w, r)
+			return
+		}
 		if tok := s.token(); tok != "" && r.URL.Path != "/healthz" && r.URL.Path != "/approval" {
 			if !checkBearerToken(r.Header.Get("Authorization"), tok) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="cloud-harness"`)
@@ -303,6 +320,7 @@ func (s *Server) listSessionRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Skill           string `json:"skill"`
 		Message         string `json:"message"`
 		ModelID         string `json:"model_id"`
 		ReasoningEffort string `json:"reasoning_effort"`
@@ -312,7 +330,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if stringsTrim(body.Message) == "" {
+	if stringsTrim(body.Message) == "" && body.Skill == "" {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "message is required"))
 		return
 	}
@@ -358,6 +376,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	opts := agent.RunOptions{
 		ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel,
 		ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort,
+	}
+	if body.Skill != "" {
+		opts.ExplicitSkill, body.Message, err = s.loadRequestedSkill(body.Skill, body.Message)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	next := prefs
 	next.ModelID, next.ApprovalMode, next.ReasoningEffort = body.ModelID, body.ApprovalMode, body.ReasoningEffort

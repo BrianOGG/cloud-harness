@@ -14,15 +14,17 @@ type runKeyType struct{}
 
 var runKey runKeyType
 
+type pollArguments struct {
+	TargetTool      string          `json:"target_tool"`
+	TargetArgs      json.RawMessage `json:"target_args"`
+	Until           tools.Until     `json:"until"`
+	IntervalSeconds float64         `json:"interval_seconds"`
+	MaxAttempts     int             `json:"max_attempts"`
+	TimeoutSeconds  float64         `json:"timeout_seconds"`
+}
+
 func (m *Manager) executePoll(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	var body struct {
-		TargetTool      string          `json:"target_tool"`
-		TargetArgs      json.RawMessage `json:"target_args"`
-		Until           tools.Until     `json:"until"`
-		IntervalSeconds float64         `json:"interval_seconds"`
-		MaxAttempts     int             `json:"max_attempts"`
-		TimeoutSeconds  float64         `json:"timeout_seconds"`
-	}
+	var body pollArguments
 	if err := json.Unmarshal(args, &body); err != nil {
 		return nil, domain.E(domain.CodeInvalidArgument, "poll arguments are not JSON")
 	}
@@ -111,7 +113,6 @@ func (m *Manager) executeProgram(ctx context.Context, args json.RawMessage) (jso
 		res, callErr := m.invokeNestedHooked(callCtx, tools.Request{
 			RunID: runID, SessionID: sessionID, Tool: tool, Args: toolArgs, Now: m.now(),
 		})
-		m.recordSnapshotDispatch(callCtx, domain.Invocation{Name: tool, Arguments: toolArgs}, res)
 		if callErr != nil {
 			return false, nil, asDomain(callErr)
 		}

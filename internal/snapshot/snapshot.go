@@ -75,6 +75,16 @@ var workspaceLocks sync.Map
 // unavailable it still returns a snapshotter so callers can report Status;
 // operations then return an UnavailableError.
 func Open(workspace string, store RecordStore) (*Snapshotter, error) {
+	return open(workspace, store, true)
+}
+
+// OpenExisting binds a historical review without initializing or recreating
+// a shadow repository (including one removed by worktree cleanup).
+func OpenExisting(workspace string, store RecordStore) (*Snapshotter, error) {
+	return open(workspace, store, false)
+}
+
+func open(workspace string, store RecordStore, initialize bool) (*Snapshotter, error) {
 	if store == nil {
 		return nil, errors.New("snapshot record store is required")
 	}
@@ -105,7 +115,11 @@ func Open(workspace string, store RecordStore) (*Snapshotter, error) {
 	}
 	snapshotter.mu.Lock()
 	defer snapshotter.mu.Unlock()
-	if gitErr == nil {
+	if !initialize {
+		if _, err := os.Stat(filepath.Join(shadowDir, "HEAD")); err != nil {
+			return nil, err
+		}
+	} else if gitErr == nil {
 		if err := snapshotter.ensureGit(context.Background()); err != nil {
 			return nil, err
 		}
@@ -143,6 +157,10 @@ func (s *Snapshotter) Status() Status {
 func (s *Snapshotter) Snapshot(ctx context.Context, label string) (storage.WorkspaceSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked(ctx, label)
+}
+
+func (s *Snapshotter) snapshotLocked(ctx context.Context, label string) (storage.WorkspaceSnapshot, error) {
 	if err := s.ensureGit(ctx); err != nil {
 		return storage.WorkspaceSnapshot{}, err
 	}
@@ -284,15 +302,34 @@ type DiffSummary struct {
 func (s *Snapshotter) Diff(ctx context.Context, a, b storage.WorkspaceSnapshot) (DiffSummary, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireGit(); err != nil {
+	changes, err := s.changedPathsLocked(ctx, a, b)
+	if err != nil {
 		return DiffSummary{}, err
 	}
+	stat, err := s.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--stat", a.TreeOID, b.TreeOID)
+	if err != nil {
+		return DiffSummary{}, err
+	}
+	return DiffSummary{Changes: changes, Stat: strings.TrimSpace(string(stat))}, nil
+}
+
+// ChangedPaths lists literal filenames without computing a patch or stat.
+func (s *Snapshotter) ChangedPaths(ctx context.Context, a, b storage.WorkspaceSnapshot) ([]Change, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changedPathsLocked(ctx, a, b)
+}
+
+func (s *Snapshotter) changedPathsLocked(ctx context.Context, a, b storage.WorkspaceSnapshot) ([]Change, error) {
+	if err := s.requireGit(); err != nil {
+		return nil, err
+	}
 	if a.WorkspaceID != s.workspaceID || b.WorkspaceID != s.workspaceID {
-		return DiffSummary{}, errors.New("both snapshots must belong to this workspace")
+		return nil, errors.New("both snapshots must belong to this workspace")
 	}
 	raw, err := s.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", a.TreeOID, b.TreeOID)
 	if err != nil {
-		return DiffSummary{}, err
+		return nil, err
 	}
 	fields := bytes.Split(bytes.TrimSuffix(raw, []byte{0}), []byte{0})
 	var changes []Change
@@ -302,16 +339,12 @@ func (s *Snapshotter) Diff(ctx context.Context, a, b storage.WorkspaceSnapshot) 
 			continue
 		}
 		if i+1 >= len(fields) {
-			return DiffSummary{}, errors.New("git returned malformed name-status output")
+			return nil, errors.New("git returned malformed name-status output")
 		}
 		changes = append(changes, Change{Status: string(fields[i]), Path: string(fields[i+1])})
 		i += 2
 	}
-	stat, err := s.git(ctx, "diff", "--no-ext-diff", "--no-textconv", "--stat", a.TreeOID, b.TreeOID)
-	if err != nil {
-		return DiffSummary{}, err
-	}
-	return DiffSummary{Changes: changes, Stat: strings.TrimSpace(string(stat))}, nil
+	return changes, nil
 }
 
 // DiffCurrent compares the live workspace with a persisted target without
@@ -358,8 +391,9 @@ type treeEntry struct {
 	path     string
 }
 
-func (s *Snapshotter) treeEntries(ctx context.Context, treeOID string) ([]treeEntry, error) {
-	raw, err := s.git(ctx, "ls-tree", "-r", "-l", "-z", "--full-tree", treeOID)
+func (s *Snapshotter) treeEntries(ctx context.Context, treeOID string, paths ...string) ([]treeEntry, error) {
+	args := []string{"--literal-pathspecs", "ls-tree", "-r", "-l", "-z", "--full-tree", treeOID, "--"}
+	raw, err := s.git(ctx, append(args, paths...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -471,14 +505,18 @@ func (s *Snapshotter) restoreEntry(ctx context.Context, entry treeEntry) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if entry.mode == "120000" {
+	return writeEntry(full, entry.mode, data)
+}
+
+func writeEntry(full, gitMode string, data []byte) error {
+	if gitMode == "120000" {
 		return os.Symlink(string(data), full)
 	}
 	mode := os.FileMode(0644)
-	if entry.mode == "100755" {
+	if gitMode == "100755" {
 		mode = 0755
-	} else if entry.mode != "100644" {
-		return fmt.Errorf("unsupported Git file mode %q", entry.mode)
+	} else if gitMode != "100644" {
+		return fmt.Errorf("unsupported Git file mode %q", gitMode)
 	}
 	if err := os.WriteFile(full, data, mode); err != nil {
 		return err

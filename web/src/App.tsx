@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isNotFound } from './api';
 import type { ModelOption, SessionPreferences, BudgetExtension, HarnessEvent, RunView, SessionMessage, SessionView, TraceView } from './api';
 import { Composer, PendingTurn } from './Chat';
+import { skillInvocation } from './skills';
 import type { TurnActions } from './Chat';
 import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statusTone, waitLabels } from './format';
 import { Icon } from './Icon';
+import { RuleSources } from './RuleSources';
 import { Observability } from './Observability';
+import { RunChanges } from './RunChanges';
 import { RunBudget } from './RunBudget';
 import { syncSessionMessages, type TranscriptSnapshot } from './history';
 import { SessionHistory } from './SessionHistory';
@@ -527,7 +530,8 @@ export default function App() {
       }).catch(() => undefined);
     }, 500);
     try {
-      adopt(await api.createRun(target, text, selectedPreferences));
+      const skill = skillInvocation(text);
+      adopt(await api.createRun(target, skill?.task ?? text, { ...selectedPreferences, skill: skill?.name }));
     } catch (reason) {
       if (adopted) {
         refreshRuns(target).catch(() => undefined);
@@ -691,6 +695,7 @@ export default function App() {
       busy={Boolean(busy || (!answering && modelBlocked))}
       stopping={latestRun ? acting[latestRun.id] : false}
       placeholder={answering ? '回答问题…' : '发消息…'}
+      skillsEnabled={!answering}
       hint={online === false ? '未连接' : answering ? '回复后继续本轮' : undefined}
       autoFocus={view === 'chat'}
       models={models}
@@ -822,7 +827,9 @@ export default function App() {
               <dt>审批模式</dt><dd>{approvalModeLabel(inspectedRun.approval_mode)}</dd>
               {inspectedRun.workspace && <><dt>工作区</dt><dd>{inspectedRun.workspace}</dd></>}
             </dl>
+            <RunChanges key={`${inspectedRun.id}:${inspectedRun.status}`} runId={inspectedRun.id} />
             <RunBudget budget={inspectedRun.budget} />
+            <RuleSources events={events[inspectedRun.id] || []} />
             <div className="tabs" role="tablist">
               <button type="button" role="tab" aria-selected={panel === 'trace'} onClick={() => setPanel('trace')}>执行步骤</button>
               <button type="button" role="tab" aria-selected={panel === 'events'} onClick={() => setPanel('events')}>事件 <span>{(events[inspectedRun.id] || []).length}</span></button>

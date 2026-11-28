@@ -1,7 +1,7 @@
 # HTTP API
 
 `cloud-harness serve` listens on `127.0.0.1:19421` by default. The `/v1/` API
-uses JSON except for the event stream at `GET /v1/runs/{id}/events` (SSE).
+uses JSON for data, SSE for `GET /v1/runs/{id}/events`, and a browser page for the MCP OAuth callback.
 Successful JSON responses contain the requested object or array directly.
 Errors use an `error` object with `code`, `message`, and an optional `ref`.
 
@@ -10,9 +10,9 @@ Errors use an `error` object with `code`, `message`, and an optional `ref`.
 Configure an HTTP bearer token with `serve --http-token TOKEN`, the
 `CLOUD_HARNESS_HTTP_TOKEN` environment variable, or `http_token` in the JSON
 configuration file. A configured token must contain at least 16 characters.
-Every `/v1/` route, including `/v1/sessions`, `/v1/approvals`,
+API routes under `/v1/`, including `/v1/sessions`, `/v1/approvals`,
 `/v1/runs/{id}`, and its `/events` stream, uses the same authentication middleware and constant-time
-token comparison. `/healthz`, the legacy `/approval` redirect, and `/ui` and its
+token comparison. The browser redirect at `GET /v1/mcp/oauth/callback` uses a one-time OAuth state and matching HttpOnly cookie, together with a PKCE code exchange. `/healthz`, the legacy `/approval` redirect, and `/ui` and its
 static resources are available without authentication.
 
 When a token is configured, supply `Authorization: Bearer <token>`. A missing
@@ -119,6 +119,12 @@ approval mode and reasoning effort; changing session preferences does not change
 
 The body is `{"message":"..."}`. The response is HTTP 201 with the run view
 described under [GET /v1/sessions/{id}/runs](#get-v1sessionsidruns).
+
+To invoke a skill, send `{"skill":"review","message":"Check the new handler"}`.
+The server loads the named file with the CLI skill loader and supplies it as
+user context for this run. With a skill, the message is its task argument and
+may be empty. The recorded user input is `/skill review Check the new handler`.
+A missing, invalid or unreadable skill returns HTTP 400 before run creation.
 
 A run executes in the server, not in the request that created it. Closing the
 connection does not stop the run: it keeps executing and its result is read
@@ -280,6 +286,22 @@ Use this endpoint when expanding a turn's process to inspect command
 parameters, tool output, or recorded denial errors. Invocation status events
 do not carry these full arguments and results. The trace does not include
 provider opaque bytes, continuation records, or run checkpoints.
+
+## Run file changes and restore
+
+`GET /v1/runs/{id}/changes` returns `{terminal, incomplete, batches}`. Each batch contains its number, immutable `before` and `after` snapshot IDs, and `files: [{path, status}]` with Git name-status codes. Each entry compares snapshots taken immediately around one side-effecting tool execution. A batch can have several entries with the same number and distinct snapshot IDs. Edits made while waiting for approval remain in the baseline of the next execution. An empty list means there is no reviewable pair with changes. Missing pairs, older batch checkpoints without dispatch boundaries, and known overlapping executions are omitted and set `incomplete`. Batch checkpoints remain available to CLI rewind. As with CLI snapshots, edits by external programs during a capture interval can appear in that interval.
+
+`GET /v1/runs/{id}/changes/diff?before=…&after=…&path=…` returns `{diff, truncated}` for one listed path. URL-encode all three parameters. Git renders text as a unified diff and binary edits as a binary difference. The response retains the first 64 KiB of patch output.
+
+`POST /v1/runs/{id}/changes/restore` accepts a confirmed selection:
+
+```json
+{"before":"snap_pre","after":"snap_post","path":"src/example.go","confirm":true}
+```
+
+The operation restores that file’s pre-execution contents, type and owner execute bit. Git does not store full Unix permissions. Reviewed regular files are restored owner-only, retaining existing owner read/write restrictions on a replacement. A deleted regular file is recreated with mode `0600` or `0700`. An addition is removed. Success returns `{"safety_snapshot":"snap_…"}`. The inspector refreshes the historical review and displays this receipt. The safety snapshot works with the existing code-only CLI rewind, using the run’s actual workspace and database.
+
+Restore requires a terminal run, the original workspace or retained worktree, and the exact execution pair. The server checks the live file against the saved post-execution image and preserves unrelated working files, the real Git index and chat. A missing confirmation returns 400. An unknown run or unlisted path returns 404. A stale pair, edited or staged target, merge conflict, busy workspace, or finalized worktree returns 409. File-to-directory transitions require manual resolution. HTTP restores and CLI worktree lifecycle operations coordinate through the run database. External editors are outside that lock.
 
 ## GET /approval (legacy redirect)
 
@@ -865,6 +887,14 @@ with `GET /v1/runs/{id}`. Submit approval decisions through the existing
 `POST /v1/runs/{id}/answer` (`{"answer":"..."}`). Open the `approval_url` in
 a browser to handle the wait on the embedded approval page.
 
+## GET /v1/skills
+
+Returns the CLI skill catalog as a name-sorted array of summaries, for example
+`[{"name":"review","description":"Review a change"}]`. Workspace entries take
+precedence over global entries. Discovery skips invalid files and returns
+`[]` for an empty catalog. If discovery fails to read any valid summaries,
+the response is HTTP 503. This endpoint works before a session is created.
+
 ## GET /v1/models
 
 Returns an array of `{id, name, model, fallback_model?, provider, provider_id?, provider_name?, legacy_id?, display_name?, thinking?, reasoning_type?, reasoning_values?, category?}`.
@@ -878,6 +908,20 @@ ID remain valid. `thinking` is `supported`, `unsupported` or `unknown`.
 contains that selected catalog record's effort values. `category` is `chat`
 or `other`. Optional fields also appear in saved/detected catalog entries.
 Credentials are never returned. Unknown or disabled model IDs return 400.
+
+## Project memories
+
+`GET /v1/project-memories` returns the server workspace's confirmed facts and decisions, newest edit first. Each entry contains `id`, `kind`, `content`, `source_session_id`, `source_run_id`, `source_available` and `updated_at` (UTC). The project comes from the configured workspace. With a shared database, sessions and linked Git worktrees of that project share its entries. A separate clone or workspace has its own entries.
+
+| Method | Path | JSON body | Success |
+|---|---|---|---|
+| POST | `/v1/project-memories` | `{"kind":"decision","content":"Use SQLite","source_session_id":"ses_…","source_run_id":"run_…"}` | 201 with the saved entry |
+| PUT | `/v1/project-memories/{id}` | `{"kind":"fact","content":"SQLite stores local history"}` | 204 |
+| DELETE | `/v1/project-memories/{id}` | — | 204 |
+
+`kind` accepts `fact` or `decision`. The trimmed text must contain 1–500 Unicode characters. Creation checks the source run against both its session and the server's project. A missing or mismatched source or an entry outside the project returns 404. Source IDs stay attached through corrections. Opening `/ui/?session={source_session_id}&run={source_run_id}` follows the source. If retention has pruned the run, its memory remains editable and `source_available` becomes false.
+
+Each new root run reads up to 12 recently confirmed or corrected entries within a 4 KiB budget, presented as reference data ahead of the user's current message. Saving a project memory requires an explicit POST with user-confirmed text.
 
 ## GET /v1/sessions/{id}/preferences
 ## PUT /v1/sessions/{id}/preferences
@@ -1020,3 +1064,15 @@ same other group; unfamiliar manual IDs default to chat. Reasoning=false
 is authoritative, while unmatched IDs retain the existing thinking heuristic
 and the runtime HTTP 400 fallback. Default unit tests use a small local
 fixture and loopback HTTP servers, with no external requests.
+
+
+## MCP connections
+
+| Request | Result |
+| --- | --- |
+| `GET /v1/mcp/servers` | Lists configured servers with transport, authorization method, status, diagnostics and tool names. |
+| `POST /v1/mcp/servers/{name}/connect` | Opens the configured connection and refreshes its tools. Returns 204 on success. |
+| `POST /v1/mcp/servers/{name}/disconnect` | Removes the tools and clears the connection and its credentials. Returns 204 on success. |
+| `POST /v1/mcp/servers/{name}/authorize` | Starts an OAuth flow for a configured public client. Sets the state cookie and returns a JSON object with the browser authorization URL in `url`. |
+
+The settings page opens the authorization URL in the same browser. The issuer redirects back to `GET /v1/mcp/oauth/callback`. A successful exchange reconnects the server and displays a link back to the workspace.

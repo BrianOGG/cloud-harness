@@ -8,12 +8,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/config"
 )
 
-// SuiteTasks are the 13 evaluation tasks in docs/eval/tasks.json.
+// SuiteTasks are the fixed evaluation tasks in docs/eval/tasks.json.
 var SuiteTasks = []string{
 	"dev-fix-failing-test",
 	"dev-explain-call-site",
@@ -28,28 +27,33 @@ var SuiteTasks = []string{
 	"recover-mid-batch",
 	"planner-compare",
 	"cache-baseline",
+	nestedRulesTask,
+	catalogTask,
 }
 
 // SuiteReport is the effect-evaluation summary for one scripted pass.
 type SuiteReport struct {
-	Tasks             int              `json:"tasks"`
-	Passed            int              `json:"passed"`
-	CompletionRate    float64          `json:"completion_rate"`
-	Correctness       float64          `json:"correctness"`
-	WallMS            int64            `json:"wall_ms"`
-	ModelCalls        int              `json:"model_calls"`
-	ToolCalls         int              `json:"tool_calls"`
-	RepeatedToolCalls int              `json:"repeated_tool_calls"`
-	RecoveryPass      bool             `json:"recovery_pass"`
-	InputTokens       int              `json:"input_tokens"`
-	OutputTokens      int              `json:"output_tokens"`
-	CachedTokens      int              `json:"cached_input_tokens"`
-	CacheHitRate      float64          `json:"cache_hit_rate"`
-	BaselineHitRate   float64          `json:"baseline_hit_rate"`
-	Planner           any              `json:"planner,omitempty"`
-	Failures          []string         `json:"failures,omitempty"`
-	TaskPass          map[string]bool  `json:"task_pass"`
-	Comparison        *SuiteComparison `json:"comparison,omitempty"`
+	Benchmark         *Benchmark             `json:"benchmark,omitempty"`
+	Measurements      *SuiteMetrics          `json:"measurements,omitempty"`
+	TaskMetrics       map[string]TaskMetrics `json:"task_metrics,omitempty"`
+	Tasks             int                    `json:"tasks"`
+	Passed            int                    `json:"passed"`
+	CompletionRate    float64                `json:"completion_rate"`
+	Correctness       float64                `json:"correctness"`
+	WallMS            int64                  `json:"wall_ms"`
+	ModelCalls        int                    `json:"model_calls"`
+	ToolCalls         int                    `json:"tool_calls"`
+	RepeatedToolCalls int                    `json:"repeated_tool_calls"`
+	RecoveryPass      bool                   `json:"recovery_pass"`
+	InputTokens       int                    `json:"input_tokens"`
+	OutputTokens      int                    `json:"output_tokens"`
+	CachedTokens      int                    `json:"cached_input_tokens"`
+	CacheHitRate      float64                `json:"cache_hit_rate"`
+	BaselineHitRate   float64                `json:"baseline_hit_rate"`
+	Planner           any                    `json:"planner,omitempty"`
+	Failures          []string               `json:"failures,omitempty"`
+	TaskPass          map[string]bool        `json:"task_pass"`
+	Comparison        *SuiteComparison       `json:"comparison,omitempty"`
 }
 
 // TaskChange describes the pass/fail transition of one task between baseline and current.
@@ -62,20 +66,21 @@ type TaskChange struct {
 
 // SuiteComparison summarizes differences between a baseline SuiteReport and a current run.
 type SuiteComparison struct {
-	BaselineTasks          int          `json:"baseline_tasks"`
-	BaselinePassed         int          `json:"baseline_passed"`
-	CurrentTasks           int          `json:"current_tasks"`
-	CurrentPassed          int          `json:"current_passed"`
-	BaselineCompletionRate float64      `json:"baseline_completion_rate"`
-	CurrentCompletionRate  float64      `json:"current_completion_rate"`
-	CompletionRateDelta    float64      `json:"completion_rate_delta"`
-	Regressed              []string     `json:"regressed"`
-	Fixed                  []string     `json:"fixed"`
-	Added                  []string     `json:"added"`
-	Removed                []string     `json:"removed"`
-	TaskChanges            []TaskChange `json:"task_changes,omitempty"`
-	HasRegression          bool         `json:"has_regression"`
-	Summary                string       `json:"summary"`
+	Metrics                MetricComparison `json:"metrics"`
+	BaselineTasks          int              `json:"baseline_tasks"`
+	BaselinePassed         int              `json:"baseline_passed"`
+	CurrentTasks           int              `json:"current_tasks"`
+	CurrentPassed          int              `json:"current_passed"`
+	BaselineCompletionRate float64          `json:"baseline_completion_rate"`
+	CurrentCompletionRate  float64          `json:"current_completion_rate"`
+	CompletionRateDelta    float64          `json:"completion_rate_delta"`
+	Regressed              []string         `json:"regressed"`
+	Fixed                  []string         `json:"fixed"`
+	Added                  []string         `json:"added"`
+	Removed                []string         `json:"removed"`
+	TaskChanges            []TaskChange     `json:"task_changes,omitempty"`
+	HasRegression          bool             `json:"has_regression"`
+	Summary                string           `json:"summary"`
 }
 
 // WriteSuiteReport writes a SuiteReport to path as indented JSON including task_pass.
@@ -190,6 +195,7 @@ func CompareSuiteReports(baseline, current SuiteReport) SuiteComparison {
 		}
 	}
 	cmp.HasRegression = len(cmp.Regressed) > 0
+	cmp.Metrics = compareMetrics(baseline, current)
 	cmp.Summary = fmt.Sprintf(
 		"suite comparison: completion_rate %.4f -> %.4f (delta %+.4f, passed %d/%d -> %d/%d); regressed(%d)=[%s] fixed(%d)=[%s] added(%d)=[%s] removed(%d)=[%s]",
 		cmp.BaselineCompletionRate, cmp.CurrentCompletionRate, cmp.CompletionRateDelta,
@@ -199,6 +205,9 @@ func CompareSuiteReports(baseline, current SuiteReport) SuiteComparison {
 		len(cmp.Added), strings.Join(cmp.Added, ","),
 		len(cmp.Removed), strings.Join(cmp.Removed, ","),
 	)
+	if !cmp.Metrics.Comparable {
+		cmp.Summary += "; metric deltas unavailable: " + cmp.Metrics.Reason
+	}
 	return cmp
 }
 
@@ -208,18 +217,20 @@ func Suite(ctx context.Context, cfg config.Config, workspace string) (SuiteRepor
 }
 
 func suite(ctx context.Context, cfg config.Config, workspace string, tasks []string) (SuiteReport, error) {
-	report := SuiteReport{TaskPass: map[string]bool{}}
+	report := SuiteReport{
+		TaskPass: map[string]bool{}, TaskMetrics: map[string]TaskMetrics{},
+		Benchmark: benchmark(cfg),
+	}
 	var planner any
 	for _, task := range tasks {
-		start := time.Now()
 		taskWS := ""
 		if workspace != "" {
 			taskWS = filepath.Join(workspace, task)
 		}
 		result, err := Run(ctx, Options{Task: task, Config: cfg, Workspace: taskWS})
-		wall := time.Since(start).Milliseconds()
+		report.TaskMetrics[task] = result.Measurements
 		report.Tasks++
-		report.WallMS += wall
+		report.WallMS += result.Measurements.LatencyMS
 		if err != nil {
 			report.Failures = append(report.Failures, task+": "+err.Error())
 			report.TaskPass[task] = false
@@ -236,38 +247,21 @@ func suite(ctx context.Context, cfg config.Config, workspace string, tasks []str
 		} else {
 			report.Failures = append(report.Failures, task)
 		}
-		report.RepeatedToolCalls += repeated(result.ToolCalls)
+		report.RepeatedToolCalls += result.coverage.repeatedCalls
 		if task == "recover-mid-batch" {
 			report.RecoveryPass = result.Pass
 		}
 		if task == "planner-compare" && len(result.Metrics) > 0 {
 			_ = json.Unmarshal(result.Metrics, &planner)
-			addPlannerMetrics(&report, result.Metrics)
 		}
 		if task == "cache-baseline" && len(result.Metrics) > 0 {
 			var body struct {
-				Stable struct {
-					HitRate      float64 `json:"hit_rate"`
-					ModelCalls   int     `json:"model_calls"`
-					ToolCalls    int     `json:"tool_calls"`
-					InputTokens  int     `json:"input_tokens"`
-					CachedTokens int     `json:"cached_input_tokens"`
-					CostTokens   int     `json:"cost_tokens"`
-				} `json:"stable"`
-				Baseline struct {
-					HitRate    float64 `json:"hit_rate"`
-					ModelCalls int     `json:"model_calls"`
-					ToolCalls  int     `json:"tool_calls"`
-				} `json:"baseline"`
+				Stable   armReport `json:"stable"`
+				Baseline armReport `json:"baseline"`
 			}
 			if err := json.Unmarshal(result.Metrics, &body); err == nil {
 				report.CacheHitRate = body.Stable.HitRate
 				report.BaselineHitRate = body.Baseline.HitRate
-				report.ModelCalls += body.Stable.ModelCalls + body.Baseline.ModelCalls
-				report.ToolCalls += body.Stable.ToolCalls + body.Baseline.ToolCalls
-				report.InputTokens += body.Stable.InputTokens
-				report.CachedTokens += body.Stable.CachedTokens
-				report.OutputTokens += body.Stable.CostTokens - body.Stable.InputTokens
 			}
 		}
 	}
@@ -279,6 +273,7 @@ func suite(ctx context.Context, cfg config.Config, workspace string, tasks []str
 		report.CompletionRate = float64(report.Passed) / float64(report.Tasks)
 		report.Correctness = report.CompletionRate
 	}
+	report.Measurements = summarizeMetrics(report)
 	return report, nil
 }
 
@@ -293,28 +288,4 @@ func repeated(calls []Call) int {
 		}
 	}
 	return extra
-}
-
-func addPlannerMetrics(report *SuiteReport, raw json.RawMessage) {
-	var body struct {
-		Arms []struct {
-			ModelCalls   int `json:"model_calls"`
-			ToolCalls    int `json:"tool_calls"`
-			InputTokens  int `json:"input_tokens"`
-			CostTokens   int `json:"cost_tokens"`
-			CachedTokens int `json:"cached_input_tokens"`
-		} `json:"arms"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return
-	}
-	for _, arm := range body.Arms {
-		report.ModelCalls += arm.ModelCalls
-		report.ToolCalls += arm.ToolCalls
-		report.InputTokens += arm.InputTokens
-		report.CachedTokens += arm.CachedTokens
-		if arm.CostTokens >= arm.InputTokens {
-			report.OutputTokens += arm.CostTokens - arm.InputTokens
-		}
-	}
 }

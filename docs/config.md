@@ -47,15 +47,49 @@ baseline denials, examples, and run snapshot behavior.
 
 ## MCP servers
 
-`servers` (alias `mcp_servers`; when both are set `servers` wins) lists local
-stdio MCP servers. There is no environment variable or flag for it.
+`servers` (alias `mcp_servers`; when both are set `servers` wins) lists local stdio and remote Streamable HTTP MCP servers.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique label made of letters, digits, `_`, and `-`. Tools are registered as `mcp.<name>.<tool>`. |
-| `command` | yes | Executable to start, resolved through `PATH` when it has no slash. It is not run through a shell. |
+| `command` | stdio | Executable to start, resolved through `PATH` when it has no slash. It is not run through a shell. |
 | `args` | no | Arguments passed to the command. |
 | `readonly` | no | Default `false`: every call waits for approval unless `policy.json` decides otherwise. `true` declares that the server's tools have no side effects; such tools are denied unless a `policy.json` rule allows them. |
+| `url` | HTTP | MCP endpoint. Use HTTPS, or HTTP on loopback. Credentials, query strings and fragments are rejected. |
+| `transport` | no | Defaults to `streamable_http` with a URL or `stdio` with a command. |
+| `token_env` | no | Name of a process environment variable holding the resource bearer token. |
+| `oauth` | no | Pre-registered public PKCE client's `issuer`, `client_id`, `redirect_uri` and optional array of `scopes`. Select one authentication method per server. |
+
+```json
+{
+  "servers": [
+    {"name": "local", "command": "/usr/local/bin/local-mcp"},
+    {"name": "learn", "url": "https://learn.microsoft.com/api/mcp", "readonly": true},
+    {"name": "catalog", "url": "https://catalog.example/mcp", "token_env": "CATALOG_MCP_TOKEN", "readonly": true},
+    {"name": "tasks", "url": "https://tasks.example/mcp", "oauth": {
+      "issuer": "https://auth.example/tenant",
+      "client_id": "cloud-harness",
+      "redirect_uri": "http://127.0.0.1:19421/v1/mcp/oauth/callback"
+    }}
+  ]
+}
+```
+
+The public Microsoft Learn entry works without credentials. With only that entry configured, `cloud-harness doctor --json` reports the discovered documentation tools. [Microsoft Learn MCP](https://learn.microsoft.com/en-us/training/support/mcp)
+
+Register the exact callback URI with the issuer and open Settings on the same
+origin. Choose **MCP 服务 → 授权**. The client checks RFC 9728 resource metadata,
+discovers the pinned issuer using OAuth or OpenID metadata, and requires S256.
+The resource metadata URL must share the resource's origin. The authorization
+and token endpoints must share the configured issuer's origin. HTTP redirects
+are disabled for authenticated and discovery requests.
+
+Access and refresh tokens stay in the serving process. The client refreshes
+expiring tokens and requests a fresh authorization when the grant expires.
+Disconnect clears both credentials and any pending authorization. After a
+process restart, authorize again in Settings. For separate CLI or unattended
+processes use `token_env`. Settings can reconnect either transport and reload
+its inventory. Changing server definitions requires restarting the process.
 
 `serve`, `run`, `chat`, `runs resume`, and `runs recover` start the servers,
 discover their tools, and stop them on exit. A server that fails to start is
@@ -424,7 +458,7 @@ and end.
 ## HTTP authentication and non-loopback rule
 
 - `http_token` (or `CLOUD_HARNESS_HTTP_TOKEN`) defaults to `""`. When set, it must be at least 16 characters long; shorter tokens are rejected at config load time.
-- When `http_token` is set, every `/v1/` endpoint requires `Authorization: Bearer <token>` (verified in constant time); `/healthz` remains open without authentication.
+- When `http_token` is set, API requests under `/v1/` require `Authorization: Bearer <token>` (verified in constant time). The browser redirect at `GET /v1/mcp/oauth/callback` authenticates the flow with OAuth state, a matching cookie and PKCE. `/healthz` remains open.
 - Loopback binds (`127.0.0.1`, `localhost`, `::1`) work without `http_token`.
 - A loopback bind refuses requests whose `Host` header is not `localhost` or a loopback IP address (HTTP 403). `http_allowed_hosts` (or `CLOUD_HARNESS_HTTP_ALLOWED_HOSTS`, or `serve --http-allowed-hosts`) lists extra accepted values, each a host name or IP address with an optional port and no scheme or path, for example `["harness.example", "proxy.example:8443"]`. An entry without a port matches every port. Invalid entries are rejected at config load time. On a non-loopback bind the `Host` header is unrestricted unless this list is set.
 - Every bind refuses a request whose `Origin` header differs from its `Host`, and requires `Content-Type: application/json` on write requests with a body. See [request checks](api.md#request-checks).
@@ -495,6 +529,11 @@ latest persisted event in that run when the record is created, or is null when
 the event sequence cannot be read. Approval resume reuses the batch's pre
 snapshot. A post snapshot is captured after each execution segment that actually
 dispatched a side-effecting tool, including a segment ending in an approval wait.
+The inspector also records a separate pre/post pair around each actual
+side-effecting tool dispatch. An approval wait, denial or cached reply does
+not start a dispatch pair. A fresh execution after resume or retry gets a
+new pair, even when the batch or invocation ID is reused. Dispatch pairs
+have a null `event_seq` and support code-only rewind.
 Snapshot failures only add a `snapshot_skipped` event and never fail the run.
 Unavailable Git is reported at most once per run. Setting `disable_snapshots`
 to `true` also suppresses snapshot initialization and diagnostics.

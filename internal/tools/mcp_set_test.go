@@ -77,7 +77,7 @@ func TestMCPSetRegistersHealthyServersAndIsolatesFailures(t *testing.T) {
 		t.Fatalf("ungranted mcp call = %+v, want needs approval", res)
 	}
 
-	pid := set.servers[1].adapter.ProcessPID()
+	pid := set.servers[1].adapter.(*StdioMCP).ProcessPID()
 	if pid <= 0 || syscall.Kill(pid, 0) != nil {
 		t.Fatalf("good server pid %d is not running", pid)
 	}
@@ -121,7 +121,7 @@ func TestMCPSetReportsAndReapsServerThatExitsAfterStartup(t *testing.T) {
 	bin, args := helperArgs()
 	set := StartMCPServers(context.Background(), nil, []StdioMCPConfig{{Name: "crash", Command: bin, Args: args}}, 5*time.Second)
 	defer func() { _ = set.Close() }()
-	pid := set.servers[0].adapter.ProcessPID()
+	pid := set.servers[0].adapter.(*StdioMCP).ProcessPID()
 	if pid <= 0 {
 		t.Fatalf("invalid pid %d", pid)
 	}

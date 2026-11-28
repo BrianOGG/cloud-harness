@@ -232,8 +232,8 @@ func validateMCPServers(servers []config.MCPServerConfig) error {
 		if strings.TrimSpace(server.Name) == "" {
 			return fmt.Errorf("servers[%d].name is required", i)
 		}
-		if strings.TrimSpace(server.Command) == "" {
-			return fmt.Errorf("servers[%d].command is required", i)
+		if err := server.Validate(); err != nil {
+			return fmt.Errorf("servers[%d]: %w", i, err)
 		}
 		if _, ok := seen[server.Name]; ok {
 			return fmt.Errorf("servers[%d].name duplicates %q", i, server.Name)

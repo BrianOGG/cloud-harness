@@ -9,7 +9,7 @@ import (
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
 
-const worktreeRunsQuery = `SELECT id, parent_run_id, session_id, turn_id, workspace_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state FROM runs WHERE worktree_path <> '' ORDER BY created_at, id`
+const worktreeRunsQuery = `SELECT id, parent_run_id, session_id, turn_id, workspace_id, project_id, status, wait_reason, budget_json, version, final_answer, error_json, created_at, updated_at, worktree_base_sha, worktree_branch, worktree_path, worktree_state FROM runs WHERE worktree_path <> '' ORDER BY created_at, id`
 
 // ReadWorktreeRuns is unbounded (unlike the interactive ListRuns) and read-only.
 // Doctor and lifecycle reconciliation must not lose records after 200 runs.
@@ -23,6 +23,9 @@ func ReadWorktreeRuns(ctx context.Context, path string) ([]storage.Run, error) {
 	var version int
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		return nil, err
+	}
+	if version < 15 {
+		query = strings.Replace(query, "project_id,", "'' AS project_id,", 1)
 	}
 	if version == 7 {
 		query = strings.Replace(query, "worktree_state FROM", "'' AS worktree_state FROM", 1)

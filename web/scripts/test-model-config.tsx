@@ -51,6 +51,7 @@ globalThis.fetch = async (input, init) => {
     if (failDetection) return new Response(JSON.stringify({ error: '模型列表获取失败' }), { status: 502 });
     result = { ...providers[0], catalog: detection.models, catalog_fetched_at: fetchedAt };
   }
+  else if (path === '/v1/mcp/servers') result = [];
   else if (path === '/healthz') result = { status: 'ok', provider: 'fixture' };
   else if (path === '/v1/models') result = [{ id: 'default', name: 'Agnes', model: 'agnes-3.0-flash', provider: 'openai', thinking, ...modelOverrides }, { id: 'custom:' + customProviderID + '/sonnet', legacy_id: 'custom:' + customProviderID, name: '服务 · sonnet', model: 'sonnet', provider: 'anthropic', provider_id: customProviderID, provider_name: '服务', thinking: 'supported' }];
   else if (path === '/v1/sessions') result = [{ id: 'session', created_at: fetchedAt, updated_at: fetchedAt, run_count: 0 }];
@@ -300,6 +301,38 @@ try {
   await test('a service named default still has its own model group', async () => {
     await reset(); customProviderID = 'default'; await mount(<App />); await openModelList();
     assert.deepEqual([...document.querySelectorAll('.reasoning-popover .model-group-label')].map((group) => group.textContent), ['默认服务', '服务']);
+  });
+  await test('MCP settings refresh status, search the inventory and disconnect a server', async () => {
+    await reset();
+    const fetchSettings = globalThis.fetch;
+    const tools = Array.from({ length: 80 }, (_, i) => 'mcp.fixture.tool_' + i);
+    let connected = true;
+    globalThis.fetch = async (input, init) => {
+      if (input === '/v1/mcp/servers') return Response.json([{ name: 'fixture', auth: 'oauth', transport: 'streamable_http',
+        readonly: true, tools: connected ? tools : [], state: connected ? 'running' : 'disconnected' }]);
+      if (input === '/v1/mcp/servers/fixture/disconnect' || input === '/v1/mcp/servers/fixture/connect') {
+        assert.equal(init?.method, 'POST');
+        connected = input.endsWith('/connect');
+        return new Response(null, { status: 204 });
+      }
+      return fetchSettings(input, init);
+    };
+    try {
+      await mount(<Settings onModelsChanged={async () => {}} onBack={() => {}} />);
+      assert.equal(container.querySelectorAll('.mcp-inventory li').length, 50);
+      await click('显示更多');
+      assert.equal(container.querySelectorAll('.mcp-inventory li').length, 80);
+      await type('[aria-label="搜索 MCP 工具"]', 'tool_79');
+      assert.equal(container.querySelector('.mcp-inventory')?.textContent, tools[79]);
+      await click('断开');
+      assert.match(container.querySelector('.mcp-settings')!.textContent!, /已断开/);
+      assert.equal(container.querySelector('.mcp-inventory'), null);
+      await click('连接');
+      assert.match(container.querySelector('.mcp-settings')!.textContent!, /已连接/);
+      assert.equal(container.querySelector('.mcp-inventory')?.textContent, tools[79]);
+    } finally {
+      globalThis.fetch = fetchSettings;
+    }
   });
 } finally {
   if (root) await act(async () => { root!.unmount(); }); dom.window.close();

@@ -3,6 +3,8 @@ import { api } from './api';
 import type { CatalogModel, CustomProvider, ProviderProtocol } from './api';
 import { errorText } from './format';
 import { Icon } from './Icon';
+import { ProjectMemories } from './ProjectMemory';
+import { MCPSettings } from './MCPSettings';
 
 const protocolNames: Record<ProviderProtocol, string> = { openai: 'OpenAI 兼容', anthropic: 'Anthropic', gemini: 'Gemini' };
 
@@ -93,6 +95,8 @@ export function Settings({ onModelsChanged, onBack }: { onModelsChanged: () => P
         {deleting === p.id && <div className="provider-delete" role="group" aria-label="确认删除模型服务"><p>删除「{p.name}」？当前模型可能不可用，请重新选择。</p><div className="settings-actions"><button type="button" className="button" disabled={removing} onClick={() => setDeleting(null)}>取消</button><button type="button" className="button" disabled={removing} onClick={() => void remove(p.id)}>{removing ? '删除中…' : '确认删除'}</button></div></div>}
       </li>)}
     </ul>
+    <ProjectMemories />
+    <MCPSettings />
   </section>;
 }
 

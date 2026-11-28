@@ -424,7 +424,7 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	if err := json.Unmarshal(rawFile, &fileReport); err != nil {
 		t.Fatalf("unmarshal file report: %v", err)
 	}
-	if fileReport.Tasks != 13 || fileReport.Passed != 13 || fileReport.CompletionRate != 1.0 || len(fileReport.TaskPass) != 13 {
+	if fileReport.Tasks != len(eval.SuiteTasks) || fileReport.Passed != fileReport.Tasks || fileReport.CompletionRate != 1.0 || len(fileReport.TaskPass) != fileReport.Tasks {
 		t.Fatalf("unexpected file report: %+v", fileReport)
 	}
 	if stdoutReport.Tasks != fileReport.Tasks || stdoutReport.Passed != fileReport.Passed || stdoutReport.CompletionRate != fileReport.CompletionRate {
@@ -441,7 +441,8 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	errBuf.Reset()
 	ws2 := filepath.Join(tmp, "ws2")
 	db2 := filepath.Join(tmp, "suite2.db")
-	code = Main([]string{"eval", "suite", "--db", db2, "--workspace", ws2, "--compare", baselinePath}, &out, &errBuf)
+	currentPath := filepath.Join(tmp, "current.json")
+	code = Main([]string{"eval", "suite", "--db", db2, "--workspace", ws2, "--compare", baselinePath, "--out", currentPath}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("eval suite --compare (no regression) exited %d: out=%s err=%s", code, out.String(), errBuf.String())
 	}
@@ -451,6 +452,15 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	}
 	if cmpReport.Comparison == nil || cmpReport.Comparison.HasRegression || len(cmpReport.Comparison.Regressed) != 0 {
 		t.Fatalf("expected non-nil comparison with 0 regressions, got %+v", cmpReport.Comparison)
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := Main([]string{"eval", "compare", baselinePath, currentPath}, &out, &errBuf); code != 0 {
+		t.Fatalf("offline comparison exited %d: %s", code, errBuf.String())
+	}
+	var offline eval.SuiteComparison
+	if err := json.Unmarshal(out.Bytes(), &offline); err != nil || !offline.Metrics.Comparable || offline.Metrics.PairedTokens == nil || offline.Metrics.PairedTokens.Delta != 0 {
+		t.Fatalf("offline comparison: %+v, err=%v", offline, err)
 	}
 
 	// 3. --compare with only fixes (plus added/removed) and combined --out exits 0 and writes new baseline.
@@ -462,9 +472,8 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	fixBase.TaskPass["dev-fix-failing-test"] = false
 	delete(fixBase.TaskPass, "cache-baseline")
 	fixBase.TaskPass["legacy-removed-task"] = false
-	fixBase.Passed = 11
-	fixBase.Tasks = 13
-	fixBase.CompletionRate = 11.0 / 13.0
+	fixBase.Passed -= 2
+	fixBase.CompletionRate = float64(fixBase.Passed) / float64(fixBase.Tasks)
 	fixBasePath := filepath.Join(tmp, "fix-base.json")
 	if err := eval.WriteSuiteReport(fixBasePath, fixBase); err != nil {
 		t.Fatal(err)
@@ -498,8 +507,8 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloadedNewBase.Passed != 13 || !reloadedNewBase.TaskPass["dev-fix-failing-test"] {
-		t.Fatalf("expected new baseline to record 13/13 pass, got %+v", reloadedNewBase)
+	if reloadedNewBase.Passed != len(eval.SuiteTasks) || !reloadedNewBase.TaskPass["dev-fix-failing-test"] {
+		t.Fatalf("expected new baseline to pass all tasks, got %+v", reloadedNewBase)
 	}
 
 	// 4. --compare with regression (baseline pass -> current fail) exits non-zero and names the regressed task.
@@ -512,10 +521,10 @@ func TestEvalSuiteOutAndCompare(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test-regression")
 
 	regBase := eval.SuiteReport{
-		Tasks:          13,
+		Tasks:          len(eval.SuiteTasks),
 		Passed:         1,
-		CompletionRate: 1.0 / 13.0,
-		Correctness:    1.0 / 13.0,
+		CompletionRate: 1.0 / float64(len(eval.SuiteTasks)),
+		Correctness:    1.0 / float64(len(eval.SuiteTasks)),
 		TaskPass:       map[string]bool{},
 	}
 	for _, task := range eval.SuiteTasks {

@@ -1,0 +1,15 @@
+.run-changes { min-width: 0; margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+.run-changes header { display: flex; align-items: center; justify-content: space-between; }
+.run-changes h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.run-changes p { margin: 7px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.run-changes button { border: 0; border-radius: 5px; color: var(--blue); background: transparent; font: inherit; padding: 3px 6px; cursor: pointer; }
+.run-changes button:hover:not(:disabled), .changes-file[aria-expanded="true"] { background: var(--accent-soft); }
+.run-changes button:disabled { opacity: .6; cursor: default; }
+.changes-batch > p { margin-bottom: 4px; }
+.run-changes .changes-file { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px; text-align: left; }
+.changes-file span { flex: none; }
+.changes-file code { color: var(--text); overflow-wrap: anywhere; }
+.changes-detail pre { max-height: 260px; margin: 5px 0; padding: 8px; overflow: auto; background: var(--surface-muted); border-radius: 5px; font-size: 11px; line-height: 1.55; }
+.changes-confirm { padding: 6px; border: 1px solid var(--line); border-radius: 6px; }
+.changes-confirm p { margin: 0 0 5px; }
+.run-changes [role="alert"] { color: var(--red); }

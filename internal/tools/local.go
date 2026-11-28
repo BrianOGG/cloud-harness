@@ -56,6 +56,7 @@ func RegisterLocal(b *Broker, root string) error {
 func (b *Broker) ForkWorkspace(root string, reset ...string) (*Broker, error) {
 	b.mu.RLock()
 	fork := NewBroker(b.charge, b.grants)
+	fork.mcp = b.mcp // Connections and inventory belong to the process, including live disconnects.
 	fork.now = b.now
 	fork.CommandEnvAllow = append([]string(nil), b.CommandEnvAllow...)
 	fork.commandLimits = b.commandLimits
@@ -965,7 +966,7 @@ func runCommandSpec(b *Broker, abs string) Spec {
 		},
 		Execute: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			req, _ := ctx.Value(requestKey).(Request)
-			workDir, err := commandWorkDir(abs, stringField(args, "cwd"), req.ApprovalMode)
+			workDir, err := CommandWorkDir(abs, stringField(args, "cwd"), req.ApprovalMode)
 			if err != nil {
 				return nil, err
 			}
@@ -1525,7 +1526,7 @@ func ValidCommandCwd(root, cwd, mode string) bool {
 	if mode != "full-auto" {
 		return ValidCwd(root, cwd)
 	}
-	_, err := commandWorkDir(root, cwd, mode)
+	_, err := CommandWorkDir(root, cwd, mode)
 	return err == nil
 }
 
@@ -1545,7 +1546,8 @@ func commandControlPath(root, target string) bool {
 	return false
 }
 
-func commandWorkDir(root, cwd, mode string) (string, error) {
+// CommandWorkDir resolves the directory used at command dispatch.
+func CommandWorkDir(root, cwd, mode string) (string, error) {
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		return root, nil
@@ -1601,7 +1603,7 @@ func commandResourcesForMode(root, cwd, command, mode string) ([]string, error) 
 	workDir := root
 	var err error
 	if mode == "full-auto" {
-		workDir, err = commandWorkDir(root, cwd, mode)
+		workDir, err = CommandWorkDir(root, cwd, mode)
 	} else if strings.TrimSpace(cwd) != "" {
 		// Keep legacy preflight behavior; execution validates directory type
 		// and control paths independently in every mode.

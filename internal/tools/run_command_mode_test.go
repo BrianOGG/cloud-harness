@@ -114,7 +114,7 @@ func TestRunCommandFullAutoCwdBoundaries(t *testing.T) {
 			t.Fatalf("outside cwd allowed in %q", mode)
 		}
 		for _, cwd := range []string{"..", control, alias, configDir, configAlias, file, filepath.Join(outside, "missing")} {
-			if _, err := commandWorkDir(root, cwd, mode); err == nil {
+			if _, err := CommandWorkDir(root, cwd, mode); err == nil {
 				t.Fatalf("cwd=%q allowed in %q", cwd, mode)
 			}
 		}

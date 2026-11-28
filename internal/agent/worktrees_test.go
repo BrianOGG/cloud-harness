@@ -124,7 +124,7 @@ func TestWorktreeApprovalResumeAndSnapshotsStayIsolated(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].RunID != run.ID || summaries[0].BaseSHA != run.WorktreeBaseSHA || summaries[0].Branch != run.WorktreeBranch || len(summaries[0].Files) != 1 || summaries[0].Files[0] != "note.txt" || !strings.Contains(summaries[0].Diff, "+after") || !strings.Contains(summaries[0].Stat, "1 insertion(+), 1 deletion(-)") || summaries[0].Error != "" {
 		t.Fatalf("summary: %+v", summaries)
 	}
-	s, records := workspaceRecords(t, db, run.WorktreePath)
+	s, records := workspaceCheckpoints(t, db, run.WorktreePath)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 	if len(snapshotSkips(t, db, run.ID)) != 0 {
 		t.Fatal("worktree snapshots were skipped")
@@ -291,7 +291,7 @@ func TestWorktreeCancellationSummaryIncludesLastToolWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		records, err := db.ListWorkspaceSnapshots(context.Background(), id)
-		if err != nil || len(records) != 2 {
+		if err != nil || len(records) != 4 {
 			t.Fatalf("cancel snapshots: %+v, %v", records, err)
 		}
 	case <-ctx.Done():

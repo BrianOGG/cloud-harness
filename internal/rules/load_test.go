@@ -212,3 +212,49 @@ func TestConfigDirectory(t *testing.T) {
 		t.Fatalf("custom global discovery: %+v", loaded)
 	}
 }
+
+func TestScopeAncestorsFreezeAndStayInsideWorkspace(t *testing.T) {
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+	root := t.TempDir()
+	writeRule(t, root, "AGENTS.md", "root rule")
+	writeRule(t, root, "src/AGENTS.md", "parent rule")
+	writeRule(t, root, "src/ui/AGENTS.md", "frontend rule")
+	writeRule(t, root, "src/ui/node_modules/AGENTS.md", "vendor rule")
+	outside := writeRule(t, t.TempDir(), "AGENTS.md", "external")
+	writeRule(t, root, "lib/file.txt", "data")
+	if err := os.Symlink(outside, filepath.Join(root, "lib", "AGENTS.md")); err != nil {
+		t.Skip(err)
+	}
+	s := Scope{}
+	got := s.Next(root, []string{"src/ui/component.tsx", "src/ui/node_modules/file", "lib/file.txt", outside}, nil)
+	if len(got.Loaded) != 3 || got.Loaded[2].Source != "src/ui/AGENTS.md" || strings.Contains(got.Content, "vendor rule") || strings.Contains(got.Content, "external") {
+		t.Fatalf("unexpected scoped rules: %+v", got)
+	}
+	writeRule(t, root, "src/AGENTS.md", "changed")
+	if again := s.Next(root, []string{"src/file.go", "src/ui"}, nil); again.Content != "" {
+		t.Fatal("reread active rules")
+	}
+	writeRule(t, root, "other/AGENTS.md", strings.Repeat("large rule", MaxBytes))
+	late := s.Next(root, []string{"other/file.txt"}, nil)
+	if len(late.Omitted) != 1 || len(got.Content)+len(late.Content) > MaxBytes {
+		t.Fatal("run-level rules cap not enforced")
+	}
+}
+
+func TestScopeUsesResolvedWorkspaceAndHonorsReadPolicy(t *testing.T) {
+	t.Setenv("CLOUD_HARNESS_CONFIG", filepath.Join(t.TempDir(), "config"))
+	root := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(root, workspace); err != nil {
+		t.Skip(err)
+	}
+	writeRule(t, root, "web/AGENTS.md", "web only")
+	writeRule(t, root, "web/private/AGENTS.md", "restricted")
+	s := Scope{}
+	result := s.Next(workspace, []string{filepath.Join(workspace, "web/private/new.txt")}, func(path string) bool {
+		return filepath.Base(filepath.Dir(path)) != "private"
+	})
+	if len(result.Loaded) != 1 || result.Loaded[0].Source != "web/AGENTS.md" || strings.Contains(result.Content, "restricted") || len(result.Diagnostics) != 1 {
+		t.Fatalf("workspace scope or read policy lost: %+v", result)
+	}
+}
