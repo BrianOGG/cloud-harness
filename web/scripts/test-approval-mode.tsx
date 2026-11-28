@@ -40,10 +40,9 @@ const expectedModes = [
 ];
 function assertTrigger(mode: string) {
   const expected = expectedModes.find((item) => item.id === mode)!;
-  assert.equal(trigger().textContent, '');
+  assert.equal(trigger().textContent, expected.label);
   assert.equal(trigger().dataset.mode, mode);
   assert.equal(trigger().title, expected.label + ' · 下一轮生效');
-  assert.equal(trigger().children.length, 1);
   const icon = trigger().querySelector('svg')!;
   assert.ok(icon);
   assert.equal(icon.getAttribute('aria-hidden'), 'true');
@@ -69,7 +68,7 @@ try {
     assert.equal(approvalWaitReason(), '此调用需要你确认。');
     assert.doesNotMatch(approvalWaitReason(), /应自动放行|已自动执行|模式未记录/);
   });
-  await test('四种模式使用可区分的纯图标按钮，title 承载短名称和下一轮提示', async () => {
+  await test('四种模式显示对应的图标和短名称，title 提示下一轮生效', async () => {
     const icons = new Set<string>();
     for (const mode of expectedModes) {
       await mount(mode.id);

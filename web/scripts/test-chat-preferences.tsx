@@ -115,10 +115,9 @@ async function submitProvider() {
 }
 function assertApprovalMode(mode: string, label: string) {
   const button = container.querySelector<HTMLButtonElement>('button[aria-label="审批模式"]')!;
-  assert.equal(button.textContent, '');
+  assert.equal(button.textContent, label);
   assert.equal(button.dataset.mode, mode);
   assert.equal(button.title, label + ' · 下一轮生效');
-  assert.equal(button.querySelectorAll('svg').length, 1);
 }
 try {
   await test('session search filters by title or ID while starter tasks stay editable', async () => {
@@ -132,7 +131,12 @@ try {
     assert.deepEqual(visible(), ['检查工作区']);
     await type('[aria-label="搜索对话"]', '');
     assert.equal(visible().length, 2);
+    const starters = container.querySelector<HTMLDetailsElement>('.starters')!;
+    assert.equal(starters.open, false);
+    await act(async () => starters.querySelector('summary')!.click());
+    assert.equal(starters.open, true);
     await clickText('创建工作区文件');
+    assert.equal(starters.open, false);
     const draft = container.querySelector('textarea')!;
     assert.ok(draft.value.includes('hello.txt'));
     assert.equal(document.activeElement, draft);
@@ -183,13 +187,12 @@ try {
     assert.equal(scrolledTo, container.querySelector('.wait-card'));
     assert.ok(container.textContent?.includes('最终回答始终可见'));
   });
-  await test('composer keeps the approval icon on the left, short placeholders, and no keyboard hints or product SVG marks', async () => {
+  await test('composer shows the current approval mode on the left and keeps model and effort controls together', async () => {
     await reset(); await mount();
     assert.equal(container.querySelector('button.brand')?.textContent, 'Cloud Harness');
     assert.ok(container.querySelector('button.brand > span.brand-mark'));
-    assert.ok(container.querySelector('.welcome-inner > span.brand-mark.large'));
     assert.equal(container.querySelector('svg.brand-mark'), null);
-    assert.equal(container.querySelector('.welcome h2')?.textContent, '今天想做什么？');
+    assert.equal(container.querySelector('.welcome h2')?.textContent, '今天想构建什么？');
     assert.equal(container.querySelector('header [aria-label="会话模型"], header .header-model, header [aria-label="思考强度"], header [role="slider"]'), null);
     const composer = container.querySelector('.composer')!;
     assert.equal(composer.querySelector('select, input, form, .provider-editor'), null);

@@ -715,13 +715,14 @@ export default function App() {
           <button type="button" className="brand" onClick={() => openSession(null)}><span className="brand-mark" />Cloud Harness</button>
           <button type="button" className="icon-button" aria-label="收起侧栏" title="收起侧栏" onClick={() => toggleSidebar(false)}><Icon name="sidebar" size={18} /></button>
         </div>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label="工作区">
           <button type="button" className={`nav-item new-chat ${view === 'chat' && !activeSession ? 'current' : ''}`} onClick={() => openSession(null)}><Icon name="compose" />新对话</button>
+          <button type="button" className={`nav-item ${view === 'observability' ? 'current' : ''}`} aria-current={view === 'observability' ? 'page' : undefined} onClick={() => showPage('observability')}><Icon name="activity" />观测</button>
         </nav>
-        {sessions.length > 0 && <label className="session-search">
+        <label className="session-search">
           <Icon name="search" size={15} />
           <input type="search" aria-label="搜索对话" placeholder="搜索对话" value={sessionQuery} onChange={event => setSessionQuery(event.target.value)} />
-        </label>}
+        </label>
         <div className="session-list">
           {groups.length === 0 && <p className="sidebar-empty">{sessionQuery ? '没有匹配的对话' : '历史对话会显示在这里'}</p>}
           {groups.map((group) => (
@@ -738,11 +739,8 @@ export default function App() {
             </section>
           ))}
         </div>
-        <nav className="sidebar-settings" aria-label="工作区工具">
-          <button type="button" className={`nav-item ${view === 'observability' ? 'current' : ''}`} aria-current={view === 'observability' ? 'page' : undefined} onClick={() => showPage('observability')}><Icon name="activity" />观测</button>
-          <button type="button" className={`nav-item ${view === 'settings' ? 'current' : ''}`} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => showPage('settings')}><Icon name="settings" />设置</button>
-        </nav>
         <div className="sidebar-foot">
+          <button type="button" className={`nav-item ${view === 'settings' ? 'current' : ''}`} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => showPage('settings')}><Icon name="settings" />设置</button>
           <span className="connection" title={online === false ? '无法连接' : '连接状态'}>
             <span className={`dot ${online === false ? 'tone-fail' : online ? 'tone-ok' : 'tone-idle'}`} />
             {online === false ? '未连接' : online ? '已连接' : '连接中…'}
@@ -766,15 +764,19 @@ export default function App() {
         {view === 'chat' && empty && (
           <div className="welcome">
             <div className="welcome-inner">
-              <span className="brand-mark large" />
-              <h2>今天想做什么？</h2>
+              <h2>今天想构建什么？</h2>
               {composer}
-              <div className="suggestions" role="group" aria-label="示例任务">
-                {suggestions.map(({ label, icon, prompt }) => <button type="button" key={label} title={prompt} onClick={event => {
-                  setDraft(prompt);
-                  event.currentTarget.closest('.welcome')?.querySelector('textarea')?.focus();
-                }}><Icon name={icon} size={15} /><span>{label}</span></button>)}
-              </div>
+              <details className="starters">
+                <summary><Icon name="plus" size={14} />示例任务</summary>
+                <div className="suggestions" role="group" aria-label="示例任务">
+                  {suggestions.map(({ label, icon, prompt }) => <button type="button" key={label} title={prompt} onClick={event => {
+                    setDraft(prompt);
+                    const details = event.currentTarget.closest('details');
+                    if (details) details.open = false;
+                    event.currentTarget.closest('.welcome')?.querySelector('textarea')?.focus();
+                  }}><Icon name={icon} size={15} /><span>{label}</span></button>)}
+                </div>
+              </details>
             </div>
           </div>
         )}
