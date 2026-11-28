@@ -2,9 +2,28 @@ package snapshot
 
 import (
 	"testing"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
+
+func TestReviewPairsPartialForeignOverlap(t *testing.T) {
+	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var records []storage.WorkspaceSnapshot
+	for i, label := range []string{"b/batch-1/exec_x/pre", "a/batch-1/exec_x/pre", "a/batch-1/exec_x/post", "a/batch-2/exec_y/pre", "a/batch-2/exec_y/post"} {
+		records = append(records, storage.WorkspaceSnapshot{ID: label, Label: label, RunID: label[:1], WorkspaceID: "ws", CreatedAt: start.Add(time.Duration(i) * time.Second)})
+	}
+	bounds := func(string) (time.Time, time.Time) { return start, records[1].CreatedAt }
+	pairs, partial := ReviewPairs(records, "a", "ws", "/workspace", bounds)
+	if !partial || len(pairs) != 1 || pairs[0].Number != 2 {
+		t.Fatalf("overlap should affect only the first pair: %v, partial=%t", pairs, partial)
+	}
+	records[3].CreatedAt = time.Time{} // No timestamp evidence of separation.
+	pairs, partial = ReviewPairs(records, "a", "ws", "/workspace", bounds)
+	if !partial || len(pairs) != 0 {
+		t.Fatalf("incomplete timeline should stay conservative: %v, partial=%t", pairs, partial)
+	}
+}
 
 func TestReviewPairsUsesOnlyCompleteExecutionAttempts(t *testing.T) {
 	snap := func(run, label string) storage.WorkspaceSnapshot {
@@ -39,7 +58,7 @@ func TestReviewPairsUsesOnlyCompleteExecutionAttempts(t *testing.T) {
 		{"nested legacy foreign", records{a, snap("run_b", "batch-8/pre"), snap("run_b", "batch-8/post"), b}, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pairs, partial := ReviewPairs(tc.history, "run_a", "ws", "/workspace")
+			pairs, partial := ReviewPairs(tc.history, "run_a", "ws", "/workspace", nil)
 			if partial != tc.partial || 2*len(pairs) != len(tc.want) {
 				t.Fatalf("pairs=%v incomplete=%v", pairs, partial)
 			}

@@ -327,6 +327,99 @@ func TestRunChangesDelegatedWorktree(t *testing.T) {
 	child.restore("child.txt", true, 409)
 }
 
+func (f changesFixture) interruptedRun(status domain.RunStatus, start, end time.Time, phase string) string {
+	f.t.Helper()
+	foreign := f.run
+	foreign.ID, foreign.Status = "run_interrupted", status
+	foreign.CreatedAt, foreign.UpdatedAt = start, end
+	if err := f.db.CreateRun(f.t.Context(), foreign); err != nil {
+		f.t.Fatal(err)
+	}
+	marker := f.before
+	marker.ID, marker.RunID = "", foreign.ID
+	marker.Label = foreign.ID + "/batch-1/exec_interrupted/" + phase
+	marker.CreatedAt = start
+	if phase == "post" {
+		marker.CreatedAt = end
+	}
+	if _, err := f.db.CreateWorkspaceSnapshot(f.t.Context(), marker); err != nil {
+		f.t.Fatal(err)
+	}
+	return foreign.ID
+}
+
+func TestRunChangesIncompleteForeignDispatch(t *testing.T) {
+	const (
+		earlier = iota
+		atStart
+		during
+		atEnd
+		later
+	)
+	for _, tc := range []struct {
+		name, marker string
+		status       domain.RunStatus
+		start, end   int
+		visible      bool
+	}{
+		{"failed before review", "pre", domain.RunFailed, earlier, earlier, true},
+		{"running with old update", "pre", domain.RunRunning, earlier, earlier, false},
+		{"terminal during review", "pre", domain.RunFailed, earlier, during, false},
+		{"terminal exactly at review start", "pre", domain.RunCompleted, earlier, atStart, false},
+		{"missing pre started later", "post", domain.RunCompleted, later, later, true},
+		{"missing pre started at review end", "post", domain.RunCompleted, atEnd, later, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupChanges(t, false)
+			before, after := f.before.CreatedAt, f.after.CreatedAt
+			times := [...]time.Time{before.Add(-time.Minute), before, before.Add(after.Sub(before) / 2), after, after.Add(time.Minute)}
+			f.interruptedRun(tc.status, times[tc.start], times[tc.end], tc.marker)
+			raw := modelConfigRequest(t, f.h, "GET", f.base(), nil, 200, "").Body
+			var list review
+			if err := json.Unmarshal(raw.Bytes(), &list); err != nil || list.Incomplete == tc.visible || (len(list.Batches) == 1) != tc.visible {
+				t.Fatalf("unexpected review: %s", raw)
+			}
+			if tc.visible {
+				f.diff("new", 200)
+				f.restore("new", true, 200)
+			} else {
+				f.diff("new", 409)
+				f.restore("new", true, 409)
+			}
+		})
+	}
+}
+
+func TestRunChangesCancelledForeignDispatch(t *testing.T) {
+	f := setupChanges(t, false)
+	earlier := f.before.CreatedAt.Add(-time.Minute)
+	id := f.interruptedRun(domain.RunCancelled, earlier, earlier, "pre")
+	f.diff("new", 200)
+	// Even an expired lease may have covered this exact review interval.
+	for _, expires := range []time.Time{f.after.CreatedAt, time.Now().Add(time.Minute)} {
+		if _, err := f.db.AcquireLease(t.Context(), id, "worker", earlier, expires); err != nil {
+			t.Fatal(err)
+		}
+		f.diff("new", 409)
+	}
+	inv := domain.Invocation{ID: "inv_interrupted", Status: domain.InvRunning, Dispatched: true}
+	if err := f.db.SaveBatch(t.Context(), storage.StoredBatch{ID: "batch_foreign", RunID: id, Invocations: []domain.Invocation{inv}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.ReleaseLease(t.Context(), id, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	f.diff("new", 409)
+	// Its eventual completion overlapped the reviewed write even though
+	// cancellation and lease release are both historical by review time.
+	inv.Status = domain.InvSucceeded
+	if err := f.db.CommitInvocation(t.Context(), id, inv, 1, storage.Event{Type: "invocation.SUCCEEDED", Persistent: true, CreatedAt: f.after.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	f.diff("new", 409)
+	f.restore("new", true, 409)
+}
+
 func TestRunChangesFromToolDispatch(t *testing.T) {
 	m, h := newServer(t)
 	db := m.Store.(*sqlite.DB)
@@ -337,12 +430,31 @@ func TestRunChangesFromToolDispatch(t *testing.T) {
 	}
 	m.Grants = []domain.Grant{{Tool: "write_file", Op: "call", ResourceScope: m.Workspace, State: "active", Subject: "test"}}
 	m.Provider = &provider.Mock{Responses: []domain.ModelResponse{
+		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{ProviderCallID: "first-write", Name: "write_file", Arguments: json.RawMessage(`{"path":"earlier.txt","content":"earlier"}`)}}}},
+		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Kind: domain.ItemText, Text: "done"}}},
 		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Kind: domain.ItemToolCall, ToolCall: &domain.ToolCall{ProviderCallID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"edit.txt","content":"captured"}`)}}}},
 		{Provider: "mock", Complete: true, Items: []domain.ResponseItem{{Kind: domain.ItemText, Text: "done"}}},
 	}}
 	session, err := m.CreateSession(t.Context())
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Reproduce the persisted history after losing the first run's closing
+	// snapshots. The next real write must still be reviewable and restorable.
+	first, err := m.RunMessage(t.Context(), session.ID, "write the first file")
+	if err != nil || first.Status != domain.RunCompleted {
+		t.Fatalf("first dispatch: %+v, %v", first, err)
+	}
+	records, err := db.ListWorkspaceSnapshots(t.Context(), first.WorkspaceID)
+	if err != nil || len(records) != 4 {
+		t.Fatalf("first dispatch snapshots: %+v, %v", records, err)
+	}
+	for _, rec := range records {
+		if strings.HasSuffix(rec.Label, "/post") {
+			if err := db.DeleteWorkspaceSnapshot(t.Context(), rec.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	run, err := m.RunMessage(t.Context(), session.ID, "write the file")
 	if err != nil || run.Status != domain.RunCompleted {
@@ -359,8 +471,14 @@ func TestRunChangesFromToolDispatch(t *testing.T) {
 		t.Fatalf("changed files: %+v", b.Files)
 	}
 	f.before.ID, f.after.ID = b.Before, b.After
+	if patch := f.diff("edit.txt", 200); !strings.Contains(patch, "+captured") {
+		t.Fatalf("missing second run's write: %s", patch)
+	}
 	f.restore("edit.txt", true, 200)
 	if _, err := os.Stat(filepath.Join(m.Workspace, "edit.txt")); !os.IsNotExist(err) {
 		t.Fatal("restore did not remove tool-created file")
+	}
+	if contents, err := os.ReadFile(filepath.Join(m.Workspace, "earlier.txt")); err != nil || string(contents) != "earlier" {
+		t.Fatalf("first run's write after restore: %q, %v", contents, err)
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BrianOGG/cloud-harness/internal/storage"
 )
@@ -47,7 +49,7 @@ func captureLabel(rec storage.WorkspaceSnapshot) (batch, attempt, phase string, 
 
 // ReviewPairs consumes chronological workspace history. Legacy batch-wide
 // checkpoints cannot prove that no approval wait occurred inside their diff.
-func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path string) (pairs []BatchPair, incomplete bool) {
+func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path string, runBounds func(string) (time.Time, time.Time)) (pairs []BatchPair, incomplete bool) {
 	windows := map[string]*captureWindow{}
 	var ordered []*captureWindow
 	type checkpointHistory struct {
@@ -58,6 +60,9 @@ func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path s
 	checkpoints := map[string]*checkpointHistory{}
 	depth := make([]int, len(records)+1)
 	for i, rec := range records {
+		if rec.CreatedAt.IsZero() || (i > 0 && rec.CreatedAt.Before(records[i-1].CreatedAt)) {
+			runBounds = nil // Index order alone is safe when capture times are unknown.
+		}
 		if rec.WorkspaceID != workspaceID || (rec.WorkspacePath != "" && rec.WorkspacePath != path) {
 			continue
 		}
@@ -125,19 +130,29 @@ func ReviewPairs(records []storage.WorkspaceSnapshot, runID, workspaceID, path s
 	for _, w := range ordered {
 		first, last := w.first, w.last
 		if w.run != runID {
-			// A missing boundary from a concurrent writer leaves the
-			// extent of that execution unknown up to its rewind checkpoints.
+			// Prefer a recorded rewind checkpoint. Without one, use the
+			// foreign run's lifetime if known. Equal times can overlap.
 			h := checkpoints[w.batch]
 			if w.Before.ID == "" {
 				first = 0
 				if h.first >= 0 && h.first < w.first {
 					first = h.first
+				} else if runBounds != nil {
+					start, _ := runBounds(w.run)
+					if !start.IsZero() && !records[w.first].CreatedAt.Before(start) {
+						first = sort.Search(len(records), func(i int) bool { return !records[i].CreatedAt.Before(start) })
+					}
 				}
 			}
 			if w.After.ID == "" {
 				last = len(records) - 1
 				if h.last > w.last {
 					last = h.last
+				} else if runBounds != nil {
+					start, end := runBounds(w.run)
+					if !end.IsZero() && !end.Before(records[w.last].CreatedAt) && !records[w.first].CreatedAt.Before(start) {
+						last = sort.Search(len(records), func(i int) bool { return records[i].CreatedAt.After(end) }) - 1
+					}
 				}
 			}
 		}

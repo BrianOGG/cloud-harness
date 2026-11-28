@@ -91,7 +91,19 @@ func (s *Server) openReview(ctx context.Context, id string) (*changeReview, erro
 	if err != nil {
 		return nil, err
 	}
-	pairs, incomplete := snapshot.ReviewPairs(records, run.ID, idForPath, path)
+	var runBounds func(string) (time.Time, time.Time)
+	if source, ok := store.(interface {
+		SnapshotRunBounds(context.Context, string, string) (time.Time, time.Time, error)
+	}); ok {
+		runBounds = func(id string) (time.Time, time.Time) {
+			start, end, err := source.SnapshotRunBounds(ctx, idForPath, id)
+			if err != nil {
+				return time.Time{}, time.Time{}
+			}
+			return start, end
+		}
+	}
+	pairs, incomplete := snapshot.ReviewPairs(records, run.ID, idForPath, path, runBounds)
 	result := &changeReview{run: run, binding: binding, pairs: pairs, incomplete: incomplete}
 	if len(pairs) != 0 {
 		result.snapper, err = snapshot.OpenExisting(path, store)
