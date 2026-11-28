@@ -204,10 +204,19 @@ func (s *remoteMCP) postOnce(ctx context.Context, method string, params any, not
 		return nil, uncertain("MCP connection failed or timed out")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+	if resp.StatusCode == http.StatusForbidden {
+		if s.auth != nil {
+			s.auth.noteForbidden(resp.Header.Values("WWW-Authenticate"), used)
+			if method != "tools/call" {
+				return nil, tools.ErrMCPAuthorization
+			}
+		}
+		return nil, domain.E(domain.CodeAuthDenied, "MCP refused this operation (HTTP 403); check access and scopes in Settings")
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
 		err = fmt.Errorf("MCP refused access (HTTP %d); check credentials and scopes", resp.StatusCode)
 		if s.auth != nil {
-			if s.auth.reject(resp.Header.Values("WWW-Authenticate"), used, retryAuth && resp.StatusCode == 401) {
+			if s.auth.reject(resp.Header.Values("WWW-Authenticate"), used, retryAuth) {
 				_ = resp.Body.Close()
 				return s.postOnce(ctx, method, params, notify, false)
 			}
