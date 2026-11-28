@@ -321,6 +321,9 @@ func runTask(ctx context.Context, opt Options) (Result, error) {
 		return out, err
 	}
 	out.Failures = score(ctx, opt.Task, abs, run.Status, run.FinalAnswer, out.ToolCalls, !useScripted)
+	if mock, ok := prov.(*provider.Mock); useScripted && ok {
+		out.Failures = append(out.Failures, scoreScriptedContext(opt.Task, mock.Requests)...)
+	}
 	if extra := scoreHistory(ctx, db, ses.ID, opt.Task, out.ToolCalls); len(extra) > 0 {
 		out.Failures = append(out.Failures, extra...)
 	}

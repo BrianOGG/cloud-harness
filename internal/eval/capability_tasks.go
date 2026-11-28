@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BrianOGG/cloud-harness/internal/domain"
@@ -52,6 +53,40 @@ func scoreNestedRules(root string, status domain.RunStatus) []string {
 		}
 	}
 	return failures
+}
+
+// Scripted responses know the fixture answers. Check the actual model inputs
+// as well, so a missing rule or undiscovered schema cannot yield a false pass.
+func scoreScriptedContext(task string, requests []provider.Request) []string {
+	if task != nestedRulesTask && task != catalogTask {
+		return nil
+	}
+	if len(requests) < 2 {
+		return []string{"missing model requests for context check"}
+	}
+	if task == catalogTask {
+		hasTool := func(req provider.Request, name string) bool {
+			return slices.ContainsFunc(req.Tools, func(tool provider.ToolDefinition) bool { return tool.Name == name })
+		}
+		if !hasTool(requests[0], "search_mcp_tools") || hasTool(requests[0], catalogTool) || !hasTool(requests[1], catalogTool) {
+			return []string{"model did not receive the target MCP schema after catalog discovery"}
+		}
+		return nil
+	}
+	hasRule := func(req provider.Request, path string) bool {
+		return slices.ContainsFunc(req.Prefix, func(msg provider.Message) bool {
+			return strings.Contains(msg.Content, strings.TrimSpace(ruleFixture[path]))
+		})
+	}
+	if !hasRule(requests[0], "AGENTS.md") {
+		return []string{"root rule missing from initial model prefix"}
+	}
+	for _, path := range []string{"frontend/AGENTS.md", "backend/api/AGENTS.md"} {
+		if hasRule(requests[0], path) || !hasRule(requests[1], path) {
+			return []string{"incorrect model rule scope for " + path}
+		}
+	}
+	return nil
 }
 
 // In-process tools keep the catalog, descriptors and answers identical between
