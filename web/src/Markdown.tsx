@@ -92,11 +92,13 @@ export function Markdown({ text, copyReply = false }: { text: string; copyReply?
   const body = useRef<HTMLDivElement>(null);
   // Read exactly the blocks rendered by the Markdown parser, including indented code.
   const choices = () => {
-    const blocks = Array.from(body.current!.querySelectorAll('.code-block pre > code'), (code, i) => ({
+    const markdown = body.current!;
+    const blocks = Array.from(markdown.querySelectorAll('.code-block pre > code'), (code, i) => ({
       label: [`代码 ${i + 1}`, code.className.replace(/^language-/, '')].filter(Boolean).join(' · '),
       text: (code.textContent || '').replace(/\n$/, ''),
     }));
-    if (blocks.length === 1 && body.current!.querySelector(':scope > .code-block:only-child')) return blocks;
+    const standalone = markdown.querySelector(':scope > .code-block:only-child');
+    if (standalone && Array.from(markdown.childNodes).every(node => node === standalone || !node.textContent?.trim())) return blocks;
     return [{ label: '完整回复', text }, ...blocks];
   };
   return (

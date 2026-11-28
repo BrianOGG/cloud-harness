@@ -95,6 +95,11 @@ try {
       await click(copy);
       await act(async () => options()[0].click());
       assert.equal(clipboard.at(-1), mixed);
+      const literalHtml = '<div>可见文本</div>\n\n~~~sh\npwd\n~~~';
+      await show(literalHtml);
+      assert.deepEqual(options().map(button => button.textContent), ['完整回复', '代码 1 · sh']);
+      await act(async () => options()[0].click());
+      assert.equal(clipboard.at(-1), literalHtml);
     } finally {
       Reflect.deleteProperty(navigator, 'clipboard');
     }
