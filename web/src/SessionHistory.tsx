@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import type { HarnessEvent, RunView, SessionMessage } from './api';
 import { Turn } from './Chat';
 import type { TurnActions } from './Chat';
-import { Icon } from './Icon';
 import { projectTranscript } from './transcript';
 
 export function SessionHistory({ messages, runs = [], events = {}, live = {}, acting = {}, actions, approvalMode, loading, error, onRefresh, onInspect }: {
@@ -22,10 +21,7 @@ export function SessionHistory({ messages, runs = [], events = {}, live = {}, ac
   const turnActions = actions || { respond() {}, addBudget() {}, cancel() {}, inspect: onInspect, focusAnswer() {}, loadEvents() {} };
   return (
     <section className="session-history" aria-label="会话历史" aria-busy={loading}>
-      <div className="history-toolbar">
-        <span role="status">{loading ? (turns.length ? '正在同步…' : '正在加载历史…') : ''}</span>
-        <button type="button" className="icon-button" disabled={loading} onClick={onRefresh} aria-label="刷新会话历史" title="刷新会话历史"><Icon name="refresh" size={14} /></button>
-      </div>
+      {loading && turns.length === 0 && <p className="history-empty" role="status">正在加载历史…</p>}
       {error && <div className="history-error" role="alert"><span>历史加载失败：{error}</span><button type="button" className="button" onClick={onRefresh}>重试</button></div>}
       {!loading && !error && turns.length === 0 && <p className="history-empty">这个会话还没有已保存的消息。</p>}
       {turns.map((turn) => <Turn key={turn.id} turn={turn} events={events} live={live} acting={acting} actions={turnActions} approvalMode={approvalMode} />)}

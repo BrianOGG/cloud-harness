@@ -758,6 +758,7 @@ export default function App() {
             <button type="button" className="icon-button" aria-label="新对话" title="新对话" onClick={() => openSession(null)}><Icon name="compose" size={18} /></button>
           </>}
           <h1>{view === 'settings' ? '设置' : view === 'observability' ? '观测' : activeSession ? titleOf(activeSession) : '新对话'}</h1>
+          {view === 'chat' && activeSession && <button type="button" className="icon-button" disabled={history.loading} onClick={refreshHistory} aria-label="刷新会话历史" title="刷新会话历史"><Icon name="refresh" size={15} /></button>}
         </header>
 
         {error && <div className="flash" role="alert"><Icon name="alert" /><span>{error}</span><button type="button" className="icon-button" aria-label="关闭提示" onClick={() => setError('')}><Icon name="close" size={14} /></button></div>}
@@ -772,7 +773,7 @@ export default function App() {
                 {suggestions.map(({ label, icon, prompt }) => <button type="button" key={label} title={prompt} onClick={event => {
                   setDraft(prompt);
                   event.currentTarget.closest('.welcome')?.querySelector('textarea')?.focus();
-                }}><Icon name={icon} /><span>{label}</span><Icon name="insert" size={13} /></button>)}
+                }}><Icon name={icon} size={15} /><span>{label}</span></button>)}
               </div>
             </div>
           </div>

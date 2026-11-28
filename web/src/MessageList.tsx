@@ -1,5 +1,5 @@
 import type { SessionMessage } from './api';
-import { CopyButton, Markdown } from './Markdown';
+import { Markdown } from './Markdown';
 
 const kindLabels: Record<SessionMessage['kind'], string> = {
   input: '你的消息',
@@ -50,8 +50,7 @@ export function MessageList({ messages }: { messages: readonly SessionMessage[] 
                 ? <div className="user-row"><div className="user-bubble">{message.content || '（空消息）'}{validTime && <time className="user-message-time" dateTime={message.created_at} title={displayedTime + '（上海时间）'} aria-label={'消息时间：' + displayedTime + '（上海时间）'} tabIndex={0}>{displayedTime}</time>}</div></div>
                 : system
                   ? <div className={`history-fact ${message.status === 'failed' ? 'history-failed' : ''}`}><strong>{factLabel(message)}</strong>{!mappedApprovalDecision && <p>{message.content || '（空消息）'}</p>}</div>
-                  : <div className="history-response"><Markdown text={message.content || '（空消息）'} /></div>}
-              {message.role === 'assistant' && <div className="history-actions"><CopyButton text={message.content} /></div>}
+                  : <div className="history-response"><Markdown text={message.content || '（空消息）'} copyReply={Boolean(message.content)} /></div>}
             </li>
           );
         })}

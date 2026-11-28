@@ -65,6 +65,38 @@ async function click(selector: string) {
 }
 
 try {
+  await test('replies have one copy entry for text, a single block or mixed Markdown', async () => {
+    await reset();
+    const clipboard: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (text: string) => { clipboard.push(text); },
+    } });
+    const copy = '.turn-final .copy-action > button';
+    async function show(answer: string) {
+      await render(history([{ ...base, final_answer: answer }], [input]));
+      assert.equal(container.querySelectorAll('.turn-final button').length, 1);
+      await click(copy);
+    }
+    try {
+      await show('**粗体**');
+      assert.deepEqual(clipboard, ['**粗体**']);
+      await show('~~~js\nconst value = 1;\n~~~');
+      assert.equal(clipboard.at(-1), 'const value = 1;');
+      const mixed = '命令\n\n~~~sh\npwd\n~~~\n\n    echo done';
+      await show(mixed);
+      const options = () => Array.from(container.querySelectorAll<HTMLButtonElement>('.turn-final .copy-options button'));
+      assert.deepEqual(options().map(button => button.textContent), ['完整回复', '代码 1 · sh', '代码 2']);
+      await act(async () => options()[2].click());
+      assert.equal(clipboard.at(-1), 'echo done');
+      assert.equal(options().length, 0);
+      await click(copy);
+      await act(async () => options()[0].click());
+      assert.equal(clipboard.at(-1), mixed);
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   await test('projection joins distinct child turn IDs, preserves audit order and uses only completed root final_answer', () => {
     const snapshot = JSON.stringify([audit, childRecord, base, child]);
     const turns = projectTranscript([...audit, childRecord], [child, base]);
