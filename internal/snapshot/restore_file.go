@@ -103,7 +103,12 @@ func (s *Snapshotter) RestoreReviewedFile(ctx context.Context, pair BatchPair, p
 		}
 		defer func() { _ = os.RemoveAll(temp) }()
 		full := filepath.Join(temp, "file")
-		if err := writeEntry(full, before.mode, data); err != nil {
+		if before.mode == "120000" {
+			err = os.Symlink(string(data), full)
+		} else {
+			err = os.WriteFile(full, data, 0600)
+		}
+		if err != nil {
 			return safety, err
 		}
 		staged, err = filepath.Rel(s.workspace, full)
@@ -117,6 +122,24 @@ func (s *Snapshotter) RestoreReviewedFile(ctx context.Context, pair BatchPair, p
 		}
 		if before.oid == "" {
 			return root.Remove(path)
+		}
+		if before.mode != "120000" {
+			// Git retains only the owner's execute bit. Never publish old
+			// bytes to group/other based on a synthesized Git mode.
+			mode := os.FileMode(0600)
+			if after.mode == "100644" || after.mode == "100755" {
+				info, err := root.Lstat(path)
+				if err != nil {
+					return err
+				}
+				mode &= info.Mode().Perm()
+			}
+			if before.mode == "100755" {
+				mode |= 0100
+			}
+			if err := root.Chmod(staged, mode); err != nil {
+				return err
+			}
 		}
 		if after.oid == "" {
 			if err := root.MkdirAll(filepath.Dir(path), 0755); err != nil {
