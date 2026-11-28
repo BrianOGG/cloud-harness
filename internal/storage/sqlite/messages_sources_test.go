@@ -151,7 +151,7 @@ func copyMessageSources(t *testing.T, from, to *DB) {
 			var names []string
 			var args []any
 			for i, column := range columns {
-				if column != "final_answer_response_id" {
+				if column != "final_answer_response_id" && column != "project_id" {
 					names = append(names, column)
 					args = append(args, values[i])
 				}

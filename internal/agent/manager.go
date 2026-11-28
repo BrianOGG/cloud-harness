@@ -261,6 +261,9 @@ func (m *Manager) RunMessageWithOptions(ctx context.Context, sessionID, message 
 			return storage.Run{}, err
 		}
 		run.WorkspaceID = workspaceID
+		// Runs may proceed without an accessible workspace. In that case
+		// leave project memory unbound rather than loading another scope.
+		run.ProjectID, _ = m.MemoryProjectID(ctx)
 	}
 	if err := m.Store.CreateTurn(ctx, turn); err != nil {
 		return storage.Run{}, err
@@ -478,6 +481,15 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 	}
 	for _, ref := range references {
 		_ = m.event(ctx, run.ID, "context.reference", ref)
+	}
+	if run.ParentRunID == "" && run.ProjectID != "" {
+		memory, err := m.confirmedMemoryContext(ctx, run.ProjectID)
+		if err != nil {
+			return m.finish(ctx, run, domain.EventFatal, "", asDomain(err))
+		}
+		if memory != "" {
+			recent = append([]contextpkg.Message{{Role: "user", Content: memory}}, recent...)
+		}
 	}
 	asm := contextpkg.Assemble(system, digest, mem.Prompt(), recent, userMessage)
 	prefixN := len(asm.StaticPrefix)

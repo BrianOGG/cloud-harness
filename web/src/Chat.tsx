@@ -6,6 +6,7 @@ import { ApprovalModeMenu } from './ApprovalMode';
 import { ReasoningEffortPicker } from './ReasoningEffort';
 import { approvalModeLabel, approvalOperation, approvalWaitReason, approvalWorkingDirectory } from './approval';
 import { MessageList } from './MessageList';
+import { ConfirmMemory } from './ProjectMemory';
 import { turnSummary } from './transcript';
 import type { TranscriptTurn } from './transcript';
 import { budgetExtension } from './budget';
@@ -193,6 +194,7 @@ export function Turn({ turn, events, live, acting, actions, approvalMode }: {
       <MessageList messages={turn.conversation} />
       <div className="assistant">
         {turn.finalAnswer && <div className="turn-final" aria-label="Harness 最终答复"><Markdown text={turn.finalAnswer} copyReply /></div>}
+        {turn.finalAnswer && root && <ConfirmMemory sessionId={root.session_id} runId={root.id} />}
         <WorkBlock turn={turn} events={events} live={live} acting={acting} actions={actions} approvalMode={approvalMode} />
         {root?.status === 'FAILED' && <p className="run-error" role="alert">{root.error?.message || root.error?.code || '未生成最终答复，请查看运行详情。'}</p>}
         {turn.runs.filter((run) => run.status === 'WAITING' && ['APPROVAL', 'USER', 'BUDGET', 'RECONCILIATION'].includes(run.wait_reason || '')).map((run) => <section key={run.id} className="current-run" data-run-id={run.id} aria-label={(run.parent_id ? '子任务' : '本轮') + '当前操作'}>

@@ -98,6 +98,7 @@ type Run struct {
 	SessionID       string
 	TurnID          string
 	WorkspaceID     string
+	ProjectID       string // Canonical project for explicitly confirmed memory.
 	WorktreeBaseSHA string
 	WorktreeBranch  string
 	WorktreePath    string
@@ -244,6 +245,7 @@ type PruneRunsResult struct {
 
 // Store is the single persisted source of truth used by the run manager.
 type Store interface {
+	ProjectMemoryStore
 	Close() error
 	CreateSession(ctx context.Context, s Session) error
 	GetSession(ctx context.Context, id string) (Session, error)
