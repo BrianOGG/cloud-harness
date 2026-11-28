@@ -101,6 +101,10 @@ func (db *DB) CreateTurn(ctx context.Context, t storage.Turn) error {
 }
 
 func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
+	return db.CreateRunWithPreferences(ctx, r, nil)
+}
+
+func (db *DB) CreateRunWithPreferences(ctx context.Context, r storage.Run, prefs *storage.SessionPreferences) error {
 	budget, err := json.Marshal(r.Budget)
 	if err != nil {
 		return err
@@ -122,6 +126,11 @@ func (db *DB) CreateRun(ctx context.Context, r storage.Run) error {
 	}
 	if r.ParentRunID == "" && r.TurnID != "" {
 		if _, err := tx.ExecContext(ctx, "UPDATE messages SET run_id = COALESCE((SELECT root.id FROM runs root WHERE root.turn_id = ? AND root.session_id = ? AND root.parent_run_id = '' ORDER BY root.created_at, root.id LIMIT 1), '') WHERE id = ? AND session_id = ? AND turn_id = ?", r.TurnID, r.SessionID, "msg_user_"+r.TurnID, r.SessionID, r.TurnID); err != nil {
+			return err
+		}
+	}
+	if prefs != nil {
+		if err := db.saveSessionPreferences(ctx, tx, *prefs); err != nil {
 			return err
 		}
 	}

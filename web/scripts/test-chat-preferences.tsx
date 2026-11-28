@@ -121,6 +121,23 @@ function assertApprovalMode(mode: string, label: string) {
   assert.equal(button.querySelectorAll('svg').length, 1);
 }
 try {
+  await test('session search filters by title or ID while starter tasks stay editable', async () => {
+    await reset();
+    localStorage.setItem('cloud-harness.web-titles', JSON.stringify({ ses_a: '检查工作区', ses_b: '部署区域' }));
+    await mount();
+    const visible = () => Array.from(container.querySelectorAll('.session-title'), node => node.textContent);
+    await type('[aria-label="搜索对话"]', '区域');
+    assert.deepEqual(visible(), ['部署区域']);
+    await type('[aria-label="搜索对话"]', 'SES_A');
+    assert.deepEqual(visible(), ['检查工作区']);
+    await type('[aria-label="搜索对话"]', '');
+    assert.equal(visible().length, 2);
+    await clickText('创建工作区文件');
+    const draft = container.querySelector('textarea')!;
+    assert.ok(draft.value.includes('hello.txt'));
+    assert.equal(document.activeElement, draft);
+    assert.equal(seen.some(request => request.method === 'POST'), false);
+  });
   await test('session preferences load, save, and stay separate across conversations', async () => {
     await reset(); localStorage.setItem('cloud-harness.web-session', 'ses_a'); await mount();
     assertApprovalMode('safe', '读取自动');

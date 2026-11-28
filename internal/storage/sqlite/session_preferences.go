@@ -28,9 +28,13 @@ func (db *DB) SaveSessionPreferences(ctx context.Context, p storage.SessionPrefe
 	if _, err := db.GetSession(ctx, p.SessionID); err != nil {
 		return err
 	}
+	return db.saveSessionPreferences(ctx, db.sql, p)
+}
+
+func (db *DB) saveSessionPreferences(ctx context.Context, writer txer, p storage.SessionPreferences) error {
 	if p.ReasoningEffort == "" {
 		p.ReasoningEffort = "default"
 	}
-	_, err := db.sql.ExecContext(ctx, `INSERT INTO session_preferences(session_id, approval_mode, model_id, reasoning_effort, updated_at) VALUES(?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode, model_id=excluded.model_id, reasoning_effort=excluded.reasoning_effort, updated_at=excluded.updated_at`, p.SessionID, p.ApprovalMode, p.ModelID, p.ReasoningEffort, formatTime(db.now()))
+	_, err := writer.ExecContext(ctx, `INSERT INTO session_preferences(session_id, approval_mode, model_id, reasoning_effort, updated_at) VALUES(?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode, model_id=excluded.model_id, reasoning_effort=excluded.reasoning_effort, updated_at=excluded.updated_at`, p.SessionID, p.ApprovalMode, p.ModelID, p.ReasoningEffort, formatTime(db.now()))
 	return err
 }

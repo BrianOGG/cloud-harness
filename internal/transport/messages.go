@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -85,6 +86,17 @@ func (s *Server) listSessionMessages(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var generation, revision int64
+	if query.Has("sync") {
+		var gerr, rerr error
+		g, rev, ok := strings.Cut(query.Get("sync"), ".")
+		generation, gerr = strconv.ParseInt(g, 10, 64)
+		revision, rerr = strconv.ParseInt(rev, 10, 64)
+		if !ok || gerr != nil || rerr != nil || generation < 0 || revision < 0 || query.Has("cursor") || len(query["sync"]) != 1 {
+			writeErr(w, domain.E(domain.CodeInvalidArgument, "invalid message sync cursor"))
+			return
+		}
+	}
 	ctx := r.Context()
 	if _, err := s.Manager.Store.GetSession(ctx, sessionID); err != nil {
 		if domain.IsCode(err, domain.CodeNotFound) {
@@ -94,6 +106,20 @@ func (s *Server) listSessionMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if query.Has("sync") {
+		page, err := s.Manager.Store.SyncMessages(ctx, sessionID, generation, revision, limit)
+		if err != nil {
+			writeErr(w, domain.E("internal", "request failed"))
+			return
+		}
+		rows, err := messageViews(page.Messages)
+		if err != nil {
+			writeErr(w, domain.E("internal", "request failed"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"messages": rows, "sync": strconv.FormatInt(page.Generation, 10) + "." + strconv.FormatInt(page.Revision, 10), "more": page.More, "reset": page.Reset})
+		return
+	}
 	// The store owns the consistent read, ordering, and look-ahead. No anchor
 	// lookup or transcript reconstruction is needed, even for a deleted ID.
 	page, err := s.Manager.Store.ListMessages(ctx, sessionID, after, limit)
@@ -101,20 +127,12 @@ func (s *Server) listSessionMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E("internal", "request failed"))
 		return
 	}
-	out := messagePageView{Messages: make([]messageView, 0, len(page.Messages))}
-	for _, message := range page.Messages {
-		created, err := formatMessageTime(message.CreatedAt)
-		if err != nil {
-			writeErr(w, domain.E("internal", "request failed"))
-			return
-		}
-		out.Messages = append(out.Messages, messageView{
-			ID: message.ID, SessionID: message.SessionID,
-			RunID: messageAssociation(message.RunID), TurnID: messageAssociation(message.TurnID),
-			Role: message.Role, Kind: message.Kind, Status: message.Status,
-			Content: message.Content, Event: message.Event, CreatedAt: created,
-		})
+	rows, err := messageViews(page.Messages)
+	if err != nil {
+		writeErr(w, domain.E("internal", "request failed"))
+		return
 	}
+	out := messagePageView{Messages: rows}
 	if page.NextCursor != nil {
 		out.NextCursor, err = encodeMessageCursor(sessionID, *page.NextCursor)
 		if err != nil {
@@ -123,6 +141,23 @@ func (s *Server) listSessionMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func messageViews(messages []storage.Message) ([]messageView, error) {
+	out := make([]messageView, 0, len(messages))
+	for _, message := range messages {
+		created, err := formatMessageTime(message.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, messageView{
+			ID: message.ID, SessionID: message.SessionID,
+			RunID: messageAssociation(message.RunID), TurnID: messageAssociation(message.TurnID),
+			Role: message.Role, Kind: message.Kind, Status: message.Status,
+			Content: message.Content, Event: message.Event, CreatedAt: created,
+		})
+	}
+	return out, nil
 }
 
 func messageAssociation(id string) *string {

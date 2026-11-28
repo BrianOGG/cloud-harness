@@ -7,7 +7,7 @@ import { actionLabels, dayGroup, errorText, isActive, shortId, statusName, statu
 import { Icon } from './Icon';
 import { Observability } from './Observability';
 import { RunBudget } from './RunBudget';
-import { loadSessionMessages, mergeSessionMessages } from './history';
+import { syncSessionMessages, type TranscriptSnapshot } from './history';
 import { SessionHistory } from './SessionHistory';
 import { Settings } from './Settings';
 import { approvalModeLabel } from './approval';
@@ -25,10 +25,10 @@ const DEFAULT_PREFERENCES: SessionPreferences = { model_id: 'default', approval_
 const NARROW = '(max-width: 860px)';
 
 const suggestions = [
-  '介绍一下你能做什么',
-  '在工作区写一个 hello.txt，然后列出文件',
-  '部署前先问我要用哪个区域',
-  '派一个子任务检查工作区里的文件',
+  { label: '了解助手能力', icon: 'spark', prompt: '介绍一下你能做什么' },
+  { label: '创建工作区文件', icon: 'folder-edit', prompt: '在工作区写一个 hello.txt，然后列出文件' },
+  { label: '规划一次部署', icon: 'question', prompt: '部署前先问我要用哪个区域' },
+  { label: '委派文件检查', icon: 'branch', prompt: '派一个子任务检查工作区里的文件' },
 ];
 
 function readStored<T>(key: string, fallback: T): T {
@@ -51,8 +51,7 @@ function useStored<T>(key: string, fallback: T) {
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-// A full cursor walk is atomic from the reader's perspective. Further updates
-// queue one more walk instead of repeatedly aborting a large session's history.
+// Coalesce updates while a sync is in flight. Each selected session owns its cursor.
 function useSessionMessages(sessionId: string | null, revision: string, onMissing: (sessionId: string) => void) {
   const [state, setState] = useState<{ sessionId: string | null; messages: SessionMessage[]; loading: boolean; error: string }>({ sessionId: null, messages: [], loading: false, error: '' });
   const current = useRef<{ sync: () => Promise<void> } | null>(null);
@@ -61,6 +60,7 @@ function useSessionMessages(sessionId: string | null, revision: string, onMissin
   useEffect(() => {
     if (!sessionId) return;
     const controller = new AbortController();
+    let snapshot: TranscriptSnapshot = { cursor: '0.0', messages: [] };
     const request = {
       syncing: false,
       again: false,
@@ -75,11 +75,10 @@ function useSessionMessages(sessionId: string | null, revision: string, onMissin
           request.again = false;
           setState((previous) => ({ sessionId, messages: previous.sessionId === sessionId ? previous.messages : [], loading: true, error: '' }));
           try {
-            const messages = await loadSessionMessages(sessionId, { signal: controller.signal });
+            const next = await syncSessionMessages(sessionId, snapshot, controller.signal);
             if (controller.signal.aborted || current.current !== request) return;
-            // Replace with the complete server snapshot, including retention
-            // changes. The shared merge preserves ID identity and exact order.
-            setState({ sessionId, messages: mergeSessionMessages([], messages), loading: request.again, error: '' });
+            snapshot = next;
+            setState({ sessionId, messages: next.messages, loading: request.again, error: '' });
           } catch (reason) {
             if (controller.signal.aborted || current.current !== request) return;
             if (isNotFound(reason)) {
@@ -121,6 +120,7 @@ export default function App() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem(SIDEBAR_KEY) !== 'closed' && !window.matchMedia(NARROW).matches);
   const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [sessionQuery, setSessionQuery] = useState('');
   const [runs, setRuns] = useState<Record<string, RunView[]>>({});
   const [titles, setTitles] = useStored<Record<string, string>>(TITLES_KEY, {});
   const [activeSession, setActiveSession] = useState<string | null>(() => new URLSearchParams(window.location.search).get('session') || localStorage.getItem(SESSION_KEY));
@@ -168,6 +168,7 @@ export default function App() {
   const liveFrame = useRef(0);
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const focusRun = useRef<string | null>(null);
   const runsRef = useRef(runs);
   const runRequests = useRef<Record<string, number>>({});
@@ -468,6 +469,7 @@ export default function App() {
 
   const openSession = (sessionId: string | null) => {
     stickToBottom.current = true;
+    setAwayFromBottom(false);
     setError('');
     setView('chat');
     setInspected(null);
@@ -647,16 +649,18 @@ export default function App() {
   };
 
   const groups = useMemo(() => {
+    const query = sessionQuery.trim().toLowerCase();
     const sorted = [...sessions].sort((a, b) => (b.latest_run_at || b.updated_at).localeCompare(a.latest_run_at || a.updated_at));
     const out: { label: string; items: SessionView[] }[] = [];
     for (const session of sorted) {
+      if (query && ![titles[session.id] || '未命名对话', session.id].some(value => value.toLowerCase().includes(query))) continue;
       const label = dayGroup(session.latest_run_at || session.updated_at);
       const group = out.find((item) => item.label === label);
       if (group) group.items.push(session);
       else out.push({ label, items: [session] });
     }
     return out;
-  }, [sessions]);
+  }, [sessions, titles, sessionQuery]);
 
   const titleOf = (sessionId: string) => titles[sessionId] || '未命名对话';
   const refreshHistory = () => {
@@ -713,10 +717,13 @@ export default function App() {
         </div>
         <nav className="sidebar-nav">
           <button type="button" className={`nav-item new-chat ${view === 'chat' && !activeSession ? 'current' : ''}`} onClick={() => openSession(null)}><Icon name="compose" />新对话</button>
-          <button type="button" className={`nav-item ${view === 'observability' ? 'current' : ''}`} onClick={() => showPage('observability')}><Icon name="activity" />观测</button>
         </nav>
+        {sessions.length > 0 && <label className="session-search">
+          <Icon name="search" size={15} />
+          <input type="search" aria-label="搜索对话" placeholder="搜索对话" value={sessionQuery} onChange={event => setSessionQuery(event.target.value)} />
+        </label>}
         <div className="session-list">
-          {groups.length === 0 && <p className="sidebar-empty">还没有对话。</p>}
+          {groups.length === 0 && <p className="sidebar-empty">{sessionQuery ? '没有匹配的对话' : '历史对话会显示在这里'}</p>}
           {groups.map((group) => (
             <section key={group.label}>
               <h2>{group.label}</h2>
@@ -731,7 +738,10 @@ export default function App() {
             </section>
           ))}
         </div>
-        <nav className="sidebar-settings" aria-label="应用设置"><button type="button" className={'nav-item ' + (view === 'settings' ? 'current' : '')} onClick={() => showPage('settings')}><Icon name="settings" />设置</button></nav>
+        <nav className="sidebar-settings" aria-label="工作区工具">
+          <button type="button" className={`nav-item ${view === 'observability' ? 'current' : ''}`} aria-current={view === 'observability' ? 'page' : undefined} onClick={() => showPage('observability')}><Icon name="activity" />观测</button>
+          <button type="button" className={`nav-item ${view === 'settings' ? 'current' : ''}`} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => showPage('settings')}><Icon name="settings" />设置</button>
+        </nav>
         <div className="sidebar-foot">
           <span className="connection" title={online === false ? '无法连接' : '连接状态'}>
             <span className={`dot ${online === false ? 'tone-fail' : online ? 'tone-ok' : 'tone-idle'}`} />
@@ -758,8 +768,11 @@ export default function App() {
               <span className="brand-mark large" />
               <h2>今天想做什么？</h2>
               {composer}
-              <div className="suggestions">
-                {suggestions.map((text) => <button type="button" key={text} onClick={() => setDraft(text)}>{text}</button>)}
+              <div className="suggestions" role="group" aria-label="示例任务">
+                {suggestions.map(({ label, icon, prompt }) => <button type="button" key={label} title={prompt} onClick={event => {
+                  setDraft(prompt);
+                  event.currentTarget.closest('.welcome')?.querySelector('textarea')?.focus();
+                }}><Icon name={icon} /><span>{label}</span><Icon name="insert" size={13} /></button>)}
               </div>
             </div>
           </div>
@@ -769,13 +782,22 @@ export default function App() {
           <div className="thread" ref={threadRef} onScroll={(event) => {
             const node = event.currentTarget;
             stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+            setAwayFromBottom(!stickToBottom.current);
           }}>
             <div className="thread-inner">
               <SessionHistory messages={history.messages} runs={activeRuns} events={events} live={live} acting={acting} actions={actions} approvalMode={preferencesBusy ? undefined : preferences.approval_mode} loading={history.loading} error={history.error} onRefresh={refreshHistory} onInspect={actions.inspect} />
               {optimistic && <PendingTurn text={optimistic.text} />}
             </div>
           </div>
-          <div className="dock"><div className="dock-inner">{composer}<p className="dock-note">请核对关键结果。</p></div></div>
+          <div className="dock">
+            {awayFromBottom && <button type="button" className="jump-latest" onClick={() => {
+              const node = threadRef.current;
+              if (node) node.scrollTop = node.scrollHeight;
+              stickToBottom.current = true;
+              setAwayFromBottom(false);
+            }}><Icon name="down" size={14} />回到最新消息</button>}
+            <div className="dock-inner">{composer}</div>
+          </div>
         </>}
 
         {view === 'observability' && <div className="page-scroll"><Observability onOpenRun={(runId) => void openRun(runId)} /></div>}

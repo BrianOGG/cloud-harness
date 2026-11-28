@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -119,10 +118,9 @@ func (db *DB) apply(ctx context.Context, version int, name, script string) error
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, stmt := range splitSQL(script) {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("%w (sql: %.80q)", err, stmt)
-		}
+	// Let SQLite parse the embedded script, including trigger bodies.
+	if _, err := tx.ExecContext(ctx, script); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, ?)`, version, name, formatTime(db.now())); err != nil {
 		return err
@@ -169,30 +167,6 @@ func (db *DB) ForeignKeyCheck(ctx context.Context) ([]string, error) {
 		violations = append(violations, fmt.Sprintf("table=%s rowid=%v parent=%s fkid=%d", table, rowid, parent, fkid))
 	}
 	return violations, rows.Err()
-}
-
-func splitSQL(script string) []string {
-	var stmts []string
-	var b strings.Builder
-	for _, line := range strings.Split(script, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "--") {
-			continue
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-		if strings.HasSuffix(trim, ";") {
-			stmt := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(b.String()), ";"))
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
-			b.Reset()
-		}
-	}
-	if rest := strings.TrimSpace(b.String()); rest != "" {
-		stmts = append(stmts, strings.TrimSuffix(rest, ";"))
-	}
-	return stmts
 }
 
 // formatTime uses a fixed-width UTC timestamp so SQLite text comparisons

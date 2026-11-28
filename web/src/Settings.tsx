@@ -65,29 +65,34 @@ export function Settings({ onModelsChanged, onBack }: { onModelsChanged: () => P
   };
   const filtered = providers.filter((p) => (p.name + ' ' + p.model).toLowerCase().includes(query.toLowerCase()));
   return <section className="page-inner settings-page" aria-label="模型服务设置">
-    <div className="page-head"><h2>模型服务</h2><button type="button" className="button" onClick={onBack}>返回会话</button></div>
-    <div className="settings-toolbar"><input type="search" aria-label="搜索模型服务" placeholder="搜索名称或模型" value={query} onChange={(event) => setQuery(event.target.value)} /><button type="button" className="button" disabled={loading} onClick={() => void reload()}><Icon name="refresh" size={14} />刷新</button><button type="button" className="button primary" onClick={() => { setEditing('new'); setNotice(''); }}><Icon name="plus" size={14} />添加模型服务</button></div>
+    <button type="button" className="link-button settings-back" onClick={onBack}><Icon name="right" size={13} />返回会话</button>
+    <div className="page-head"><h2>模型服务</h2><button type="button" className="button primary" onClick={() => { setEditing('new'); setNotice(''); }}><Icon name="plus" size={14} />添加模型服务</button></div>
+    <div className="settings-toolbar"><input type="search" aria-label="搜索模型服务" placeholder="搜索名称或模型" value={query} onChange={(event) => setQuery(event.target.value)} /><button type="button" className="button" disabled={loading} onClick={() => void reload()}><Icon name="refresh" size={14} />刷新</button></div>
     {error && <p className="settings-error" role="alert">{error}</p>}
     {notice && <p role="status" className="settings-notice">{notice}</p>}
     {loading && <p role="status">正在加载模型服务…</p>}
-    {!loading && !error && providers.length === 0 && <div className="page-empty"><strong>还没有自定义模型服务</strong></div>}
+    {!loading && !error && providers.length === 0 && !editing && <div className="page-empty"><Icon name="panel" size={22} /><strong>还没有自定义模型服务</strong></div>}
     {!loading && providers.length > 0 && filtered.length === 0 && <p>没有匹配的模型服务。</p>}
-    <ul className="provider-list">
-      {filtered.map((p) => <li key={p.id} className="provider-card">
-        <div className="provider-heading"><strong>{p.name}</strong><span className="chip">{protocolNames[p.protocol || 'openai']} · {(p.models || [p.model]).length} 个模型</span></div>
-        <p>{p.model}</p><p className="provider-url">{p.base_url}</p><p>{p.has_api_key ? '密钥已配置 · ••••••' : '未配置密钥'}</p>
-        <div className="settings-actions"><button type="button" className="button" onClick={() => { setEditing(p); setNotice(''); }}>编辑</button><button type="button" className="button" disabled={checks[p.id]?.busy || removing} onClick={() => void testConnection(p.id)}>{checks[p.id]?.busy ? '检测中…' : '连接检测'}</button><button type="button" className="button" disabled={checks[p.id]?.busy || removing} onClick={() => void refreshCatalog(p.id)}>{checks[p.id]?.busy ? '刷新中…' : '刷新模型列表'}</button><button type="button" className="button" disabled={removing} onClick={() => setDeleting(p.id)}>删除</button></div>
-        {checks[p.id]?.message && <p role="status">{checks[p.id].message}</p>}
-        {checks[p.id]?.error && <p role="alert" className="settings-error">{checks[p.id].error}</p>}
-        {deleting === p.id && <div className="provider-delete" role="group" aria-label="确认删除模型服务"><p>删除「{p.name}」？当前模型可能不可用，请重新选择。</p><div className="settings-actions"><button type="button" className="button" disabled={removing} onClick={() => setDeleting(null)}>取消</button><button type="button" className="button" disabled={removing} onClick={() => void remove(p.id)}>{removing ? '删除中…' : '确认删除'}</button></div></div>}
-      </li>)}
-    </ul>
     {editing && <ProviderForm key={editing === 'new' ? 'new' : editing.id} provider={editing === 'new' ? undefined : editing} onCancel={() => setEditing(null)} onSave={async (value) => {
       await api.saveProvider(value);
       setEditing(null); setNotice('已保存。');
       setChecks((previous) => { const next = { ...previous }; delete next[value.id]; return next; });
       await changed();
     }} />}
+    <ul className="provider-list">
+      {filtered.map((p) => <li key={p.id} className="provider-card">
+        <div className="provider-heading"><strong>{p.name}</strong><span className="chip">{protocolNames[p.protocol || 'openai']} · {(p.models || [p.model]).length} 个模型</span></div>
+        <dl className="provider-info">
+          <div><dt>地址</dt><dd>{p.base_url}</dd></div>
+          <div><dt>默认模型</dt><dd>{p.model}</dd></div>
+          <div><dt>密钥</dt><dd>{p.has_api_key ? '已配置' : '未配置'}</dd></div>
+        </dl>
+        <div className="settings-actions"><button type="button" className="button" onClick={() => { setEditing(p); setNotice(''); }}>编辑</button><button type="button" className="button" disabled={checks[p.id]?.busy || removing} onClick={() => void testConnection(p.id)}>{checks[p.id]?.busy ? '检测中…' : '连接检测'}</button><button type="button" className="button" disabled={checks[p.id]?.busy || removing} onClick={() => void refreshCatalog(p.id)}>{checks[p.id]?.busy ? '刷新中…' : '刷新模型列表'}</button><button type="button" className="button" disabled={removing} onClick={() => setDeleting(p.id)}>删除</button></div>
+        {checks[p.id]?.message && <p role="status">{checks[p.id].message}</p>}
+        {checks[p.id]?.error && <p role="alert" className="settings-error">{checks[p.id].error}</p>}
+        {deleting === p.id && <div className="provider-delete" role="group" aria-label="确认删除模型服务"><p>删除「{p.name}」？当前模型可能不可用，请重新选择。</p><div className="settings-actions"><button type="button" className="button" disabled={removing} onClick={() => setDeleting(null)}>取消</button><button type="button" className="button" disabled={removing} onClick={() => void remove(p.id)}>{removing ? '删除中…' : '确认删除'}</button></div></div>}
+      </li>)}
+    </ul>
   </section>;
 }
 

@@ -151,10 +151,8 @@ func TestMigration005FromExisting004(t *testing.T) {
 		if file.Version > 4 {
 			continue
 		}
-		for _, stmt := range splitSQL(file.SQL) {
-			if _, err := raw.ExecContext(ctx, stmt); err != nil {
-				t.Fatal(err)
-			}
+		if _, err := raw.ExecContext(ctx, file.SQL); err != nil {
+			t.Fatal(err)
 		}
 		if _, err := raw.ExecContext(ctx, `INSERT INTO schema_migrations VALUES(?, ?, ?)`, file.Version, file.Name, formatTime(time.Now())); err != nil {
 			t.Fatal(err)

@@ -92,3 +92,48 @@ func insertMessage(ctx context.Context, tx txer, message storage.Message) error 
 type txer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
+
+func (db *DB) SyncMessages(ctx context.Context, sessionID string, generation, revision int64, limit int) (storage.MessageSyncPage, error) {
+	var page storage.MessageSyncPage
+	if limit < 1 || limit > maxMessagePageSize {
+		return page, domain.E(domain.CodeInvalidArgument, "invalid sync page size")
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision), 0) FROM message_sync WHERE session_id = ? AND message_id = ''`, sessionID).Scan(&page.Generation); err != nil {
+		return page, err
+	}
+	page.Revision = revision
+	if generation != page.Generation {
+		page.Reset = true
+		page.Revision = 0
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT s.revision, m.id, m.session_id, m.run_id, m.turn_id, m.role, m.source, m.kind, m.status, m.content, m.event, m.created_at
+		FROM message_sync s JOIN messages m ON m.id = s.message_id
+		WHERE s.session_id = ? AND s.revision > ? ORDER BY s.revision LIMIT ?`, sessionID, page.Revision, limit+1)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if len(page.Messages) == limit {
+			page.More = true
+			break
+		}
+		var m storage.Message
+		var created string
+		if err := rows.Scan(&page.Revision, &m.ID, &m.SessionID, &m.RunID, &m.TurnID, &m.Role, &m.Source, &m.Kind, &m.Status, &m.Content, &m.Event, &created); err != nil {
+			return page, err
+		}
+		m.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return page, err
+		}
+		page.Messages = append(page.Messages, m)
+	}
+	return page, rows.Err()
+}

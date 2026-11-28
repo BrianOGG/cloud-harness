@@ -355,12 +355,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.E(domain.CodeInvalidArgument, "selected model is not configured"))
 		return
 	}
-	if err := settings.SaveSessionPreferences(r.Context(), storage.SessionPreferences{SessionID: sessionID, ApprovalMode: body.ApprovalMode, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort}); err != nil {
-		writeErr(w, err)
-		return
-	}
 	s.execute(w, r, http.StatusCreated, func(ctx context.Context) (*agent.Execution, error) {
-		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort})
+		return s.Manager.StartMessage(ctx, sessionID, body.Message, agent.RunOptions{SaveSessionPreferences: true, ModelID: body.ModelID, Model: selected.Model, FallbackModel: selected.FallbackModel, ProviderID: selected.ProviderID, ApprovalMode: body.ApprovalMode, ReasoningEffort: body.ReasoningEffort})
 	})
 }
 

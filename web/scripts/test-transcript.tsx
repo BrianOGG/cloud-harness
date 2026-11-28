@@ -271,7 +271,7 @@ try {
       else if (path.endsWith('/preferences')) {
         if (init?.method === 'PUT') prefs = JSON.parse(String(init.body));
         body = prefs;
-      } else if (path.endsWith('/messages')) body = { messages: rows, next_cursor: '' };
+      } else if (path.includes('/messages')) body = { messages: rows, next_cursor: '' };
       else if (path.endsWith('/runs')) body = [current];
       else if (path === '/v1/runs/' + base.id) body = current;
       else if (path.endsWith('/responses?wait=0')) {

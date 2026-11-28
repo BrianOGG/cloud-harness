@@ -97,10 +97,8 @@ func TestMigration004FromExisting001To003Database(t *testing.T) {
 		if file.Version > 3 {
 			continue
 		}
-		for _, stmt := range splitSQL(file.SQL) {
-			if _, err := raw.ExecContext(ctx, stmt); err != nil {
-				t.Fatalf("apply %s: %v", file.Name, err)
-			}
+		if _, err := raw.ExecContext(ctx, file.SQL); err != nil {
+			t.Fatalf("apply %s: %v", file.Name, err)
 		}
 		if _, err := raw.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, ?)`, file.Version, file.Name, formatTime(time.Now())); err != nil {
 			t.Fatal(err)
@@ -111,7 +109,7 @@ func TestMigration004FromExisting001To003Database(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := db.SchemaVersion(ctx)
-	if err != nil || version != 13 {
+	if err != nil || version != 14 {
 		t.Fatalf("schema version %d, error %v", version, err)
 	}
 	if _, err := db.CreateWorkspaceSnapshot(ctx, storage.WorkspaceSnapshot{WorkspaceID: "old", TreeOID: "tree"}); err != nil {

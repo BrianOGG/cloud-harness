@@ -104,6 +104,13 @@ export interface SessionMessagesPage {
   next_cursor: string;
 }
 
+export interface MessageSyncPage {
+  messages: SessionMessage[];
+  sync: string;
+  more: boolean;
+  reset: boolean;
+}
+
 export interface ApprovalView {
   run_id: string;
   session_id: string;
@@ -245,6 +252,8 @@ export const api = {
     const query = params.toString();
     return req<SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { signal: options?.signal });
   },
+  syncMessages: (sessionId: string, cursor: string, signal: AbortSignal) =>
+    req<MessageSyncPage | SessionMessagesPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages?sync=${encodeURIComponent(cursor)}&limit=200`, { signal }),
   listRuns: (sessionId: string) => req<RunView[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs`),
   createRun: (sessionId: string, message: string, options?: { model_id?: string; approval_mode?: string; reasoning_effort?: ReasoningEffort }) =>
     req<RunView>(`/v1/sessions/${encodeURIComponent(sessionId)}/runs?wait=0`, {
