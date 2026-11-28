@@ -90,6 +90,14 @@ type requestKeyType struct{}
 
 var requestKey requestKeyType
 
+type dispatchObserverKey struct{}
+
+// WithDispatchObserver brackets actual executor calls, after authorization,
+// idempotency lookup and budget checks. A nil completion skips observation.
+func WithDispatchObserver(ctx context.Context, begin func(context.Context, Request) func()) context.Context {
+	return context.WithValue(ctx, dispatchObserverKey{}, begin)
+}
+
 // Broker is the single tool entry point.
 type Broker struct {
 	mu              sync.RWMutex
@@ -442,8 +450,7 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 	if spec.Execute == nil {
 		return Result{Error: domain.E(domain.CodeToolError, "tool has no executor")}, nil
 	}
-	execCtx := context.WithValue(ctx, requestKey, req)
-	data, err := spec.Execute(execCtx, req.Args)
+	data, err := executeTool(context.WithValue(ctx, requestKey, req), spec, req)
 	if err != nil {
 		return Result{Dispatched: true, Data: data, Error: asDomain(err), UncertainOutcome: errors.Is(err, domain.ErrUncertainOutcome)}, nil
 	}
@@ -457,6 +464,15 @@ func (b *Broker) Invoke(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	return Result{OK: true, Data: data, Dispatched: true}, nil
+}
+
+func executeTool(ctx context.Context, spec Spec, req Request) (json.RawMessage, error) {
+	if begin, ok := ctx.Value(dispatchObserverKey{}).(func(context.Context, Request) func()); ok {
+		if end := begin(ctx, req); end != nil {
+			defer end()
+		}
+	}
+	return spec.Execute(ctx, req.Args)
 }
 
 type idempotencyStore interface {

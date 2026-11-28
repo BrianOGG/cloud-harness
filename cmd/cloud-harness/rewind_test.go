@@ -399,8 +399,11 @@ func TestRewindAutomaticSnapshotHasCheckpoint(t *testing.T) {
 		t.Fatalf("run=%+v, err=%v", run, err)
 	}
 	records, err := db.ListWorkspaceSnapshots(ctx, run.WorkspaceID)
-	if err != nil || len(records) != 2 {
+	if err != nil || len(records) != 4 {
 		t.Fatalf("automatic snapshots=%+v, err=%v", records, err)
+	}
+	if records[0].EventSeq == nil || records[3].EventSeq == nil || records[1].EventSeq != nil || records[2].EventSeq != nil {
+		t.Fatalf("unexpected chat rewind boundaries: %+v", records)
 	}
 	var out, stderr bytes.Buffer
 	if code := MainWithIO([]string{"rewind", run.ID, "--to", records[0].ID, "--all", "--yes", "--db", dbPath, "--workspace", root}, nil, &out, &stderr); code != 0 {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,6 +57,13 @@ func workspaceRecords(t *testing.T, db *sqlite.DB, root string) (*workspacesnaps
 	return s, records
 }
 
+// CLI rewind has a batch checkpoint even when an approval gate stops execution.
+func workspaceCheckpoints(t *testing.T, db *sqlite.DB, root string) (*workspacesnapshot.Snapshotter, []storage.WorkspaceSnapshot) {
+	t.Helper()
+	s, records := workspaceRecords(t, db, root)
+	return s, slices.DeleteFunc(records, func(r storage.WorkspaceSnapshot) bool { return strings.Contains(r.Label, "/exec_") })
+}
+
 func snapshotSkips(t *testing.T, db *sqlite.DB, runID string) []storage.Event {
 	t.Helper()
 	events, err := db.ListEvents(context.Background(), runID, 0)
@@ -96,7 +104,7 @@ func TestWorkspaceSnapshotsWriteAndRestore(t *testing.T) {
 	if run.Status != domain.RunCompleted {
 		t.Fatalf("run: %+v", run)
 	}
-	s, records := workspaceRecords(t, db, root)
+	s, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 	events, err := db.ListEvents(context.Background(), run.ID, 0)
 	if err != nil {
@@ -241,7 +249,7 @@ func TestWorkspaceSnapshotsApprovalSegmentsReusePre(t *testing.T) {
 	if run.Status != domain.RunWaiting {
 		t.Fatalf("run: %+v", run)
 	}
-	_, records := workspaceRecords(t, db, root)
+	_, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 	handle := m.snapshotters[run.ID]
 	if handle == nil {
@@ -260,7 +268,7 @@ func TestWorkspaceSnapshotsApprovalSegmentsReusePre(t *testing.T) {
 	if run.Status != domain.RunCompleted {
 		t.Fatalf("run: %+v", run)
 	}
-	_, records = workspaceRecords(t, db, root)
+	_, records = workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post", "batch-1/post", "batch-1/post")
 	if len(m.snapshotters) != 0 {
 		t.Fatal("resumed completed run retained snapshotter")
@@ -282,7 +290,7 @@ func TestWorkspaceSnapshotsResumeNewManagerAndDeny(t *testing.T) {
 			if run.Status != domain.RunWaiting {
 				t.Fatalf("run: %+v", run)
 			}
-			_, records := workspaceRecords(t, db, root)
+			_, records := workspaceCheckpoints(t, db, root)
 			assertSnapshotLabels(t, records, run.ID, "batch-1/pre")
 			preID := records[0].ID
 			resumer := &Manager{Store: db, Provider: m.Provider, Broker: m.Broker, Workspace: root, OwnerID: "resumer"}
@@ -290,7 +298,7 @@ func TestWorkspaceSnapshotsResumeNewManagerAndDeny(t *testing.T) {
 			if err != nil || run.Status != domain.RunCompleted {
 				t.Fatalf("resume: %+v, %v", run, err)
 			}
-			_, records = workspaceRecords(t, db, root)
+			_, records = workspaceCheckpoints(t, db, root)
 			want := []string{"batch-1/pre"}
 			if decision == "approve" {
 				want = append(want, "batch-1/post")
@@ -336,7 +344,7 @@ func TestWorkspaceSnapshotsPostOnlyForActualDispatch(t *testing.T) {
 			if run.Status != domain.RunCompleted {
 				t.Fatalf("run: %+v", run)
 			}
-			_, records := workspaceRecords(t, db, root)
+			_, records := workspaceCheckpoints(t, db, root)
 			want := []string{"batch-1/pre"}
 			if mode == "failed" || mode == "cached" {
 				want = append(want, "batch-1/post")
@@ -362,7 +370,7 @@ func TestWorkspaceSnapshotsShadowErrorDoesNotFailRun(t *testing.T) {
 		t.Fatalf("run: %+v", run)
 	}
 	skips := snapshotSkips(t, db, run.ID)
-	if len(skips) != 4 {
+	if len(skips) != 8 {
 		t.Fatalf("want a diagnostic for each ordinary pre/post failure: %+v", skips)
 	}
 	for _, ev := range skips {
@@ -406,7 +414,7 @@ func TestWorkspaceSnapshotsSequenceUnavailableStaysNull(t *testing.T) {
 	if run.Status != domain.RunCompleted {
 		t.Fatalf("run: %+v", run)
 	}
-	_, records := workspaceRecords(t, db, root)
+	_, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 	for _, rec := range records {
 		if rec.EventSeq != nil {
@@ -423,10 +431,10 @@ func TestWorkspaceSnapshotsTransientFailureRetriesNextCapture(t *testing.T) {
 	store := &snapshotTestStore{DB: db, failFirst: true}
 	m.Store = store
 	run := runSnapshotMessage(t, m)
-	if run.Status != domain.RunCompleted || store.recordAttempts != 2 {
+	if run.Status != domain.RunCompleted || store.recordAttempts != 4 {
 		t.Fatalf("run: %+v, attempts: %d", run, store.recordAttempts)
 	}
-	_, records := workspaceRecords(t, db, root)
+	_, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/post")
 	if skips := snapshotSkips(t, db, run.ID); len(skips) != 1 {
 		t.Fatalf("skips: %+v", skips)
@@ -449,7 +457,7 @@ func TestWorkspaceSnapshotsUseBrokerSideEffectFacts(t *testing.T) {
 	if run.Status != domain.RunCompleted {
 		t.Fatalf("run: %+v", run)
 	}
-	_, records := workspaceRecords(t, db, root)
+	_, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 }
 
@@ -466,7 +474,7 @@ func TestWorkspaceSnapshotsScriptWrites(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(root, "script.txt")); err != nil || string(body) != "written" {
 		t.Fatalf("script write: %q, %v", body, err)
 	}
-	_, records := workspaceRecords(t, db, root)
+	_, records := workspaceCheckpoints(t, db, root)
 	assertSnapshotLabels(t, records, run.ID, "batch-1/pre", "batch-1/post")
 }
 
@@ -531,7 +539,7 @@ func TestWorkspaceSnapshotsConcurrentRuns(t *testing.T) {
 				}
 				runs = append(runs, got.run)
 			}
-			s, records := workspaceRecords(t, db, root)
+			s, records := workspaceCheckpoints(t, db, root)
 			if calls.Load() != 2*rounds || len(records) != 4*rounds {
 				t.Fatalf("writes: %d, snapshots: %+v", calls.Load(), records)
 			}
@@ -593,7 +601,7 @@ func TestWorkspaceSnapshotsPostAfterCancellation(t *testing.T) {
 		if got.err != nil || got.run.Status != domain.RunCancelled {
 			t.Fatalf("cancelled run: %+v, %v", got.run, got.err)
 		}
-		_, records := workspaceRecords(t, db, root)
+		_, records := workspaceCheckpoints(t, db, root)
 		assertSnapshotLabels(t, records, got.run.ID, "batch-1/pre", "batch-1/post")
 	case <-time.After(10 * time.Second):
 		t.Fatal("cancelled run did not finish")
@@ -609,7 +617,7 @@ func TestRunCommandApprovalWaitsThenSnapshotsActualExecution(t *testing.T) {
 	if run.Status != domain.RunWaiting || run.WaitReason != domain.WaitApproval {
 		t.Fatalf("run: %+v", run)
 	}
-	_, records := workspaceRecords(t, db, m.Workspace)
+	_, records := workspaceCheckpoints(t, db, m.Workspace)
 	if len(records) != 1 || !strings.HasSuffix(records[0].Label, "/batch-1/pre") {
 		t.Fatalf("dangerous command must capture pre before approval: %+v", records)
 	}
@@ -617,7 +625,7 @@ func TestRunCommandApprovalWaitsThenSnapshotsActualExecution(t *testing.T) {
 	if err != nil || run.Status != domain.RunCompleted {
 		t.Fatalf("resume: %+v, %v", run, err)
 	}
-	_, records = workspaceRecords(t, db, m.Workspace)
+	_, records = workspaceCheckpoints(t, db, m.Workspace)
 	if len(records) != 2 || !strings.HasSuffix(records[1].Label, "/batch-1/post") {
 		t.Fatalf("approved command did not capture post: %+v", records)
 	}
