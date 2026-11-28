@@ -410,10 +410,15 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		}
 	}
 	userMessage := message
+	var ruleTargets []string
 	expandedMessage, references, refErr := contextpkg.ExpandReferences(message, m.Workspace,
 		func(absPath string) ([]byte, error) {
+			target, err := filepath.EvalSymlinks(absPath)
+			if err != nil {
+				return nil, err
+			}
 			if policy != nil {
-				decision := policy.Evaluate(security.PolicyRequest{Tool: "read_file", Paths: []string{absPath}, FileRead: true})
+				decision := policy.Evaluate(security.PolicyRequest{Tool: "read_file", Paths: []string{absPath, target}, FileRead: true})
 				if decision.Effect == security.EffectDeny {
 					return nil, domain.E(domain.CodeAuthDenied, decision.Reason())
 				}
@@ -421,11 +426,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 			if m.Broker == nil {
 				return nil, domain.E(domain.CodeToolError, "workspace file reader is unavailable")
 			}
-			rel, err := filepath.Rel(m.Workspace, absPath)
-			if err != nil {
-				return nil, err
-			}
-			args, _ := json.Marshal(map[string]string{"path": filepath.ToSlash(rel)})
+			args, _ := json.Marshal(map[string]string{"path": target})
 			result, err := m.Broker.Invoke(ctx, tools.Request{
 				RunID: run.ID, SessionID: run.SessionID, InvocationID: domain.NewID("inv_ref_"),
 				Tool: "read_file", Args: args, Now: m.now(),
@@ -442,6 +443,7 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 			if err := json.Unmarshal(result.Data, &body); err != nil {
 				return nil, err
 			}
+			ruleTargets = append(ruleTargets, target)
 			return []byte(body.Content), nil
 		},
 		func(staged bool) (string, error) {
@@ -521,16 +523,13 @@ func (m *Manager) runPreparedWithOptions(ctx context.Context, run storage.Run, m
 		Force: m.ForcePlanner, Skip: m.SkipPlanner || m.Depth > 0,
 	})
 	st := &loopState{prefixN: prefixN, userAt: userAt, policy: policy, hooks: engine, modelID: opts.ModelID, model: opts.Model, fallbackModel: opts.FallbackModel, providerID: opts.ProviderID, approvalMode: opts.ApprovalMode, reasoningEffort: opts.ReasoningEffort}
-	var ruleTargets []string
+	st.sensitive = slices.ContainsFunc(ruleTargets, tools.SensitivePath)
 	for _, ref := range references {
 		if ref.Type != "file" {
 			continue
 		}
 		if tools.SensitivePath(ref.Path) {
 			st.sensitive = true
-		}
-		if ref.Bytes > 0 {
-			ruleTargets = append(ruleTargets, ref.Path)
 		}
 	}
 	st.ruleScope = &rules.Scope{}

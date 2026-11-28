@@ -380,3 +380,26 @@ func TestRuleTargetsPollHonorsOuterAndInnerToolAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitFileReferenceUsesTargetDirectoryRules(t *testing.T) {
+	isolateRuleConfig(t)
+	mock := &provider.Mock{Responses: []domain.ModelResponse{textOnly("done")}}
+	m, _, root := testManager(t, mock)
+	writeAgentRule(t, filepath.Join(root, "api/AGENTS.md"), "API formatting rule")
+	writeAgentRule(t, filepath.Join(root, "api/version.txt"), "release number 9")
+	if err := os.Symlink("api/version.txt", filepath.Join(root, "version")); err != nil {
+		t.Fatal(err)
+	}
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := m.RunMessage(t.Context(), session.ID, "@file:version")
+	if err != nil || run.Status != domain.RunCompleted {
+		t.Fatalf("run=%v err=%v", run.Status, err)
+	}
+	req := mock.Requests[0]
+	if !strings.Contains(messageText(req.Prefix), "API formatting rule") || !strings.Contains(messageText(req.Messages), "release number 9") {
+		t.Fatal("file reference missing target rule or content")
+	}
+}
