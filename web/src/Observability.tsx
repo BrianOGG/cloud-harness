@@ -136,7 +136,7 @@ export function Observability({ onOpenRun }: { onOpenRun: (runId: string) => voi
   return (
     <div className="page observability-page">
       <div className="page-heading observability-heading">
-        <div><h2>运行状况</h2><p className="page-subtitle">用量、策略判定和 doctor 检查。</p></div>
+        <h2>运行状况</h2>
         <button type="button" className="button secondary" onClick={refresh} disabled={loading}>
           <ReloadOutlined spin={loading} aria-hidden="true" /> {loading ? '正在刷新…' : '刷新数据'}
         </button>
@@ -152,7 +152,7 @@ export function Observability({ onOpenRun }: { onOpenRun: (runId: string) => voi
       <div className="observation-columns">
         <section className="observability-panel doctor-panel" aria-labelledby="doctor-heading">
           <div className="observability-panel-heading">
-            <div><h2 id="doctor-heading">系统检查</h2><p>Doctor 诊断</p></div>
+            <h2 id="doctor-heading">系统检查</h2>
             {checks && <span className="count-pill">{checks.length}</span>}
           </div>
           {!doctor ? <p className="panel-message" role="status">正在运行诊断…</p> : doctor.error ? (

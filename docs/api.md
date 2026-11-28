@@ -647,6 +647,7 @@ transcript as a lossless record of everything ever generated.
 | `limit` | `50` | One ASCII decimal integer from `1` through `200`, written without a sign, leading zeros, or whitespace. | Empty, `0`, negative, greater than `200`, non-integer, overflow, or repeated, even when repeated values are equal. |
 | `cursor` | Start at the oldest retained message. | One empty string (also the first page), or one cursor v1 value below. | Repeated, whitespace-only, malformed, unsupported-version, or wrong-session cursor. |
 
+The optional `sync` mode described below has its own response shape.
 Decode query escaping once using normal URL query rules. Other query keys
 are ignored; they do not filter runs/turns or change the ordering. In
 particular `limit=0` is not the omitted default. A new page may change the
@@ -695,6 +696,19 @@ total or of catching late/backdated facts in one traversal. Follow run/SSE
 state separately, and refresh from the first page and merge by message ID
 when a complete current view is needed. An empty `next_cursor` means no more
 records in that read, not that future messages cannot arrive.
+
+### Incremental transcript sync
+
+Request `?sync=0.0&limit=200` for the initial load. In this mode the response
+contains `messages`, a `sync` token for the next request, and boolean `more`
+and `reset` fields. Keep the token with its session's in-memory rows. Send it
+again on refresh. Insertions and updates arrive in database revision order,
+including messages with earlier creation times. Merge by ID and display in
+the chronological order above. A reset signals deletion of retained rows:
+discard previously accumulated rows (including earlier pages in this sync).
+Continue while `more` is true, then publish the complete result and token
+together. The normal page size limits apply. Combining `cursor` and `sync`,
+or supplying a repeated or malformed sync token, returns HTTP 400.
 
 ### Errors and validation priority
 

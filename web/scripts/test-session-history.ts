@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import React, { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { SessionMessage } from '../src/api';
-import { loadSessionMessages, mergeSessionMessages } from '../src/history';
+import { loadSessionMessages, mergeSessionMessages, syncSessionMessages } from '../src/history';
 Object.assign(globalThis, { React });
 const { MessageList } = await import('../src/MessageList');
 
@@ -47,6 +47,26 @@ await test('merge: stable IDs deduplicate replay; different IDs with identical t
   assert.ok(rows.every((row) => row.content === a.content));
   assert.deepEqual(mergeSessionMessages(rows, [c, a, b]), rows, 'refresh/replay is idempotent');
   assert.deepEqual(mergeSessionMessages([], []), []);
+});
+
+await test('sync resumes a thousand-message transcript and drops stale rows on a mid-page reset', async () => {
+  const initial = Array.from({ length: 1000 }, (_, i) => fact('msg_' + i));
+  const late = fact('msg_backdated', { created_at: '2025-01-01T00:00:00.000000000Z' });
+  const signal = new AbortController().signal;
+  await withPages([
+    { messages: [late], sync: '0.1001', more: false, reset: false },
+    { messages: [fact('deleted')], sync: '0.1002', more: true, reset: false },
+    { messages: [late], sync: '1005.1001', more: false, reset: true },
+  ], async (seen) => {
+    const updated = await syncSessionMessages(session, { cursor: '0.1000', messages: initial }, signal);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url.searchParams.get('sync'), '0.1000');
+    assert.equal(updated.messages.length, 1001);
+    assert.equal(updated.messages[0].id, late.id);
+    const retained = await syncSessionMessages(session, updated, signal);
+    assert.deepEqual(retained.messages, [late]);
+    assert.deepEqual(seen.slice(1).map(r => r.url.searchParams.get('sync')), ['0.1001', '0.1002']);
+  });
 });
 
 const transcript: SessionMessage[] = [

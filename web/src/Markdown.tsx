@@ -1,4 +1,4 @@
-import { isValidElement, useState } from 'react';
+import { isValidElement, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,48 +11,108 @@ function plainText(node: ReactNode): string {
   return '';
 }
 
-export function CopyButton({ text, label = '复制' }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard?.writeText(text).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    });
+interface CopyChoice { label: string; text: string }
+
+function CopyAction({ label, choices }: { label: string; choices: () => CopyChoice[] }) {
+  const [options, setOptions] = useState<CopyChoice[]>([]);
+  const [feedback, setFeedback] = useState('');
+  const group = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!options.length) return;
+    const dismissOutside = (event: Event) => {
+      if (!group.current?.contains(event.target as Node)) setOptions([]);
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('focusin', dismissOutside);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside);
+      document.removeEventListener('focusin', dismissOutside);
+    };
+  }, [options]);
+
+  const copy = async (value: string) => {
+    trigger.current?.focus();
+    setOptions([]);
+    try {
+      await navigator.clipboard.writeText(value);
+      setFeedback('已复制');
+    } catch {
+      setFeedback('复制失败，请手动选择文本');
+    }
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setFeedback(''), 2200);
   };
-  return (
-    <button type="button" className="ghost-button" onClick={copy} aria-label={label} title={label}>
-      <Icon name={copied ? 'check' : 'copy'} size={14} />
-      <span>{copied ? '已复制' : label}</span>
-    </button>
-  );
+
+  return <div className="copy-action" ref={group} onKeyDown={event => {
+    if (options.length && event.key === 'Escape') {
+      event.stopPropagation();
+      setOptions([]);
+      trigger.current?.focus();
+    }
+  }}>
+    <button type="button" className="icon-button" ref={trigger} title={feedback || label} aria-label={label}
+      aria-expanded={options.length ? true : undefined} onClick={() => {
+        if (options.length) { setOptions([]); return; }
+        const targets = choices();
+        if (targets.length === 1) void copy(targets[0].text);
+        else {
+          trigger.current?.focus();
+          setFeedback('');
+          setOptions(targets);
+        }
+      }}><Icon name={feedback === '已复制' ? 'check' : 'copy'} size={14} /></button>
+    <span className="copy-feedback" role="status">{feedback}</span>
+    {options.length > 0 && <div className="copy-options" role="group" aria-label="选择复制内容">
+      {options.map(option => <button type="button" key={option.label} onClick={() => void copy(option.text)}>{option.label}</button>)}
+    </div>}
+  </div>;
 }
 
-function CodeBlock({ children }: { children?: ReactNode }) {
+function CodeBlock({ children, copy = true }: { children?: ReactNode; copy?: boolean }) {
   const child = Array.isArray(children) ? children[0] : children;
   const className = isValidElement<{ className?: string }>(child) ? child.props.className || '' : '';
   const language = /language-([\w+-]+)/.exec(className)?.[1] || '';
   return (
     <div className="code-block">
-      <div className="code-block-bar"><span>{language || 'text'}</span><CopyButton text={plainText(children).replace(/\n$/, '')} /></div>
+      {(language || copy) && <div className="code-block-bar"><span>{language}</span>{copy && <CopyAction label="复制代码" choices={() => [{ label: '代码', text: plainText(children).replace(/\n$/, '') }]} />}</div>}
       <pre>{children}</pre>
     </div>
   );
 }
 
+function ReplyCodeBlock({ children }: { children?: ReactNode }) {
+  return <CodeBlock copy={false}>{children}</CodeBlock>;
+}
+
 // Model output is rendered as Markdown. Raw HTML in it stays text.
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, copyReply = false }: { text: string; copyReply?: boolean }) {
+  const body = useRef<HTMLDivElement>(null);
+  // Read exactly the blocks rendered by the Markdown parser, including indented code.
+  const choices = () => {
+    const markdown = body.current!;
+    const blocks = Array.from(markdown.querySelectorAll('.code-block pre > code'), (code, i) => ({
+      label: [`代码 ${i + 1}`, code.className.replace(/^language-/, '')].filter(Boolean).join(' · '),
+      text: (code.textContent || '').replace(/\n$/, ''),
+    }));
+    const standalone = markdown.querySelector(':scope > .code-block:only-child');
+    if (standalone && Array.from(markdown.childNodes).every(node => node === standalone || !node.textContent?.trim())) return blocks;
+    return [{ label: '完整回复', text }, ...blocks];
+  };
   return (
-    <div className="markdown">
+    <><div className="markdown" ref={body}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          pre: CodeBlock,
+          pre: copyReply ? ReplyCodeBlock : CodeBlock,
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
           table: ({ children }) => <div className="table-scroll"><table>{children}</table></div>,
         }}
       >
         {text}
       </ReactMarkdown>
-    </div>
+    </div>{copyReply && <CopyAction label="复制回复" choices={choices} />}</>
   );
 }

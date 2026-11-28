@@ -306,6 +306,44 @@ func a4ContractWant(t *testing.T, page a4ContractPage, want []a4ContractMessage)
 	}
 }
 
+func TestTranscriptSyncResumesAtLastChange(t *testing.T) {
+	f := a4NewContractFixture(t)
+	f.session(t, "sync")
+	h := f.handler(nil, "")
+	now := time.Now().UTC()
+	f.turn(t, "sync", "one", "first", now)
+	read := func(token string) (string, []a4ContractMessage) {
+		t.Helper()
+		rec := a4ContractGET(h, "sync", "sync="+token+"&limit=200")
+		var page struct {
+			Sync     string
+			Messages []a4ContractMessage
+			More     bool
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &page) != nil || page.Sync == "" || page.Messages == nil || page.More {
+			t.Fatalf("unexpected sync response: %d %s", rec.Code, rec.Body)
+		}
+		return page.Sync, page.Messages
+	}
+	token, rows := read("0.0")
+	if len(rows) != 1 || rows[0].Content != "first" {
+		t.Fatalf("initial sync: %+v", rows)
+	}
+	f.turn(t, "sync", "two", "backdated", now.Add(-time.Hour))
+	token, rows = read(token)
+	if len(rows) != 1 || rows[0].Content != "backdated" {
+		t.Fatalf("increment: %+v", rows)
+	}
+	if same, rows := read(token); same != token || len(rows) != 0 {
+		t.Fatalf("unchanged sync: %s %+v", same, rows)
+	}
+	for _, query := range []string{"sync=", "sync=x.1", "sync=0.-1", "sync=0.0&sync=0.1", "cursor=&sync=0.0"} {
+		if rec := a4ContractGET(h, "sync", query); rec.Code != http.StatusBadRequest {
+			t.Fatalf("query %q returned %d", query, rec.Code)
+		}
+	}
+}
+
 func TestA4MessagesContractEmptyAndNullableAssociations(t *testing.T) {
 	for _, scenario := range []string{"no_runs", "run_without_facts", "standalone_turn", "run_without_turn"} {
 		t.Run(scenario, func(t *testing.T) {

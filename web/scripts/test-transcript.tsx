@@ -65,6 +65,46 @@ async function click(selector: string) {
 }
 
 try {
+  await test('replies have one copy entry for text, a single block or mixed Markdown', async () => {
+    await reset();
+    const clipboard: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (text: string) => { clipboard.push(text); },
+    } });
+    const copy = '.turn-final .copy-action > button';
+    async function show(answer: string) {
+      await render(history([{ ...base, final_answer: answer }], [input]));
+      assert.equal(container.querySelectorAll('.turn-final button').length, 1);
+      await click(copy);
+    }
+    try {
+      await show('**粗体**');
+      assert.deepEqual(clipboard, ['**粗体**']);
+      await show('~~~js\nconst value = 1;\n~~~');
+      assert.equal(clipboard.at(-1), 'const value = 1;');
+      const mixed = '命令\n\n~~~sh\npwd\n~~~\n\n    echo done';
+      await show(mixed);
+      const options = () => Array.from(container.querySelectorAll<HTMLButtonElement>('.turn-final .copy-options button'));
+      assert.deepEqual(options().map(button => button.textContent), ['完整回复', '代码 1 · sh', '代码 2']);
+      // Safari blurs a clicked button without necessarily focusing the next one.
+      await act(async () => container.querySelector<HTMLButtonElement>(copy)!.blur());
+      assert.equal(options().length, 3);
+      await act(async () => options()[2].click());
+      assert.equal(clipboard.at(-1), 'echo done');
+      assert.equal(options().length, 0);
+      await click(copy);
+      await act(async () => options()[0].click());
+      assert.equal(clipboard.at(-1), mixed);
+      const literalHtml = '<div>可见文本</div>\n\n~~~sh\npwd\n~~~';
+      await show(literalHtml);
+      assert.deepEqual(options().map(button => button.textContent), ['完整回复', '代码 1 · sh']);
+      await act(async () => options()[0].click());
+      assert.equal(clipboard.at(-1), literalHtml);
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   await test('projection joins distinct child turn IDs, preserves audit order and uses only completed root final_answer', () => {
     const snapshot = JSON.stringify([audit, childRecord, base, child]);
     const turns = projectTranscript([...audit, childRecord], [child, base]);
@@ -271,7 +311,7 @@ try {
       else if (path.endsWith('/preferences')) {
         if (init?.method === 'PUT') prefs = JSON.parse(String(init.body));
         body = prefs;
-      } else if (path.endsWith('/messages')) body = { messages: rows, next_cursor: '' };
+      } else if (path.includes('/messages')) body = { messages: rows, next_cursor: '' };
       else if (path.endsWith('/runs')) body = [current];
       else if (path === '/v1/runs/' + base.id) body = current;
       else if (path.endsWith('/responses?wait=0')) {
@@ -288,7 +328,7 @@ try {
       assert.match(container.querySelector('.mode-difference')!.getAttribute('title')!, /本轮使用「工作区自动」/);
       assert.equal(container.querySelector('.run-snapshot'), null);
       const modeButton = container.querySelector<HTMLButtonElement>('.composer [aria-label="审批模式"]')!;
-      assert.equal(modeButton.textContent, '');
+      assert.equal(modeButton.textContent, '读取自动');
       assert.equal(modeButton.dataset.mode, 'safe');
       assert.equal(modeButton.title, '读取自动 · 下一轮生效');
       assert.ok(modeButton.querySelector('svg'));

@@ -82,5 +82,5 @@ export function turnSummary(turn: TranscriptTurn): string {
   else if (root?.status === 'WAITING') state = root.wait_reason === 'APPROVAL' ? '等待批准' : '等待处理';
   else if (root?.status === 'RUNNING') state = '正在运行';
   const pendingApprovals = turn.runs.filter((run) => run.status === 'WAITING' && run.wait_reason === 'APPROVAL').length;
-  return [state, turn.toolCalls + ' 次工具调用', pendingApprovals ? pendingApprovals + ' 项待批准' : ''].filter(Boolean).join(' · ');
+  return [state, turn.toolCalls ? turn.toolCalls + ' 次工具调用' : '', pendingApprovals ? pendingApprovals + ' 项待批准' : ''].filter(Boolean).join(' · ');
 }

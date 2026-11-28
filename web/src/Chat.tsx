@@ -11,7 +11,7 @@ import type { TranscriptTurn } from './transcript';
 import { budgetExtension } from './budget';
 import { actionLabels, errorText, isActive, statusName, statusTone } from './format';
 import { Icon } from './Icon';
-import { CopyButton, Markdown } from './Markdown';
+import { Markdown } from './Markdown';
 import { buildWork } from './timeline';
 import type { WorkItem } from './timeline';
 
@@ -100,7 +100,6 @@ function WorkBlock({ turn, events, live, acting, actions, approvalMode }: { turn
         </div>
       </div>
       {open && <div className="turn-process" aria-label="本轮过程审计">
-        <p className="process-note">中间过程与审批记录</p>
         <MessageList messages={turn.process} />
         {turn.runs.map((run, index) => {
           const log = events[run.id] || [];
@@ -115,7 +114,7 @@ function WorkBlock({ turn, events, live, acting, actions, approvalMode }: { turn
             {!trace && <p className="process-note" role="status">正在加载工具参数与结果…</p>}
             {calls.map((call) => <details className="process-call" key={call.id}><summary><code>{call.name}</code> · {statusName(call.status)}</summary><p className="process-note">调用 {call.id}</p>{call.arguments !== undefined && <><strong>参数</strong><pre>{JSON.stringify(call.arguments, null, 2)}</pre></>}{call.result !== undefined && <><strong>结果</strong><pre>{JSON.stringify(call.result, null, 2)}</pre></>}</details>)}
             {log.length > 0 ? <details className="process-event-log"><summary>事件 · {log.length} 条</summary><ol>{log.map((event) => <li key={event.seq}><code>#{event.seq} {event.type}</code><pre>{event.data}</pre></li>)}</ol></details> : <p className="process-note">暂无事件。</p>}
-            <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>运行详情</span></button>
+            {run.id !== primary?.id && <button type="button" className="ghost-button" onClick={() => actions.inspect(run.id)}><Icon name="panel" size={14} /><span>子任务详情</span></button>}
           </section>;
         })}
       </div>}
@@ -193,7 +192,7 @@ export function Turn({ turn, events, live, acting, actions, approvalMode }: {
     <article className="turn run-turn" data-run-id={root?.id} data-turn-id={turn.id} data-status={root?.status} aria-label="对话轮次">
       <MessageList messages={turn.conversation} />
       <div className="assistant">
-        {turn.finalAnswer && <div className="turn-final" aria-label="Harness 最终答复"><Markdown text={turn.finalAnswer} /><CopyButton text={turn.finalAnswer} /></div>}
+        {turn.finalAnswer && <div className="turn-final" aria-label="Harness 最终答复"><Markdown text={turn.finalAnswer} copyReply /></div>}
         <WorkBlock turn={turn} events={events} live={live} acting={acting} actions={actions} approvalMode={approvalMode} />
         {root?.status === 'FAILED' && <p className="run-error" role="alert">{root.error?.message || root.error?.code || '未生成最终答复，请查看运行详情。'}</p>}
         {turn.runs.filter((run) => run.status === 'WAITING' && ['APPROVAL', 'USER', 'BUDGET', 'RECONCILIATION'].includes(run.wait_reason || '')).map((run) => <section key={run.id} className="current-run" data-run-id={run.id} aria-label={(run.parent_id ? '子任务' : '本轮') + '当前操作'}>

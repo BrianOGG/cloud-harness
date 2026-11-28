@@ -230,11 +230,11 @@ try {
 
   await test('the effort pill starts closed, opens on toggle, and closes on Escape or outside pointer', async () => {
     await mount(<EffortPickerFixture models={[base]} />);
-    assert.equal(effortTrigger().textContent, '选择思考强度');
+    assert.equal(effortTrigger().textContent, 'Default · 默认');
     assert.equal(effortTrigger().getAttribute('aria-expanded'), 'false');
     assert.equal(document.querySelector('.reasoning-popover'), null);
     await openEffort();
-    assert.equal(effortTrigger().textContent, '选择思考强度');
+    assert.equal(effortTrigger().textContent, 'Default · 默认');
     assert.equal(effortTrigger().getAttribute('aria-expanded'), 'true');
     assert.ok(document.querySelector('.reasoning-popover'));
     await openEffort(); assert.equal(document.querySelector('.reasoning-popover'), null);
@@ -246,13 +246,13 @@ try {
     assert.equal(document.querySelector('.reasoning-popover'), null);
   });
 
-  await test('a changed effort appears in the closed pill, while an open pill stays generic; reset returns to default', async () => {
+  await test('the trigger reflects the active model and effort before and after a reset', async () => {
     await mount(<EffortPickerFixture models={[base]} />);
     await openEffort(); await key('ArrowRight', effortSlider());
     assert.equal(effortSlider().getAttribute('aria-valuetext'), '关');
     await openEffort();
     assert.equal(effortTrigger().textContent, 'Default · 关');
-    await openEffort(); assert.equal(effortTrigger().textContent, '选择思考强度');
+    await openEffort(); assert.equal(effortTrigger().textContent, 'Default · 关');
     await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="重置思考强度"]')!.click(); });
     assert.equal(effortSlider().getAttribute('aria-valuetext'), '默认');
     await openEffort(); assert.equal(effortTrigger().textContent, 'Default · 默认');

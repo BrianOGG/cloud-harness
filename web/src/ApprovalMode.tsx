@@ -34,7 +34,9 @@ export function ApprovalModeMenu({ value, onChange, disabled }: { value: string;
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [open]);
   return <div className="approval-mode" ref={ref}>
-    <button ref={button} type="button" className="approval-mode-trigger" data-mode={value} aria-label="审批模式" aria-expanded={open} disabled={disabled} title={`${approvalModeLabel(value)} · 下一轮生效`} onClick={() => setOpen(!open)}><Icon name={modeIcons[value] || 'question'} size={20} /></button>
+    <button ref={button} type="button" className="approval-mode-trigger" data-mode={value} aria-label="审批模式" aria-expanded={open} disabled={disabled} title={`${approvalModeLabel(value)} · 下一轮生效`} onClick={() => setOpen(!open)}>
+      <Icon name={modeIcons[value] || 'question'} size={16} /><span>{approvalModeLabel(value)}</span><Icon name="down" size={11} />
+    </button>
     {open && <div className="approval-mode-popover" role="group" aria-label="选择下一轮审批模式">
       {approvalModes.map((mode) => <button type="button" key={mode.id} className="mode-option" data-mode={mode.id} aria-pressed={value === mode.id} disabled={disabled} onClick={() => {
         setOpen(false);

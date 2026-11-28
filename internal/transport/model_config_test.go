@@ -180,6 +180,11 @@ func TestModelsNewAndLegacySelectionsAndReasoningSettings(t *testing.T) {
 		}
 	}
 	modelConfigRequest(t, h, "PUT", path, map[string]string{"approval_mode": "ask", "model_id": "default", "reasoning_effort": "invalid"}, 400, key)
+	before := modelConfigRequest(t, h, "GET", path, nil, 200, key).Body.String()
+	modelConfigRequest(t, h, "POST", "/v1/sessions/"+session.ID+"/runs?wait=invalid", map[string]string{"message": "hello", "reasoning_effort": "low", "model_id": "custom:multi"}, 400, key)
+	if after := modelConfigRequest(t, h, "GET", path, nil, 200, key).Body.String(); before != after {
+		t.Fatal("rejected request changed session preferences")
+	}
 	for _, id := range []string{"default", "custom:multi", "custom:multi/two/variant"} {
 		rec = modelConfigRequest(t, h, "POST", "/v1/sessions/"+session.ID+"/runs?wait=1", map[string]string{"message": "hello", "model_id": id}, 201, key)
 		var run view

@@ -34,10 +34,8 @@ func TestMigration007PreservesExistingRunsAndWorktreeBinding(t *testing.T) {
 		if file.Version > 6 {
 			continue
 		}
-		for _, stmt := range splitSQL(file.SQL) {
-			if _, err := raw.Exec(stmt); err != nil {
-				t.Fatalf("apply %s: %v", file.Name, err)
-			}
+		if _, err := raw.Exec(file.SQL); err != nil {
+			t.Fatalf("apply %s: %v", file.Name, err)
 		}
 		if _, err := raw.Exec(`INSERT INTO schema_migrations VALUES(?, ?, ?)`, file.Version, file.Name, formatTime(time.Now())); err != nil {
 			t.Fatal(err)
@@ -83,7 +81,7 @@ func TestMigration007PreservesExistingRunsAndWorktreeBinding(t *testing.T) {
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if version, err := db.SchemaVersion(ctx); err != nil || version != 13 {
+	if version, err := db.SchemaVersion(ctx); err != nil || version != 14 {
 		t.Fatalf("version %d, err %v", version, err)
 	}
 	for _, session := range []string{"", "ses"} {
@@ -120,10 +118,8 @@ func TestMigration008ReadOnlyV7AndLifecyclePersistence(t *testing.T) {
 		if file.Version > 7 {
 			continue
 		}
-		for _, stmt := range splitSQL(file.SQL) {
-			if _, err := raw.Exec(stmt); err != nil {
-				t.Fatal(err)
-			}
+		if _, err := raw.Exec(file.SQL); err != nil {
+			t.Fatal(err)
 		}
 		if _, err := raw.Exec(`INSERT INTO schema_migrations VALUES(?,?,?)`, file.Version, file.Name, formatTime(time.Now())); err != nil {
 			t.Fatal(err)

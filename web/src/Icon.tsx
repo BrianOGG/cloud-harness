@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 const paths: Record<string, ReactNode> = {
+  search: <><circle cx="10" cy="10" r="6.5" /><path d="m15 15 5 5" /></>,
   plus: <path d="M5 12h14M12 5v14" />,
   down: <path d="m6 9 6 6 6-6" />,
   settings: <><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z" /><circle cx="12" cy="12" r="3" /></>,

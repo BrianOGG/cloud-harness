@@ -147,7 +147,6 @@ export function ReasoningEffortPicker({ models, selectedModel, modelsLoading, mo
 }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<'slider' | 'models'>('slider');
-  const [modified, setModified] = useState(false);
   const [position, setPosition] = useState({ top: 12, left: 12 });
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
@@ -155,7 +154,8 @@ export function ReasoningEffortPicker({ models, selectedModel, modelsLoading, mo
   const returnFocus = useRef(false);
   const { current, unsupported } = getEffortState(selectedModel, value);
   const triggerDisabled = Boolean(modelSelectionDisabled || (disabled && models.length === 0));
-  const label = open || !modified ? '选择思考强度' : (selectedModel?.name || '模型不可用') + ' · ' + (unsupported ? '不支持' : current.label);
+  const modelName = selectedModel?.name || (modelsLoading ? '加载中…' : '模型不可用');
+  const label = selectedModel && !unsupported ? modelName + ' · ' + current.label : modelName;
 
   const placePopover = () => {
     const anchor = trigger.current?.getBoundingClientRect();
@@ -165,7 +165,7 @@ export function ReasoningEffortPicker({ models, selectedModel, modelsLoading, mo
     const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
     const width = Math.min(258, Math.max(0, viewportWidth - 24));
     const left = Math.max(12, Math.min(viewportWidth - width - 12, anchor.right - width));
-    const below = anchor.bottom - 14;
+    const below = anchor.bottom + 8;
     const top = below + panel.height <= viewportHeight - 12 ? below : Math.max(12, anchor.top - panel.height - 8);
     setPosition({ top, left });
   };
@@ -202,16 +202,16 @@ export function ReasoningEffortPicker({ models, selectedModel, modelsLoading, mo
     <button ref={trigger} type="button" className="reasoning-trigger" data-model-id={selectedModel?.id} data-model-name={selectedModel?.name} aria-label="选择思考强度" aria-haspopup="dialog" aria-expanded={open} disabled={triggerDisabled} onClick={() => {
       if (open) setOpen(false);
       else { setView('slider'); setOpen(true); }
-    }}>{label}</button>
+    }} title={label}><span>{label}</span><Icon name="down" size={12} /></button>
     {open && createPortal(<div ref={popover} className="reasoning-popover" role="dialog" aria-label={view === 'slider' ? '思考强度' : '选择模型'} style={{ top: position.top, left: position.left }}>
       {view === 'slider' ? <>
-        <button type="button" className="reasoning-reset" aria-label="重置思考强度" title="重置为默认" onClick={() => { onChange('default'); setModified(true); }}><Icon name="refresh" size={15} /></button>
-        <ReasoningEffortSlider model={selectedModel} value={value} disabled={disabled} onChange={(effort) => { onChange(effort); setModified(true); }} />
+        <button type="button" className="reasoning-reset" aria-label="重置思考强度" title="重置为默认" onClick={() => onChange('default')}><Icon name="refresh" size={15} /></button>
+        <ReasoningEffortSlider model={selectedModel} value={value} disabled={disabled} onChange={onChange} />
         <button ref={modelLink} type="button" className="reasoning-model-link" disabled={modelSelectionDisabled || models.length === 0} onClick={() => setView('models')}><span>{selectedModel?.name || (modelsLoading ? '加载中…' : '未配置模型')}</span><Icon name="right" size={13} /></button>
       </> : <div className="reasoning-model-view">
         <div className="reasoning-model-heading"><button type="button" onClick={() => { returnFocus.current = true; setView('slider'); }}>‹ 返回</button><strong>选择模型</strong></div>
         {modelsLoading && models.length === 0 ? <p className="reasoning-model-status" role="status">加载中…</p> : models.length === 0 ? <p className="reasoning-model-status" role="status">没有已启用的模型</p> : <ModelPickerList models={models} selectedModel={selectedModel} ariaLabel="选择模型" disabled={modelSelectionDisabled} onChange={(id) => {
-          if (id !== selectedModel?.id) { onModelChange(id); setModified(true); }
+          if (id !== selectedModel?.id) onModelChange(id);
           returnFocus.current = true;
           setView('slider');
         }} />}

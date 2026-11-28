@@ -33,6 +33,56 @@ func newServer(t *testing.T) (*agent.Manager, http.Handler) {
 	return m, (&Server{Manager: m}).Handler()
 }
 
+// Simulate a preferences edit after the HTTP handler reads the session
+// settings but before startup commits the run.
+type editPreferencesDuringStartup struct{ storage.Store }
+
+func (s editPreferencesDuringStartup) CreateTurn(ctx context.Context, turn storage.Turn) error {
+	err := s.SaveSessionPreferences(ctx, storage.SessionPreferences{SessionID: turn.SessionID, ModelID: "default", ApprovalMode: "safe"})
+	if err != nil {
+		return err
+	}
+	return s.Store.CreateTurn(ctx, turn)
+}
+
+func TestRunStartupPreservesLaterPreferenceEdit(t *testing.T) {
+	m, h := newServer(t)
+	m.Store = editPreferencesDuringStartup{m.Store}
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sessions/" + session.ID + "/runs?wait=1"
+	rec := modelConfigRequest(t, h, "POST", path, map[string]string{"message": "hello", "approval_mode": "full-auto"}, 201, "")
+	var run view
+	if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil || run.ApprovalMode != "full-auto" {
+		t.Fatalf("run lost the submitted approval mode: %s", rec.Body)
+	}
+	prefs, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || prefs.ApprovalMode != "safe" {
+		t.Fatalf("startup overwrote next-turn preferences: %+v, %v", prefs, err)
+	}
+}
+
+func TestRunInheritingPreferencesKeepsExistingRevision(t *testing.T) {
+	m, h := newServer(t)
+	session, err := m.CreateSession(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/sessions/" + session.ID + "/runs?wait=1"
+	modelConfigRequest(t, h, "POST", path, map[string]string{"message": "hello", "approval_mode": "safe"}, 201, "")
+	before, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || before.ApprovalMode != "safe" {
+		t.Fatalf("explicit preferences: %+v, %v", before, err)
+	}
+	modelConfigRequest(t, h, "POST", path, map[string]string{"message": "hello again"}, 201, "")
+	after, err := m.Store.GetSessionPreferences(t.Context(), session.ID)
+	if err != nil || before != after {
+		t.Fatalf("inheriting preferences invalidated an overlapping update: before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
 func TestMockRunOverHTTP(t *testing.T) {
 	_, h := newServer(t)
 	rec := httptest.NewRecorder()

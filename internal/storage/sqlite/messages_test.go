@@ -297,6 +297,60 @@ func TestTurnInputIsBoundOnlyToFirstRootRun(t *testing.T) {
 	}
 }
 
+func TestMessageSyncIncludesLateWritesAndResetsAfterRetention(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	db := openTest(t)
+	if err := db.CreateSession(ctx, storage.Session{ID: "sync", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id string, at time.Time) {
+		t.Helper()
+		err := db.CreateTurn(ctx, storage.Turn{ID: id, SessionID: "sync", UserInput: id, Status: "completed", CreatedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := func(prev storage.MessageSyncPage) storage.MessageSyncPage {
+		t.Helper()
+		page, err := db.SyncMessages(ctx, "sync", prev.Generation, prev.Revision, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	insert("first", now)
+	initial := next(storage.MessageSyncPage{})
+	insert("late", now.Add(-time.Hour))
+	late := next(initial)
+	if late.Reset || late.More || len(late.Messages) != 1 || late.Messages[0].Content != "late" {
+		t.Fatalf("late write: %+v", late)
+	}
+	if _, err := db.sql.ExecContext(ctx, "UPDATE messages SET content = 'edited' WHERE id = 'msg_user_first'"); err != nil {
+		t.Fatal(err)
+	}
+	edited := next(late)
+	if len(edited.Messages) != 1 || edited.Messages[0].Content != "edited" {
+		t.Fatalf("edit: %+v", edited)
+	}
+	if unchanged := next(edited); len(unchanged.Messages) != 0 || unchanged.Revision != edited.Revision {
+		t.Fatalf("unchanged: %+v", unchanged)
+	}
+	if first := next(storage.MessageSyncPage{}); !first.More {
+		t.Fatal("missing continuation")
+	}
+	if _, err := db.sql.ExecContext(ctx, "DELETE FROM messages WHERE id = 'msg_user_late'"); err != nil {
+		t.Fatal(err)
+	}
+	reset := next(edited)
+	if !reset.Reset || reset.More || len(reset.Messages) != 1 || reset.Messages[0].Content != "edited" {
+		t.Fatalf("retained view: %+v", reset)
+	}
+	if after := next(reset); after.Reset || len(after.Messages) != 0 {
+		t.Fatalf("after reset: %+v", after)
+	}
+}
+
 func TestMessagePaginationHasStableLongBoundaries(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 25, 8, 0, 0, 123456789, time.UTC)
